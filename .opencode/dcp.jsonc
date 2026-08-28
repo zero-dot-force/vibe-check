@@ -1,0 +1,10 @@
+{
+  // DCP (Dynamic Context Pruning) configuration for OpenCode.
+  // See: https://github.com/Opencode-DCP/opencode-dynamic-context-pruning
+  "$schema": "https://raw.githubusercontent.com/Opencode-DCP/opencode-dynamic-context-pruning/master/dcp.schema.json",
+  // Slash command files in .opencode/commands/ use <protect> tags
+  // to mark execution-critical sections that must survive compression.
+  "compress": {
+    "protectTags": true
+  }
+}

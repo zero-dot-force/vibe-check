@@ -163,43 +163,74 @@ Before submitting any pull request, agents MUST:
 4. Ensure minimal-to-no code changes between council approval and PR
    submission — the council reviews what will be submitted
 
-## Spec-First Development
+## Behavioral Rules
 
-### What Requires a Spec
+These rules are non-negotiable. Violations are CRITICAL severity.
 
-All changes that modify production code, test code, agent prompts,
-embedded assets, or CI configuration MUST be preceded by a spec
-workflow. The spec artifacts (proposal, design, tasks at minimum) MUST
-exist before implementation begins.
+- **Gatekeeping**: MUST NOT modify quality/governance gates
+  (coverage thresholds, CRAP scores, severity definitions,
+  CI flags, agent settings, constitution MUST rules, review
+  limits, workflow markers). Stop and report instead.
+- **Phase boundaries**: MUST NOT cross workflow phase boundaries.
+  Spec phases: spec artifacts only. Implement: source code.
+  Review: fixes only. Violation = process error, stop immediately.
+- **CI parity**: MUST replicate CI checks locally before marking
+  tasks complete. Derive commands from `.github/workflows/`.
+- **Review council**: MUST run `/uf.review-council` before PR
+  submission. Resolve all REQUEST CHANGES. No code changes
+  between APPROVE and PR. Exempt: constitution amendments,
+  docs-only, emergency hotfixes.
+- **Branch protection**: MUST NOT commit directly to `main`.
+  All changes via feature branches and PRs.
+- **Documentation gate**: Before marking a task complete,
+  assess documentation impact: `CHANGELOG.md` for change
+  entries, `AGENTS.md` for structural updates (project
+  structure, conventions, build commands), `README.md` for
+  description changes.
+- **Documentation gate**: MUST file a documentation issue
+  against the current repo for user-facing changes before
+  PR merge. Exempt: internal refactoring, test-only,
+  CI-only, spec artifacts.
+- **Zero-waste**: No orphaned specs, unused standards, or
+  aspirational documents that do not map to actionable work.
 
-### Exemptions
+### PR Review Commands
 
-- Constitution amendments (governed by the Governance section)
-- Trivial fixes: typo corrections, comment-only changes, single-line
-  formatting fixes that do not alter behavior
-- Emergency hotfixes: critical production bugs where the fix is a
-  single well-understood correction (must be retroactively documented)
+| Command | When | Scope |
+|---------|------|-------|
+| `/uf.review-council` | Pre-PR (local) | 5+ Divisor agents |
+| `/uf.review-pr [N]` | Post-PR (GitHub) | Single agent, CI analysis |
 
-When in doubt, use a spec. The cost of an unnecessary spec is minutes;
-the cost of an unplanned change is rework, drift, and broken CI.
+## Specification Workflow
 
-### Spec Pipeline
+All non-trivial changes MUST be preceded by a spec workflow.
 
-This project supports two spec workflows:
+| Tier | Tool | When | Artifacts |
+|------|------|------|-----------|
+| Strategic | Speckit | >= 3 stories, cross-repo | `specs/NNN-*/` |
+| Tactical | OpenSpec | < 3 stories, single-repo | `openspec/changes/*/` |
 
-1. **OpenSpec** (`openspec/changes/<name>/`): proposal → spec → design
-   → tasks → apply
-2. **Speckit** (`specs/NNN-*/`): constitution → specify → clarify →
-   plan → tasks → analyze → checklist → implement
+Pipeline: `constitution → specify → clarify → plan → tasks →
+analyze → checklist → implement`
 
-### Ordering and Bookkeeping Gates
+**Ordering**: Constitution before specs. Spec before plan. Plan
+before tasks. Tasks before implementation. Spec artifacts MUST
+be committed/pushed before implementation begins.
 
-- Spec artifacts MUST be created in dependency order (proposal before
-  design, design before tasks)
-- Task checkboxes MUST be updated from `- [ ]` to `- [x]` immediately
-  when a task is completed — not in a batch
-- Documentation impact MUST be assessed before marking any task
-  complete
+**Branches**: Speckit: `NNN-<name>`. OpenSpec: `opsx/<name>`.
+
+**Task bookkeeping**: Mark checkboxes `[x]` immediately on
+completion. `[P]` marks parallel-eligible tasks.
+
+**When in doubt**: Start with OpenSpec. Escalate to Speckit if
+scope grows beyond 3 stories or crosses repo boundaries.
+
+**What requires a spec**: New features, refactoring that changes
+signatures, test additions across multiple functions, agent
+changes, CI changes, data model changes.
+
+**Exempt**: Constitution amendments, typo fixes, emergency
+hotfixes (retroactively documented).
 
 ## Build & Test Commands
 
@@ -219,9 +250,24 @@ go vet ./...
 golangci-lint run ./...
 ```
 
-## Architecture
+## Project Structure
 
-<!-- Placeholder — update when package structure is established -->
+```text
+.opencode/          # OpenCode agent configuration, skills, packs
+.specify/           # Constitution and governance memory
+.uf/                # Unbound Force tooling configuration
+openspec/           # OpenSpec change artifacts (proposals, specs, tasks)
+  changes/          # Individual change directories
+  schemas/          # Spec validation schemas
+  specs/            # Spec templates
+```
+
+> **Pre-implementation**: No Go source directories exist yet.
+> Package layout will be established during the first spec
+> workflow. Update this section when `go.mod` and source
+> packages are created.
+
+## Architecture
 
 The planned architecture follows the RFC phasing:
 
@@ -317,11 +363,20 @@ When Dewey is unavailable, agents MUST degrade gracefully:
 
 ## Convention Packs
 
-<!-- Placeholder — update when convention packs are established -->
+This repository uses convention packs scaffolded by
+unbound-force. Agents MUST read the applicable pack(s)
+before writing or reviewing code.
 
-Convention packs will be stored under `.opencode/uf/packs/` and loaded
-by the OpenCode framework. Planned packs:
-
-- `metrics-conventions.md` — metric naming, ranges, and output format
-  standards
-- `adapter-conventions.md` — language adapter interface contracts
+- `.opencode/uf/packs/ci-custom.md`
+- `.opencode/uf/packs/ci.md`
+- `.opencode/uf/packs/content-custom.md`
+- `.opencode/uf/packs/content.md`
+- `.opencode/uf/packs/default-custom.md`
+- `.opencode/uf/packs/default.md`
+- `.opencode/uf/packs/go-custom.md`
+- `.opencode/uf/packs/go.md`
+- `.opencode/uf/packs/python-custom.md`
+- `.opencode/uf/packs/python.md`
+- `.opencode/uf/packs/severity.md`
+- `.opencode/uf/packs/typescript-custom.md`
+- `.opencode/uf/packs/typescript.md`

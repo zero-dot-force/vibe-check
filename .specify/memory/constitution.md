@@ -1,4 +1,30 @@
-# Project Constitution
+<!--
+  SYNC IMPACT REPORT
+  ==================
+  Version: 1.0.0 (initial ratification with project-specific
+    principles and full development workflow)
+  Ratified: 2026-08-28
+
+  Principles:
+    - I. Autonomous Collaboration (from org constitution v1.2.0)
+    - II. Composability First (from org constitution v1.2.0)
+    - III. Observable Quality (from org constitution v1.2.0)
+    - IV. Testability (from org constitution v1.2.0)
+    - V. Security by Default (from org constitution v1.2.0)
+    - VI. Metric Fidelity (project-specific)
+    - VII. Language Agnosticism (project-specific)
+
+  Parent constitution alignment:
+    ✅ Principles I–V align with org constitution v1.2.0
+    ✅ Principles VI–VII are additive; no contradiction with org
+
+  Templates requiring updates:
+    ✅ openspec/schemas/unbound-force/templates/* — compatible
+-->
+
+# Vibe-Check Constitution
+
+**parent_constitution**: unbound-force org constitution v1.2.0
 
 ## Core Principles
 
@@ -126,38 +152,161 @@ by design.
 code trivially fast. Without structural security guardrails, the
 attack surface of the system grows with each generation cycle.
 
+### VI. Metric Fidelity
+
+Every metric Vibe-Check computes MUST be mathematically faithful to
+its published definition. Approximations, heuristics, and sampling
+MUST NOT be used unless explicitly documented, justified, and
+opt-in.
+
+- Coupling metrics (Ca, Ce, Instability, Abstractness, Distance
+  from Main Sequence) MUST implement the formulas as defined by
+  Robert C. Martin. Any deviation from the published definition
+  MUST be documented in GoDoc and the user-facing output.
+- Cohesion metrics MUST define their measurement model (LCOM
+  variant or alternative) in the design doc. The chosen model MUST
+  be cited and its limitations documented.
+- Circular dependency detection MUST be exact (not heuristic). If
+  a cycle exists, it MUST be reported. If no cycle exists, it MUST
+  NOT be reported. False positives and false negatives in cycle
+  detection are bugs.
+- All computed values MUST be deterministic: the same input MUST
+  produce the same output across runs, platforms, and Go versions
+  (within the supported version range). Non-deterministic output
+  is a P0 bug.
+- Metric values MUST include their valid range and unit in GoDoc
+  comments (e.g., "Instability is a float64 in [0.0, 1.0] where
+  0.0 is maximally stable").
+
+**Rationale**: Vibe-Check exists to provide trustworthy measurements
+that inform architectural decisions. If metrics are inaccurate,
+approximate without disclosure, or non-deterministic, they erode
+the trust that makes the tool useful. A metric that is wrong is
+worse than no metric at all.
+
+### VII. Language Agnosticism
+
+The core analysis engine MUST be decoupled from any single
+programming language. Language-specific concerns MUST be isolated
+behind adapter interfaces that can be implemented independently.
+
+- The core metric computation engine MUST operate on a
+  language-neutral intermediate representation (package graph,
+  dependency edges, type classifications). It MUST NOT contain
+  Go-specific parsing logic, Python AST traversal, or any other
+  language-coupled code.
+- Language adapters MUST implement a common interface that
+  transforms language-specific source artifacts into the
+  intermediate representation. Adding a new language adapter MUST
+  NOT require modifications to the core engine or existing
+  adapters.
+- The Go adapter is the first-class implementation and MUST be
+  maintained at feature parity with the core engine. Other language
+  adapters MAY lag behind in feature coverage but MUST document
+  which metrics they support.
+- Adapter discovery SHOULD be automatic (convention-based or
+  registry-based). Manual configuration is acceptable as a
+  fallback but MUST NOT be the only option.
+
+**Rationale**: The RFC scopes multi-language coupling as P1+ work.
+Designing for language agnosticism from the start prevents the Go
+implementation from becoming a monolith that must be rewritten when
+Python and TypeScript adapters are added. The adapter boundary is
+cheaper to establish early than to retrofit.
+
 ## Development Workflow
 
-- All work MUST occur on feature branches. Direct commits to the
-  main branch are prohibited except for trivial documentation fixes.
-- Every pull request MUST receive at least one approving review
-  before merge.
-- The CI pipeline MUST pass (build, lint, tests) before a pull
-  request is eligible for merge.
-- Follow semantic versioning (MAJOR.MINOR.PATCH). Breaking changes
-  to public APIs, artifact schemas, or analysis behavior require a
-  MAJOR bump.
-- Use conventional commit format (`type: description`) to enable
-  automated changelog generation.
+- **Spec-First Development**: All changes that modify production code,
+  test code, agent prompts, embedded assets, or CI configuration MUST
+  be preceded by a spec workflow (either the Speckit pipeline under
+  `specs/` or the OpenSpec pipeline under `openspec/changes/`). The
+  spec artifacts (proposal, design, tasks at minimum) MUST exist
+  before implementation begins. This ensures every change has a
+  planning record, a reviewable intent, and a traceable rationale.
+  Exempt from this requirement:
+    - Constitution amendments (governed by the Governance section below)
+    - Trivial fixes: typo corrections, comment-only changes, and
+      single-line formatting fixes that do not alter behavior
+    - Emergency hotfixes: critical production bugs where the fix is
+      a single well-understood correction (must be retroactively
+      documented)
+  When in doubt, use a spec. The cost of an unnecessary spec is
+  minutes; the cost of an unplanned change is rework, drift, and
+  broken CI.
+- **Branch Naming**: All work MUST occur on feature branches. Direct
+  commits to the main branch are prohibited except for trivial
+  documentation fixes. Speckit branches: `NNN-<name>` (e.g.,
+  `001-coupling-metrics`). OpenSpec branches: `opsx/<name>` (e.g.,
+  `opsx/fix-instability-calc`).
+- **Code Review**: Every pull request MUST receive at least one
+  approving review before merge.
+- **Review Council Gate**: Before submitting a pull request, agents
+  MUST run the `/review-council` command and receive an APPROVE
+  verdict from all four reviewers (Adversary, Architect, Guard,
+  Tester). Any REQUEST CHANGES findings MUST be resolved before
+  PR submission. There MUST be minimal to no code changes between
+  the council's APPROVE and the PR submission — the council reviews
+  the code that will be submitted, not a draft that changes afterward.
+- **CI Parity Gate**: Before marking any implementation task complete
+  or declaring a PR ready, agents MUST replicate the CI checks
+  locally. Read `.github/workflows/` to identify the exact commands
+  CI runs, then execute those same commands. Any failure is a
+  blocking error — a task is not complete until all CI-equivalent
+  checks pass locally. Do not rely on a memorized list of commands;
+  always derive them from the workflow files, which are the source
+  of truth.
+- **Continuous Integration**: The CI pipeline MUST pass (build, lint,
+  vet, tests) before a pull request is eligible for merge.
+- **Task Completion Bookkeeping**: When a task from `tasks.md` is
+  completed during implementation, its checkbox MUST be updated from
+  `- [ ]` to `- [x]` immediately. Do not defer this — mark tasks
+  complete as they are finished, not in a batch after all work is
+  done.
+- **Documentation Gate**: Before marking any task complete, agents
+  MUST validate whether the change requires documentation updates.
+  Check and update as needed: `AGENTS.md`, GoDoc comments, and spec
+  artifacts. A task is not complete until its documentation impact
+  has been assessed and any necessary updates have been made.
+- **Website Documentation Sync**: When a change adds, modifies, or
+  removes user-facing behavior (commands, flags, output schemas,
+  config fields, installation steps), a GitHub issue MUST be created
+  in the `unbound-force/website` repository documenting what changed
+  and what website pages need updating. This ensures the public
+  documentation stays in sync with the codebase. Exempt: internal
+  refactors, test-only changes, spec artifacts.
+- **Releases**: Follow semantic versioning (MAJOR.MINOR.PATCH).
+  Breaking changes to metric computation behavior, output schemas,
+  or adapter interfaces require a MAJOR bump.
+- **Commit Messages**: Use conventional commit format
+  (`type: description`) to enable automated changelog generation.
 
 ## Governance
 
-This constitution is the highest-authority document in the project.
+This constitution extends the Unbound Force org constitution
+(v1.2.0). On matters where this document and the org constitution
+conflict, the org constitution prevails.
 
-- When a project constitution and the org constitution conflict, the
-  org constitution prevails. The project constitution MUST be amended
-  to resolve the conflict.
-- Any change to this constitution MUST be proposed via pull request,
-  reviewed, and approved before merge.
-- The constitution follows semantic versioning:
-  - MAJOR: Principle removal or incompatible redefinition of a MUST
-    rule.
-  - MINOR: New principle added or materially expanded guidance.
-  - PATCH: Clarifications, wording, or non-semantic refinements.
+This constitution is the authoritative source for project principles
+and development standards. All pull requests and code reviews MUST
+verify compliance with these principles.
 
-<!-- Customize this constitution for your project's specific needs.
-     Run /speckit.constitution to refine principles and add
-     project-specific governance rules. -->
+Amendments to this constitution require:
+1. A written proposal documenting the change and its rationale
+2. An assessment of impact on existing code and downstream consumers
+3. A migration plan if the change affects existing behavior
+4. Version increment following semantic versioning:
+   - MAJOR: Principle removal or incompatible redefinition
+   - MINOR: New principle or materially expanded guidance
+   - PATCH: Clarifications, wording fixes, non-semantic changes
 
-**Version**: 1.0.0
-<!-- scaffolded by uf vdev -->
+Complexity beyond what these principles permit MUST be justified in
+the Complexity Tracking section of the implementation plan. The
+justification MUST explain why a simpler alternative was rejected.
+
+**Compliance Review**: At each planning phase (spec, plan, tasks),
+the Constitution Check gate MUST verify that the proposed work
+aligns with all active principles. Constitution violations are
+CRITICAL severity and non-negotiable.
+
+**Version**: 1.0.0 | **Ratified**: 2026-08-28
+**Parent Constitution**: unbound-force org constitution v1.2.0

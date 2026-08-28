@@ -27,6 +27,8 @@ a good AGENTS.md, every agent session starts from cold context.
 
 ## Instructions
 
+<protect>
+
 ### Step 1: Mode Detection
 
 1. Check if AGENTS.md exists at the repository root.
@@ -510,3 +512,5 @@ Display a final summary:
 - **Respect Convention Packs ownership** -- the Go binary's
   `ensureAGENTSmdPackSection` owns this section. Detect and
   preserve it; do not regenerate if it already exists.
+
+</protect>

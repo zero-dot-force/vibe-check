@@ -45,12 +45,13 @@ func validateTopLevel(raw map[string]interface{}) error {
 	}
 
 	// Validate schemaVersion is a supported value.
+	// Accept both "1.0" (no extensions) and "1.1" (with extensions) for backward compatibility.
 	version, ok := raw["schemaVersion"].(string)
 	if !ok {
 		return fmt.Errorf("validate: field \"schemaVersion\" must be a string")
 	}
-	if version != SchemaVersionCurrent {
-		return fmt.Errorf("validate: unsupported schema version %q (supported: %q)", version, SchemaVersionCurrent)
+	if version != "1.0" && version != "1.1" {
+		return fmt.Errorf("validate: unsupported schema version %q (supported: \"1.0\", \"1.1\")", version)
 	}
 
 	// Validate language is a non-empty string.
@@ -155,6 +156,13 @@ func validateModule(v interface{}, index int) error {
 	}
 	if err := validateZoneEnum(zone); err != nil {
 		return fmt.Errorf("modules[%d]: %w", index, err)
+	}
+
+	// Validate extensions field if present: must be a JSON object (not primitive or array).
+	if ext, exists := m["extensions"]; exists {
+		if _, ok := ext.(map[string]interface{}); !ok {
+			return fmt.Errorf("modules[%d]: field \"extensions\" must be a JSON object", index)
+		}
 	}
 
 	return nil

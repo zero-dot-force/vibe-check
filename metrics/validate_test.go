@@ -155,6 +155,148 @@ func TestValidate_ZeroMetricsSerialized(t *testing.T) {
 	}
 }
 
+func TestValidate_ExtensionsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := ModuleGraph{
+		SchemaVersion: "1.1",
+		Language:      "go",
+		Modules: []ModuleResult{
+			{
+				Module: Module{
+					Path:          "github.com/example/ext",
+					Name:          "ext",
+					Ca:            1,
+					Ce:            2,
+					ExportedTypes: 3,
+					AbstractTypes: 1,
+				},
+				Instability:  0.666666,
+				Abstractness: 0.333333,
+				Distance:     0.0,
+				LCOM:         1,
+				Zone:         ZoneMainSequence,
+				Extensions: map[string]any{
+					"go.interfaceWidth":     map[string]int{"Reader": 1, "Writer": 2},
+					"go.interfaceProximity": map[string]string{"Reader": "producer", "Writer": "consumer"},
+				},
+			},
+		},
+		Cycles:   []Cycle{},
+		Warnings: []Warning{},
+		Status:   StatusComplete,
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	// Validate passes with extensions present.
+	if err := Validate(data); err != nil {
+		t.Fatalf("Validate returned error for valid input with extensions: %v", err)
+	}
+
+	// Verify JSON round-trip type behavior: int becomes float64, nested maps
+	// become map[string]interface{}.
+	var decoded ModuleGraph
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+
+	ext := decoded.Modules[0].Extensions
+	if ext == nil {
+		t.Fatal("Extensions is nil after round-trip")
+	}
+
+	// After JSON round-trip, map[string]int becomes map[string]interface{} with float64 values.
+	widthsRaw, ok := ext["go.interfaceWidth"]
+	if !ok {
+		t.Fatal("go.interfaceWidth missing from extensions")
+	}
+	widths, ok := widthsRaw.(map[string]interface{})
+	if !ok {
+		t.Fatalf("go.interfaceWidth: got type %T, want map[string]interface{}", widthsRaw)
+	}
+	if got, want := widths["Reader"], float64(1); got != want {
+		t.Errorf("go.interfaceWidth[Reader]: got %v (%T), want %v (%T)", got, got, want, want)
+	}
+	if got, want := widths["Writer"], float64(2); got != want {
+		t.Errorf("go.interfaceWidth[Writer]: got %v (%T), want %v (%T)", got, got, want, want)
+	}
+
+	// map[string]string round-trips to map[string]interface{} with string values.
+	proxRaw, ok := ext["go.interfaceProximity"]
+	if !ok {
+		t.Fatal("go.interfaceProximity missing from extensions")
+	}
+	prox, ok := proxRaw.(map[string]interface{})
+	if !ok {
+		t.Fatalf("go.interfaceProximity: got type %T, want map[string]interface{}", proxRaw)
+	}
+	if got, want := prox["Reader"], "producer"; got != want {
+		t.Errorf("go.interfaceProximity[Reader]: got %v, want %v", got, want)
+	}
+}
+
+func TestValidate_ExtensionsOmitted(t *testing.T) {
+	t.Parallel()
+
+	// ModuleResult without extensions should serialize without the extensions field
+	// (omitempty) and still pass validation.
+	g := ModuleGraph{
+		SchemaVersion: "1.1",
+		Language:      "go",
+		Modules: []ModuleResult{
+			{
+				Module: Module{
+					Path:          "github.com/example/noext",
+					Name:          "noext",
+					Ca:            0,
+					Ce:            0,
+					ExportedTypes: 0,
+					AbstractTypes: 0,
+				},
+				Zone: ZoneNormal,
+			},
+		},
+		Cycles:   []Cycle{},
+		Warnings: []Warning{},
+		Status:   StatusComplete,
+	}
+
+	data, err := json.Marshal(g)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	if err := Validate(data); err != nil {
+		t.Fatalf("Validate returned error for input without extensions: %v", err)
+	}
+
+	// Verify extensions field is not present in JSON.
+	if strings.Contains(string(data), `"extensions"`) {
+		t.Error("extensions field should be omitted from JSON when nil")
+	}
+}
+
+func TestValidate_SchemaVersion11(t *testing.T) {
+	t.Parallel()
+
+	// Validate accepts schema version "1.1".
+	data := []byte(`{
+		"schemaVersion": "1.1",
+		"language": "go",
+		"modules": [],
+		"cycles": [],
+		"warnings": [],
+		"status": "complete"
+	}`)
+	if err := Validate(data); err != nil {
+		t.Fatalf("Validate rejected schema version 1.1: %v", err)
+	}
+}
+
 func TestValidate_InvalidInputs(t *testing.T) {
 	t.Parallel()
 
@@ -279,6 +421,66 @@ func TestValidate_InvalidInputs(t *testing.T) {
 				"status": "complete"
 			}`,
 			wantErr: "invalid zone",
+		},
+		{
+			name: "extensions is a string (invalid)",
+			data: `{
+				"schemaVersion": "1.1",
+				"language": "go",
+				"modules": [{
+					"path": "foo",
+					"name": "foo",
+					"ca": 0, "ce": 0,
+					"instability": 0, "abstractness": 0, "distance": 0, "lcom": 0,
+					"exportedTypes": 0, "abstractTypes": 0,
+					"zone": "normal",
+					"extensions": "not-an-object"
+				}],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete"
+			}`,
+			wantErr: "\"extensions\" must be a JSON object",
+		},
+		{
+			name: "extensions is an array (invalid)",
+			data: `{
+				"schemaVersion": "1.1",
+				"language": "go",
+				"modules": [{
+					"path": "foo",
+					"name": "foo",
+					"ca": 0, "ce": 0,
+					"instability": 0, "abstractness": 0, "distance": 0, "lcom": 0,
+					"exportedTypes": 0, "abstractTypes": 0,
+					"zone": "normal",
+					"extensions": [1, 2, 3]
+				}],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete"
+			}`,
+			wantErr: "\"extensions\" must be a JSON object",
+		},
+		{
+			name: "extensions is a valid object (passes)",
+			data: `{
+				"schemaVersion": "1.1",
+				"language": "go",
+				"modules": [{
+					"path": "foo",
+					"name": "foo",
+					"ca": 0, "ce": 0,
+					"instability": 0, "abstractness": 0, "distance": 0, "lcom": 0,
+					"exportedTypes": 0, "abstractTypes": 0,
+					"zone": "normal",
+					"extensions": {"go.interfaceWidth": {"Foo": 1}}
+				}],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete"
+			}`,
+			wantErr: "",
 		},
 		{
 			name: "warning missing code field",

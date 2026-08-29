@@ -23,7 +23,8 @@
           "lcom": { "type": "integer", "minimum": 0 },
           "exportedTypes": { "type": "integer", "minimum": 0 },
           "abstractTypes": { "type": "integer", "minimum": 0 },
-          "zone": { "type": "string", "enum": ["main-sequence", "zone-of-pain", "zone-of-uselessness", "normal"] }
+          "zone": { "type": "string", "enum": ["main-sequence", "zone-of-pain", "zone-of-uselessness", "normal"] },
+          "extensions": { "type": "object" }
         },
         "additionalProperties": false
       }

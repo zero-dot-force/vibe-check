@@ -3,7 +3,9 @@ package goadapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,9 +41,9 @@ func TestAdapter_CouplingMetrics(t *testing.T) {
 		wantCa int
 		wantCe int
 	}{
-		{"pkga", 0, 1},
-		{"pkgb", 2, 0},
-		{"pkgc", 0, 1},
+		{"pkga", 0, 2}, // Ce=2: imports fmt (stdlib) + pkgb (internal)
+		{"pkgb", 2, 0}, // Ce=0: no imports
+		{"pkgc", 0, 1}, // Ce=1: imports pkgb (internal only)
 	}
 
 	for _, tt := range tests {
@@ -81,11 +83,11 @@ func TestAdapter_StdlibExclusion(t *testing.T) {
 	}
 
 	// pkga imports fmt (stdlib) + pkgb (internal).
-	// Ce should count pkgb only (Ce=1), not fmt.
+	// Ce counts all imports including stdlib per Martin's definition.
 	for _, m := range graph.Modules {
 		if m.Name == "pkga" {
-			if m.Ce != 1 {
-				t.Errorf("pkga Ce: got %d, want 1 (should exclude stdlib)", m.Ce)
+			if m.Ce != 2 {
+				t.Errorf("pkga Ce: got %d, want 2 (should count fmt + pkgb)", m.Ce)
 			}
 		}
 	}
@@ -105,7 +107,7 @@ func TestAdapter_ExternalExclusion(t *testing.T) {
 
 	// All modules should have paths starting with the module prefix.
 	for _, m := range graph.Modules {
-		if m.Path != "" && m.Path[:len("example.com/coupling")] != "example.com/coupling" {
+		if !strings.HasPrefix(m.Path, "example.com/coupling") {
 			t.Errorf("external package %q should not appear in modules", m.Path)
 		}
 	}
@@ -196,6 +198,9 @@ func TestAdapter_Determinism(t *testing.T) {
 
 func TestAdapter_ContextCancellation(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 
 	adapter := New()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -205,10 +210,16 @@ func TestAdapter_ContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
 	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected error wrapping context.Canceled, got: %v", err)
+	}
 }
 
 func TestAdapter_ContextDeadline(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
 
 	adapter := New()
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
@@ -217,6 +228,9 @@ func TestAdapter_ContextDeadline(t *testing.T) {
 	_, err := adapter.Analyze(ctx, fixtureDir(t, "coupling"))
 	if err == nil {
 		t.Fatal("expected error for expired deadline, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected error wrapping context.DeadlineExceeded, got: %v", err)
 	}
 }
 
@@ -280,7 +294,23 @@ func TestAdapter_PartialBuild(t *testing.T) {
 
 	// Should have at least one warning about the bad package.
 	if len(graph.Warnings) == 0 {
-		t.Error("expected warnings for partial build, got none")
+		t.Fatal("expected warnings for partial build, got none")
+	}
+
+	// Verify warning format per spec: Code, Module, and Message fields.
+	w := graph.Warnings[0]
+	if w.Code != "load-error" {
+		t.Errorf("Warning.Code: got %q, want %q", w.Code, "load-error")
+	}
+	if w.Module == "" {
+		t.Error("Warning.Module is empty, want affected package path")
+	}
+	if w.Message == "" {
+		t.Error("Warning.Message is empty, want error description")
+	}
+	// Warning.Module should contain the partial package path.
+	if !strings.Contains(w.Module, "bad") {
+		t.Errorf("Warning.Module %q should reference the bad package", w.Module)
 	}
 
 	// The good package should still be in the results.

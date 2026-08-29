@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -202,11 +201,6 @@ func analyzeCmd() *cobra.Command {
 		maxLCOM        int
 		noCircularDeps bool
 		timeout        time.Duration
-
-		// Track which flags were explicitly set.
-		hasMaxInstability bool
-		hasMaxDistance    bool
-		hasMaxLCOM        bool
 	)
 
 	cmd := &cobra.Command{
@@ -233,7 +227,7 @@ JSON output is always written to stdout, even when violations are detected.`,
 			}
 
 			// Signal handling: intercept SIGINT and SIGTERM.
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
 			// Build options, converting explicitly-set flags to pointers.
@@ -245,13 +239,14 @@ JSON output is always written to stdout, even when violations are detected.`,
 				Timeout:        timeout,
 			}
 
-			if hasMaxInstability {
+			// Use cobra's Changed() to distinguish "not set" from "set to zero".
+			if cmd.Flags().Changed("max-instability") {
 				opts.MaxInstability = &maxInstability
 			}
-			if hasMaxDistance {
+			if cmd.Flags().Changed("max-distance") {
 				opts.MaxDistance = &maxDistance
 			}
-			if hasMaxLCOM {
+			if cmd.Flags().Changed("max-lcom") {
 				opts.MaxLCOM = &maxLCOM
 			}
 
@@ -260,11 +255,17 @@ JSON output is always written to stdout, even when violations are detected.`,
 				// Print error to stderr; cobra will not print usage
 				// because SilenceUsage is true.
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Error:", err)
-				os.Exit(result.ExitCode)
+				return &exitCodeError{code: result.ExitCode, err: err}
 			}
 
 			if result.ExitCode != 0 {
-				os.Exit(result.ExitCode)
+				// Policy violations — error message already written to stderr
+				// by RunAnalyze. Return an exitCodeError so main() can set
+				// the correct exit code without bypassing deferred cleanup.
+				return &exitCodeError{
+					code: result.ExitCode,
+					err:  fmt.Errorf("threshold violations detected"),
+				}
 			}
 
 			return nil
@@ -277,16 +278,6 @@ JSON output is always written to stdout, even when violations are detected.`,
 	cmd.Flags().IntVar(&maxLCOM, "max-lcom", 0, "Maximum allowed LCOM value (>= 1)")
 	cmd.Flags().BoolVar(&noCircularDeps, "no-circular-deps", false, "Treat circular dependencies as violations")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Analysis timeout (e.g., 30s, 2m)")
-
-	// Track which flags were explicitly set via cobra's Changed mechanism.
-	// We use PreRunE to check after parsing but before execution.
-	originalRunE := cmd.RunE
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		hasMaxInstability = cmd.Flags().Changed("max-instability")
-		hasMaxDistance = cmd.Flags().Changed("max-distance")
-		hasMaxLCOM = cmd.Flags().Changed("max-lcom")
-		return originalRunE(cmd, args)
-	}
 
 	return cmd
 }

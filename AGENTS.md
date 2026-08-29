@@ -254,20 +254,33 @@ golangci-lint run ./...
 .opencode/          # OpenCode agent configuration, skills, packs
 .specify/           # Constitution and governance memory
 .uf/                # Unbound Force tooling configuration
+cmd/vibe-check/     # CLI entry point (Layer 3)
+  main.go           # Binary entry point with ldflags version embedding
+  root.go           # Cobra root command with --version flag
+  analyze.go        # analyze subcommand with threshold flags
+internal/goadapter/ # Go language adapter (Layer 2)
+  adapter.go        # Adapter struct implementing metrics.Adapter
+  resolve.go        # Package loading via go/packages
+  types.go          # Type classification (interfaces = abstract)
+  lcom.go           # LCOM4 via connected-component analysis
+  cycles.go         # Tarjan's SCC for circular dependency detection
+  extensions.go     # go.interfaceWidth and go.interfaceProximity extensions
+  doc.go            # Package-level GoDoc
+  testdata/         # Test fixtures (coupling, types, lcom, extensions, partial)
 metrics/            # Universal coupling metrics model (Layer 1)
   adapter.go        # Adapter interface and Capability type
   compute.go        # Metric computation functions
   cycle.go          # Cycle type for circular dependency representation
   doc.go            # Package-level GoDoc
   external.go       # ExternalAdapter (JSON-RPC subprocess)
-  graph.go          # ModuleGraph and ModuleResult types
+  graph.go          # ModuleGraph and ModuleResult types (with Extensions)
   jsonrpc.go        # JSON-RPC 2.0 protocol types
   module.go         # Module type (universal unit of analysis)
-  modulegraph.schema.json  # JSON Schema for ModuleGraph validation
+  modulegraph.schema.json  # JSON Schema for ModuleGraph validation (v1.1)
   registry.go       # Adapter registry (dependency-injected)
   schema.go         # Embedded JSON schema access
   security.go       # Path validation and environment sanitization
-  validate.go       # JSON schema validation
+  validate.go       # JSON schema validation (accepts v1.0 and v1.1)
   values.go         # Named metric types (Instability, Abstractness, etc.)
   warning.go        # Warning type for analysis caveats
   zone.go           # Zone and Status types
@@ -279,19 +292,31 @@ openspec/           # OpenSpec change artifacts (proposals, specs, tasks)
 
 ## Architecture
 
-The planned architecture follows the RFC phasing:
+The architecture follows a three-layer design per the RFC phasing:
 
-- **P0**: Core coupling metrics engine — Ca, Ce, Instability,
-  Abstractness, Distance from Main Sequence, cohesion, circular
-  dependency detection
-- **P1**: Multi-language adapter interface, metrics command, convention
-  pack integration
+- **Layer 1** (`metrics/`): Language-agnostic universal model — Ca, Ce,
+  Instability, Abstractness, Distance from Main Sequence, LCOM4,
+  circular dependency detection, JSON schema validation, adapter
+  interface, and security primitives.
+- **Layer 2** (`internal/goadapter/`): Go language adapter implementing
+  `metrics.Adapter`. Uses `golang.org/x/tools/go/packages` for
+  type-aware dependency resolution, AST-based type classification,
+  LCOM4 via connected-component analysis (Hitz & Montazeri 1995),
+  Tarjan's SCC for cycle detection, and Go-specific extensions
+  (`go.interfaceWidth`, `go.interfaceProximity`).
+- **Layer 3** (`cmd/vibe-check/`): CLI entry point using cobra. Provides
+  `vibe-check analyze` with threshold flags (`--max-instability`,
+  `--max-distance`, `--max-lcom`, `--no-circular-deps`, `--timeout`)
+  and JSON output.
+
+RFC phasing status:
+
+- **P0**: Core coupling metrics engine (complete — `metrics/` package)
+- **P0 effective**: Go adapter and CLI (complete — `internal/goadapter/`
+  and `cmd/vibe-check/`; classified as P1 in RFC but required for MVP)
 - **P2**: Python adapter, cognitive complexity, branch coverage,
   architectural drift tracking
 - **P3**: TS/JS adapter, SBOM integration, mutation testing hooks
-
-The `metrics` package implements the P0 universal model. Language
-adapters (P1+) will be added as separate packages.
 
 ## Coding Conventions
 

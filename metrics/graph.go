@@ -4,7 +4,7 @@ package metrics
 // Consumers should check this value before processing to detect incompatible changes.
 // Version changes follow semantic versioning: minor versions are backward-compatible,
 // major versions may contain breaking changes.
-const SchemaVersionCurrent = "1.0"
+const SchemaVersionCurrent = "1.1"
 
 // ModuleGraph represents the complete analysis result for a project.
 // It contains all modules with their computed metrics, detected circular
@@ -40,4 +40,11 @@ type ModuleResult struct {
 	LCOM LCOM `json:"lcom"`
 	// Zone is the classification of the module's position relative to the main sequence.
 	Zone Zone `json:"zone"`
+	// Extensions contains language-specific metric extensions namespaced by language.
+	// Keys use the format "language.metricName" (e.g., "go.interfaceWidth").
+	// Extensions are not schema-enforced beyond being a valid JSON object.
+	// Use language-specific typed accessor functions for safe extraction after
+	// JSON round-trip (JSON unmarshaling converts int to float64, nested maps to
+	// map[string]interface{}).
+	Extensions map[string]any `json:"extensions,omitempty"`
 }

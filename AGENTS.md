@@ -234,8 +234,6 @@ hotfixes (retroactively documented).
 
 ## Build & Test Commands
 
-<!-- Placeholder — update when go.mod and Makefile are created -->
-
 ```bash
 # Build
 go build ./...
@@ -292,7 +290,8 @@ The planned architecture follows the RFC phasing:
   architectural drift tracking
 - **P3**: TS/JS adapter, SBOM integration, mutation testing hooks
 
-Package layout will be established during the first spec workflow.
+The `metrics` package implements the P0 universal model. Language
+adapters (P1+) will be added as separate packages.
 
 ## Coding Conventions
 

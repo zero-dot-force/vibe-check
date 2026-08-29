@@ -316,6 +316,11 @@ func TestExternalAdapter_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("Analyze() returned nil error for timeout scenario, want error")
 	}
+	// Verify the error wraps with the expected context prefix.
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "external analyze") {
+		t.Errorf("Analyze() error = %q, want error containing 'external analyze'", errMsg)
+	}
 }
 
 func TestExternalAdapter_Crash(t *testing.T) {
@@ -340,6 +345,11 @@ func TestExternalAdapter_Crash(t *testing.T) {
 	_, err := adapter.Analyze(ctx, projectDir)
 	if err == nil {
 		t.Fatal("Analyze() returned nil error for crash scenario, want error")
+	}
+	// Verify the error wraps with the expected context prefix.
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "external analyze") {
+		t.Errorf("Analyze() error = %q, want error containing 'external analyze'", errMsg)
 	}
 }
 
@@ -396,6 +406,11 @@ func TestExternalAdapter_ResponseSizeLimit(t *testing.T) {
 	_, err := adapter.Analyze(ctx, projectDir)
 	if err == nil {
 		t.Fatal("Analyze() returned nil error for oversized response, want error")
+	}
+	// Verify the error wraps with the expected context prefix.
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "external analyze") {
+		t.Errorf("Analyze() error = %q, want error containing 'external analyze'", errMsg)
 	}
 }
 
@@ -574,6 +589,64 @@ func TestNewExternalAdapter_WithOptions(t *testing.T) {
 	}
 	if got, want := adapter.maxStderrSize, int64(256); got != want {
 		t.Errorf("maxStderrSize: got %v, want %v", got, want)
+	}
+}
+
+func TestWithEnvironment(t *testing.T) {
+	t.Parallel()
+
+	adapter := NewExternalAdapter("/bin/echo", "test",
+		WithEnvironment([]string{"CUSTOM_VAR"}),
+	)
+	if adapter == nil {
+		t.Fatal("NewExternalAdapter returned nil")
+	}
+	// Verify the env was set via SanitizeEnvironment with the allowlist.
+	if adapter.env == nil {
+		t.Fatal("adapter.env is nil after WithEnvironment, want non-nil")
+	}
+	// The env should contain PATH and HOME from defaults, plus CUSTOM_VAR if
+	// it is set in the current environment, but NOT credential-bearing vars.
+	for _, e := range adapter.env {
+		if strings.HasPrefix(e, "AWS_SECRET_ACCESS_KEY=") {
+			t.Errorf("env contains blocked credential: %s", e)
+		}
+		if strings.HasPrefix(e, "GITHUB_TOKEN=") {
+			t.Errorf("env contains blocked credential: %s", e)
+		}
+	}
+}
+
+func TestSchemaJSON(t *testing.T) {
+	t.Parallel()
+
+	data := SchemaJSON()
+	if len(data) == 0 {
+		t.Fatal("SchemaJSON() returned empty slice")
+	}
+	// Verify it's valid JSON.
+	if !json.Valid(data) {
+		t.Fatal("SchemaJSON() returned invalid JSON")
+	}
+	// Verify it returns a copy — modifying the result should not affect
+	// subsequent calls.
+	data[0] = 0xFF
+	data2 := SchemaJSON()
+	if data2[0] == 0xFF {
+		t.Error("SchemaJSON() returned the same backing array, want a defensive copy")
+	}
+}
+
+func TestJSONRPCError_Error(t *testing.T) {
+	t.Parallel()
+
+	e := &JSONRPCError{
+		Code:    -32601,
+		Message: "method not found",
+	}
+	got := e.Error()
+	if got != "method not found" {
+		t.Errorf("JSONRPCError.Error() = %q, want %q", got, "method not found")
 	}
 }
 

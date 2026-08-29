@@ -256,16 +256,28 @@ golangci-lint run ./...
 .opencode/          # OpenCode agent configuration, skills, packs
 .specify/           # Constitution and governance memory
 .uf/                # Unbound Force tooling configuration
+metrics/            # Universal coupling metrics model (Layer 1)
+  adapter.go        # Adapter interface and Capability type
+  compute.go        # Metric computation functions
+  cycle.go          # Cycle type for circular dependency representation
+  doc.go            # Package-level GoDoc
+  external.go       # ExternalAdapter (JSON-RPC subprocess)
+  graph.go          # ModuleGraph and ModuleResult types
+  jsonrpc.go        # JSON-RPC 2.0 protocol types
+  module.go         # Module type (universal unit of analysis)
+  modulegraph.schema.json  # JSON Schema for ModuleGraph validation
+  registry.go       # Adapter registry (dependency-injected)
+  schema.go         # Embedded JSON schema access
+  security.go       # Path validation and environment sanitization
+  validate.go       # JSON schema validation
+  values.go         # Named metric types (Instability, Abstractness, etc.)
+  warning.go        # Warning type for analysis caveats
+  zone.go           # Zone and Status types
 openspec/           # OpenSpec change artifacts (proposals, specs, tasks)
   changes/          # Individual change directories
   schemas/          # Spec validation schemas
   specs/            # Spec templates
 ```
-
-> **Pre-implementation**: No Go source directories exist yet.
-> Package layout will be established during the first spec
-> workflow. Update this section when `go.mod` and source
-> packages are created.
 
 ## Architecture
 

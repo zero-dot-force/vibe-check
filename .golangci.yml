@@ -1,0 +1,34 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/zero-dot-force/vibe-check
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - revive
+    - staticcheck
+    - unused
+    - ineffassign
+
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+      - name: error-return
+        severity: warning
+      - name: error-strings
+        severity: warning
+      - name: unexported-return
+        severity: warning

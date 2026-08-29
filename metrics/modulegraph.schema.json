@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModuleGraph",
+  "description": "Complete analysis result for a project",
+  "type": "object",
+  "required": ["schemaVersion", "language", "modules", "cycles", "warnings", "status"],
+  "properties": {
+    "schemaVersion": { "type": "string" },
+    "language": { "type": "string", "minLength": 1 },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "name", "ca", "ce", "instability", "abstractness", "distance", "lcom", "exportedTypes", "abstractTypes", "zone"],
+        "properties": {
+          "path": { "type": "string" },
+          "name": { "type": "string" },
+          "ca": { "type": "integer", "minimum": 0 },
+          "ce": { "type": "integer", "minimum": 0 },
+          "instability": { "type": "number", "minimum": 0, "maximum": 1 },
+          "abstractness": { "type": "number", "minimum": 0, "maximum": 1 },
+          "distance": { "type": "number", "minimum": 0, "maximum": 1 },
+          "lcom": { "type": "integer", "minimum": 0 },
+          "exportedTypes": { "type": "integer", "minimum": 0 },
+          "abstractTypes": { "type": "integer", "minimum": 0 },
+          "zone": { "type": "string", "enum": ["main-sequence", "zone-of-pain", "zone-of-uselessness", "normal"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "cycles": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "module": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "status": { "type": "string", "enum": ["complete", "partial", "error"] }
+  },
+  "additionalProperties": false
+}

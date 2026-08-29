@@ -20,15 +20,14 @@ linters:
     - staticcheck
     - unused
     - ineffassign
-
-linters-settings:
-  revive:
-    rules:
-      - name: exported
-        severity: warning
-      - name: error-return
-        severity: warning
-      - name: error-strings
-        severity: warning
-      - name: unexported-return
-        severity: warning
+  settings:
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+        - name: error-return
+          severity: warning
+        - name: error-strings
+          severity: warning
+        - name: unexported-return
+          severity: warning

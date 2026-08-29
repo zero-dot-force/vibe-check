@@ -15,7 +15,7 @@ type JSONRPCRequest struct {
 	// Method is the name of the method to invoke (e.g., "analyze", "capabilities", "shutdown").
 	Method string `json:"method"`
 	// Params contains the method parameters. Omitted when the method takes no parameters.
-	Params interface{} `json:"params,omitempty"`
+	Params any `json:"params,omitempty"`
 	// ID is the request identifier. Nil for notifications (no response expected).
 	ID *int `json:"id,omitempty"`
 }

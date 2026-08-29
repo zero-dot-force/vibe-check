@@ -61,6 +61,34 @@ func TestComputeZone_Classification(t *testing.T) {
 			d:    0.1,
 			want: ZoneMainSequence,
 		},
+		{
+			name: "boundary A=0.2 I=0.2 is not zone-of-pain (strict <)",
+			a:    0.2,
+			i:    0.2,
+			d:    0.5,
+			want: ZoneNormal,
+		},
+		{
+			name: "boundary A=0.8 I=0.8 is not zone-of-uselessness (strict >)",
+			a:    0.8,
+			i:    0.8,
+			d:    0.5,
+			want: ZoneNormal,
+		},
+		{
+			name: "just inside zone-of-pain: A=0.19 I=0.19",
+			a:    0.19,
+			i:    0.19,
+			d:    0.5,
+			want: ZoneOfPain,
+		},
+		{
+			name: "just inside zone-of-uselessness: A=0.81 I=0.81",
+			a:    0.81,
+			i:    0.81,
+			d:    0.5,
+			want: ZoneOfUselessness,
+		},
 	}
 
 	for _, tt := range tests {

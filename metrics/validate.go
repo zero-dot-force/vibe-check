@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 )
 
@@ -12,7 +11,7 @@ import (
 // Returns nil if valid, or an error describing the first validation failure.
 func Validate(data []byte) error {
 	if len(data) == 0 {
-		return fmt.Errorf("validate: %w", errors.New("empty input"))
+		return fmt.Errorf("validate: empty input")
 	}
 
 	var raw map[string]interface{}

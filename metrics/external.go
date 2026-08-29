@@ -377,7 +377,9 @@ func (lb *limitedBuffer) Write(p []byte) (int, error) {
 	}
 
 	if _, err := lb.buf.Write(p); err != nil {
-		return 0, err
+		// Return the original length even on error to maintain the contract
+		// of never breaking the subprocess stderr pipe.
+		return originalLen, nil
 	}
 	return originalLen, nil
 }

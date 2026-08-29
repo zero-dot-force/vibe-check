@@ -197,6 +197,18 @@ func TestValidate_InvalidInputs(t *testing.T) {
 			wantErr: "\"warnings\" must be an array",
 		},
 		{
+			name: "unsupported schema version",
+			data: `{
+				"schemaVersion": "2.0",
+				"language": "go",
+				"modules": [],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete"
+			}`,
+			wantErr: "unsupported schema version",
+		},
+		{
 			name: "invalid status value",
 			data: `{
 				"schemaVersion": "1.0",

@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -78,6 +79,55 @@ func TestRegistry_UnknownLanguage(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Get(%q) returned nil error for unregistered language, want error", "rust")
 	}
+}
+
+// TestRegistry_ConcurrentReads verifies that concurrent Get calls on a
+// pre-configured Registry are safe. This validates the documented contract
+// that Registry is safe for concurrent reads after initial configuration.
+func TestRegistry_ConcurrentReads(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	goAdapter := &mockAdapter{language: "go"}
+	pyAdapter := &mockAdapter{language: "python"}
+
+	if err := reg.Register(goAdapter); err != nil {
+		t.Fatalf("Register(go): %v", err)
+	}
+	if err := reg.Register(pyAdapter); err != nil {
+		t.Fatalf("Register(python): %v", err)
+	}
+
+	// Launch concurrent readers after setup is complete.
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				got, err := reg.Get("go")
+				if err != nil {
+					t.Errorf("concurrent Get(go): %v", err)
+					return
+				}
+				if got != goAdapter {
+					t.Errorf("concurrent Get(go) returned wrong adapter")
+					return
+				}
+				got2, err := reg.Get("python")
+				if err != nil {
+					t.Errorf("concurrent Get(python): %v", err)
+					return
+				}
+				if got2 != pyAdapter {
+					t.Errorf("concurrent Get(python) returned wrong adapter")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestRegistry_MultipleLanguages(t *testing.T) {

@@ -11,6 +11,8 @@ type Adapter interface {
 	// Language returns the lowercase language identifier (e.g., "go", "python").
 	Language() string
 	// Capabilities returns the list of metrics this adapter can compute.
+	// A nil or empty return may indicate either zero capabilities or a
+	// communication failure. Use Analyze for detailed error diagnostics.
 	Capabilities() []Capability
 }
 

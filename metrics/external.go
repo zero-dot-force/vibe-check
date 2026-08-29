@@ -117,6 +117,11 @@ func (a *ExternalAdapter) Language() string {
 // Capabilities returns the list of metrics this adapter can compute.
 // It spawns the subprocess, sends a capabilities request, and returns the
 // result. The subprocess is shut down after the call.
+//
+// A nil or empty return value may indicate either that the adapter supports
+// no capabilities or that a communication error occurred (spawn failure,
+// protocol error, etc.). Use [ExternalAdapter.Analyze] for detailed error
+// diagnostics when capabilities discovery fails.
 func (a *ExternalAdapter) Capabilities() []Capability {
 	// Capabilities is defined without error return in the Adapter interface.
 	// On failure, return an empty slice — callers can use Analyze to get
@@ -347,9 +352,10 @@ func (p *process) shutdown(gracePeriod time.Duration) {
 // a maximum size. It is used to capture subprocess stderr without unbounded
 // memory growth.
 type limitedBuffer struct {
-	mu      sync.Mutex
-	buf     bytes.Buffer
-	maxSize int64
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	maxSize  int64
+	writeErr bool // set when an internal buffer write fails (e.g., OOM)
 }
 
 // newLimitedBuffer creates a limitedBuffer with the given maximum size.
@@ -378,7 +384,9 @@ func (lb *limitedBuffer) Write(p []byte) (int, error) {
 
 	if _, err := lb.buf.Write(p); err != nil {
 		// Return the original length even on error to maintain the contract
-		// of never breaking the subprocess stderr pipe.
+		// of never breaking the subprocess stderr pipe. Record the failure
+		// for observability in the String() output.
+		lb.writeErr = true
 		return originalLen, nil
 	}
 	return originalLen, nil
@@ -393,6 +401,9 @@ func (lb *limitedBuffer) String() string {
 	s := lb.buf.String()
 	if int64(lb.buf.Len()) >= lb.maxSize {
 		s += "\n[stderr truncated at " + fmt.Sprintf("%d", lb.maxSize) + " bytes]"
+	}
+	if lb.writeErr {
+		s += "\n[stderr capture encountered write error]"
 	}
 	return s
 }

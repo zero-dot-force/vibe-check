@@ -72,6 +72,25 @@ func TestValidateProjectPath_FileNotDirectory(t *testing.T) {
 	}
 }
 
+func TestValidateProjectPath_SymlinkResolved(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := dir + "/target"
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir failed: %v", err)
+	}
+	link := dir + "/link"
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink failed: %v", err)
+	}
+
+	// Symlinks should be resolved without error when pointing to valid directories.
+	if err := ValidateProjectPath(link); err != nil {
+		t.Errorf("ValidateProjectPath(symlink to dir) returned unexpected error: %v", err)
+	}
+}
+
 // TestSanitizeEnvironment_DefaultsIncluded verifies that PATH, HOME, and LANG
 // are included in the sanitized environment. Not parallel because t.Setenv
 // modifies process-level state.
@@ -192,6 +211,16 @@ func TestIsBlockedEnv_Cases(t *testing.T) {
 		{name: "safe variable HOME", envVar: "HOME", blocked: false},
 		{name: "case insensitive", envVar: "github_token", blocked: true},
 		{name: "unrelated variable", envVar: "GOPATH", blocked: false},
+		{name: "azure prefix", envVar: "AZURE_CLIENT_SECRET", blocked: true},
+		{name: "arm prefix", envVar: "ARM_CLIENT_SECRET", blocked: true},
+		{name: "gcloud prefix", envVar: "GCLOUD_SERVICE_KEY", blocked: true},
+		{name: "google app credentials", envVar: "GOOGLE_APPLICATION_CREDENTIALS", blocked: true},
+		{name: "api key prefix", envVar: "API_KEY_PROD", blocked: true},
+		{name: "credentials prefix", envVar: "CREDENTIALS_FILE", blocked: true},
+		{name: "ssh auth sock exact", envVar: "SSH_AUTH_SOCK", blocked: true},
+		{name: "ssh agent pid exact", envVar: "SSH_AGENT_PID", blocked: true},
+		{name: "database url exact", envVar: "DATABASE_URL", blocked: true},
+		{name: "redis url exact", envVar: "REDIS_URL", blocked: true},
 	}
 
 	for _, tt := range tests {

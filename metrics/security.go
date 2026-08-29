@@ -13,6 +13,10 @@ import (
 var blockedEnvPrefixes = []string{
 	"AWS_SECRET",
 	"AWS_SESSION",
+	"AZURE_",
+	"ARM_",
+	"GOOGLE_APPLICATION_CREDENTIALS",
+	"GCLOUD_",
 	"GITHUB_TOKEN",
 	"GH_TOKEN",
 	"GITLAB_TOKEN",
@@ -22,6 +26,8 @@ var blockedEnvPrefixes = []string{
 	"TOKEN_",
 	"PASSWORD_",
 	"PRIVATE_KEY",
+	"API_KEY",
+	"CREDENTIALS",
 }
 
 // blockedEnvExact contains environment variable names that MUST NOT be passed
@@ -34,6 +40,10 @@ var blockedEnvExact = []string{
 	"GITLAB_TOKEN",
 	"NPM_TOKEN",
 	"DOCKER_PASSWORD",
+	"SSH_AUTH_SOCK",
+	"SSH_AGENT_PID",
+	"DATABASE_URL",
+	"REDIS_URL",
 }
 
 // allowedEnvDefaults contains the environment variables included by default
@@ -46,8 +56,8 @@ var allowedEnvDefaults = []string{
 }
 
 // ValidateProjectPath checks that a project path is safe to pass to an analyzer.
-// It rejects paths containing ".." traversal components and verifies the path
-// exists and is a directory.
+// It rejects paths containing ".." traversal components, resolves symlinks to
+// prevent symlink-based traversal, and verifies the path exists and is a directory.
 func ValidateProjectPath(path string) error {
 	if path == "" {
 		return fmt.Errorf("validate project path: path is empty")
@@ -56,7 +66,12 @@ func ValidateProjectPath(path string) error {
 	// Check for path traversal components in the original path before cleaning.
 	// filepath.Clean resolves ".." components, so we must check the raw input
 	// to detect traversal attempts like "/tmp/../etc/passwd".
-	parts := strings.Split(path, string(filepath.Separator))
+	//
+	// Split on both '/' and the platform separator to handle Windows-style
+	// paths on all platforms. On Unix filepath.Separator is '/', so splitParts
+	// handles both cases uniformly.
+	normalized := strings.ReplaceAll(path, "\\", "/")
+	parts := strings.Split(normalized, "/")
 	for _, part := range parts {
 		if part == ".." {
 			return fmt.Errorf("validate project path: path contains \"..\" traversal component: %s", path)
@@ -64,7 +79,18 @@ func ValidateProjectPath(path string) error {
 	}
 
 	cleaned := filepath.Clean(path)
-	info, err := os.Stat(cleaned)
+
+	// Resolve symlinks to prevent symlink-based traversal where a symlink
+	// at an innocent path points to a sensitive directory.
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("validate project path: path does not exist: %s", path)
+		}
+		return fmt.Errorf("validate project path: resolve symlinks: %w", err)
+	}
+
+	info, err := os.Stat(resolved)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("validate project path: path does not exist: %s", path)

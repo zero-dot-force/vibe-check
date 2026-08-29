@@ -6,8 +6,8 @@ import (
 )
 
 // Validate checks whether the given JSON data conforms to the ModuleGraph schema.
-// It verifies required fields, value types, and enum constraints without relying
-// on an external JSON Schema validation library.
+// It verifies required fields, value types, enum constraints, and schema version
+// compatibility without relying on an external JSON Schema validation library.
 // Returns nil if valid, or an error describing the first validation failure.
 func Validate(data []byte) error {
 	if len(data) == 0 {
@@ -19,12 +19,38 @@ func Validate(data []byte) error {
 		return fmt.Errorf("validate: %w", err)
 	}
 
-	// Check required top-level fields.
+	if err := validateTopLevel(raw); err != nil {
+		return err
+	}
+
+	if err := validateModules(raw); err != nil {
+		return err
+	}
+
+	if err := validateCycles(raw); err != nil {
+		return err
+	}
+
+	return validateWarnings(raw)
+}
+
+// validateTopLevel checks required top-level fields, schema version, language,
+// and status.
+func validateTopLevel(raw map[string]interface{}) error {
 	requiredFields := []string{"schemaVersion", "language", "modules", "cycles", "warnings", "status"}
 	for _, field := range requiredFields {
 		if _, ok := raw[field]; !ok {
 			return fmt.Errorf("validate: missing required field %q", field)
 		}
+	}
+
+	// Validate schemaVersion is a supported value.
+	version, ok := raw["schemaVersion"].(string)
+	if !ok {
+		return fmt.Errorf("validate: field \"schemaVersion\" must be a string")
+	}
+	if version != SchemaVersionCurrent {
+		return fmt.Errorf("validate: unsupported schema version %q (supported: %q)", version, SchemaVersionCurrent)
 	}
 
 	// Validate language is a non-empty string.
@@ -45,7 +71,11 @@ func Validate(data []byte) error {
 		return fmt.Errorf("validate: %w", err)
 	}
 
-	// Validate modules is an array.
+	return nil
+}
+
+// validateModules checks that the modules field is an array of valid module objects.
+func validateModules(raw map[string]interface{}) error {
 	modulesRaw, ok := raw["modules"].([]interface{})
 	if !ok {
 		return fmt.Errorf("validate: field \"modules\" must be an array")
@@ -55,13 +85,19 @@ func Validate(data []byte) error {
 			return fmt.Errorf("validate: %w", err)
 		}
 	}
+	return nil
+}
 
-	// Validate cycles is an array (not null).
+// validateCycles checks that the cycles field is an array (not null).
+func validateCycles(raw map[string]interface{}) error {
 	if _, ok := raw["cycles"].([]interface{}); !ok {
 		return fmt.Errorf("validate: field \"cycles\" must be an array")
 	}
+	return nil
+}
 
-	// Validate warnings is an array (not null).
+// validateWarnings checks that the warnings field is an array of valid warning objects.
+func validateWarnings(raw map[string]interface{}) error {
 	warningsRaw, ok := raw["warnings"].([]interface{})
 	if !ok {
 		return fmt.Errorf("validate: field \"warnings\" must be an array")
@@ -71,7 +107,6 @@ func Validate(data []byte) error {
 			return fmt.Errorf("validate: %w", err)
 		}
 	}
-
 	return nil
 }
 

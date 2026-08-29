@@ -31,6 +31,11 @@ func TestCycle_CanonicalOrdering(t *testing.T) {
 	// This test verifies that a correctly constructed Cycle follows
 	// the canonical ordering convention (smallest path first, no
 	// repeated start node).
+	//
+	// Note: Canonical ordering enforcement (rotation of detected cycles)
+	// is the responsibility of the cycle detection algorithm in language
+	// adapters, not the Cycle type itself. This test validates the
+	// convention on a pre-constructed cycle.
 	cycle := Cycle{"A", "B", "C"}
 
 	// The first element must be the lexicographically smallest.

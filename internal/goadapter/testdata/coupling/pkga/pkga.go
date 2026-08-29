@@ -2,10 +2,10 @@
 //
 // pkga imports pkgb (module-internal) and fmt (stdlib).
 //
-// Expected metrics (module-internal only):
+// Expected metrics:
 //
 //	Ca = 0  (no module-internal package imports pkga)
-//	Ce = 1  (pkga imports pkgb)
+//	Ce = 2  (pkga imports fmt + pkgb)
 package pkga
 
 import (

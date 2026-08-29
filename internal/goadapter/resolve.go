@@ -45,7 +45,7 @@ func resolvePackages(ctx context.Context, projectPath string) (
 		Mode:    loadFlags,
 		Dir:     projectPath,
 		Context: ctx,
-		Env:     metrics.SanitizeEnvironment([]string{"GOPATH", "GOROOT", "GOMODCACHE", "GOPROXY", "GONOSUMCHECK", "GOFLAGS", "GOMOD"}),
+		Env:     metrics.SanitizeEnvironment([]string{"GOPATH", "GOROOT", "GOMODCACHE", "GOPROXY", "GONOSUMCHECK", "GOMOD"}),
 		Tests:   false,
 	}
 
@@ -103,18 +103,12 @@ func resolvePackages(ctx context.Context, projectPath string) (
 }
 
 // countCe counts the efferent coupling for a package: the number of distinct
-// non-stdlib imports (both module-internal and external third-party).
-// Stdlib packages are identified by having a nil Module field.
+// imports including standard library, third-party, and module-internal packages.
+// Per Robert C. Martin's definition, Ce counts all outgoing dependencies
+// regardless of their origin. Stdlib and third-party packages are excluded
+// from the module list but still contribute to Ce counts.
 func countCe(pkg *packages.Package) int {
-	count := 0
-	for _, imp := range pkg.Imports {
-		if imp.Module == nil {
-			// Nil Module means stdlib — exclude from Ce.
-			continue
-		}
-		count++
-	}
-	return count
+	return len(pkg.Imports)
 }
 
 // countCa counts the afferent coupling for a package: the number of

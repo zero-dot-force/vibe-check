@@ -2,7 +2,7 @@
 //
 // pkgc imports pkgb (module-internal) and no stdlib packages.
 //
-// Expected metrics (module-internal only):
+// Expected metrics:
 //
 //	Ca = 0  (no module-internal package imports pkgc)
 //	Ce = 1  (pkgc imports pkgb)

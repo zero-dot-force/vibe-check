@@ -2,7 +2,7 @@
 //
 // pkgb is imported by both pkga and pkgc but imports no module-internal packages.
 //
-// Expected metrics (module-internal only):
+// Expected metrics:
 //
 //	Ca = 2  (pkga and pkgc both import pkgb)
 //	Ce = 0  (pkgb imports no module-internal packages)

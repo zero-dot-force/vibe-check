@@ -56,3 +56,4 @@
 - [x] [P] 8.2 Update AGENTS.md project structure section to reflect the new `metrics` package
 
 <!-- spec-review: passed -->
+<!-- code-review: passed -->

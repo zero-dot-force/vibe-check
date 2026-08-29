@@ -37,6 +37,21 @@ description: Run the reviewer governance council to audit codebase or spec compl
 > - [ ] Step 7f: Human confirmation (MANDATORY GATE)
 > - [ ] Step 7g: Post review
 
+### TodoWrite Progress Tracking
+
+Use the **TodoWrite tool** for live session visibility.
+At pipeline start, initialize TodoWrite with all checklist
+items (Phase 1a, Phase 1b, Phase 1c, Steps 2-6,
+Steps 7a-7g) as `pending`. Before starting each item,
+mark it `in_progress`. After completing each item, mark
+it `completed`. This runs alongside the Edit tool
+execution checklist — both MUST be maintained.
+
+On resume from compressed context, re-initialize the
+TodoWrite list from the execution checklist state: items
+marked `[x]` become `completed`, the first unchecked item
+becomes `in_progress`, and remaining unchecked items
+become `pending`.
 
 ## User Input
 

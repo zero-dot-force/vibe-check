@@ -221,7 +221,7 @@ func helperEnvCheck() {
 }
 
 // sendResponse marshals a result and writes a JSON-RPC response to stdout.
-func sendResponse(id *int, result interface{}) {
+func sendResponse(id *int, result any) {
 	resultData, err := json.Marshal(result)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "marshal error: %v\n", err)
@@ -511,6 +511,69 @@ func TestExternalAdapter_ShutdownLifecycle(t *testing.T) {
 
 	if got, want := graph.Language, "test"; got != want {
 		t.Errorf("Language: got %v, want %v", got, want)
+	}
+}
+
+func TestNewExternalAdapter_Defaults(t *testing.T) {
+	t.Parallel()
+
+	adapter := NewExternalAdapter("/bin/echo", "go")
+	if adapter == nil {
+		t.Fatal("NewExternalAdapter returned nil")
+	}
+	if got, want := adapter.Language(), "go"; got != want {
+		t.Errorf("Language(): got %v, want %v", got, want)
+	}
+	if got, want := adapter.analyzeTimeout, defaultAnalyzeTimeout; got != want {
+		t.Errorf("analyzeTimeout: got %v, want %v", got, want)
+	}
+	if got, want := adapter.capabilitiesTimeout, defaultCapabilitiesTimeout; got != want {
+		t.Errorf("capabilitiesTimeout: got %v, want %v", got, want)
+	}
+	if got, want := adapter.shutdownTimeout, defaultShutdownTimeout; got != want {
+		t.Errorf("shutdownTimeout: got %v, want %v", got, want)
+	}
+	if got, want := adapter.maxResponseSize, int64(defaultMaxResponseSize); got != want {
+		t.Errorf("maxResponseSize: got %v, want %v", got, want)
+	}
+	if got, want := adapter.maxStderrSize, int64(defaultMaxStderrSize); got != want {
+		t.Errorf("maxStderrSize: got %v, want %v", got, want)
+	}
+	if adapter.env == nil {
+		t.Error("env should be populated by SanitizeEnvironment(nil), got nil")
+	}
+}
+
+func TestNewExternalAdapter_WithOptions(t *testing.T) {
+	t.Parallel()
+
+	adapter := NewExternalAdapter("/bin/echo", "python",
+		WithAnalyzeTimeout(42*time.Second),
+		WithCapabilitiesTimeout(7*time.Second),
+		WithShutdownTimeout(3*time.Second),
+		WithMaxResponseSize(512),
+		WithMaxStderrSize(256),
+	)
+	if adapter == nil {
+		t.Fatal("NewExternalAdapter returned nil")
+	}
+	if got, want := adapter.Language(), "python"; got != want {
+		t.Errorf("Language(): got %v, want %v", got, want)
+	}
+	if got, want := adapter.analyzeTimeout, 42*time.Second; got != want {
+		t.Errorf("analyzeTimeout: got %v, want %v", got, want)
+	}
+	if got, want := adapter.capabilitiesTimeout, 7*time.Second; got != want {
+		t.Errorf("capabilitiesTimeout: got %v, want %v", got, want)
+	}
+	if got, want := adapter.shutdownTimeout, 3*time.Second; got != want {
+		t.Errorf("shutdownTimeout: got %v, want %v", got, want)
+	}
+	if got, want := adapter.maxResponseSize, int64(512); got != want {
+		t.Errorf("maxResponseSize: got %v, want %v", got, want)
+	}
+	if got, want := adapter.maxStderrSize, int64(256); got != want {
+		t.Errorf("maxStderrSize: got %v, want %v", got, want)
 	}
 }
 

@@ -30,6 +30,10 @@ func TestRegistry_RegisterAndGet(t *testing.T) {
 	t.Parallel()
 
 	reg := NewRegistry()
+	if reg == nil {
+		t.Fatal("NewRegistry() returned nil")
+	}
+
 	adapter := &mockAdapter{
 		language:     "go",
 		capabilities: []Capability{CapAfferentCoupling, CapEfferentCoupling},

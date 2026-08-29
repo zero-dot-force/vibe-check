@@ -1,5 +1,11 @@
 package metrics
 
+// SchemaVersionCurrent is the current schema version for ModuleGraph output.
+// Consumers should check this value before processing to detect incompatible changes.
+// Version changes follow semantic versioning: minor versions are backward-compatible,
+// major versions may contain breaking changes.
+const SchemaVersionCurrent = "1.0"
+
 // ModuleGraph represents the complete analysis result for a project.
 // It contains all modules with their computed metrics, detected circular
 // dependencies, and any warnings produced during analysis.

@@ -82,15 +82,27 @@ func TestSanitizeEnvironment_DefaultsIncluded(t *testing.T) {
 
 	env := SanitizeEnvironment(nil)
 
-	found := make(map[string]bool)
+	found := make(map[string]string)
 	for _, entry := range env {
-		key, _, _ := strings.Cut(entry, "=")
-		found[key] = true
+		key, val, _ := strings.Cut(entry, "=")
+		found[key] = val
 	}
 
 	for _, required := range []string{"PATH", "HOME", "LANG"} {
-		if !found[required] {
+		if _, ok := found[required]; !ok {
 			t.Errorf("SanitizeEnvironment(nil) missing required variable %q", required)
+		}
+	}
+
+	// Verify values are preserved correctly.
+	expected := map[string]string{
+		"PATH": "/usr/bin:/bin",
+		"HOME": "/home/testuser",
+		"LANG": "en_US.UTF-8",
+	}
+	for key, wantVal := range expected {
+		if gotVal, ok := found[key]; ok && gotVal != wantVal {
+			t.Errorf("SanitizeEnvironment variable %q: got %q, want %q", key, gotVal, wantVal)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -158,16 +159,19 @@ func TestValidate_InvalidInputs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		data string
+		name    string
+		data    string
+		wantErr string
 	}{
 		{
-			name: "empty input",
-			data: "",
+			name:    "empty input",
+			data:    "",
+			wantErr: "empty input",
 		},
 		{
-			name: "malformed JSON",
-			data: `{invalid}`,
+			name:    "malformed JSON",
+			data:    `{invalid}`,
+			wantErr: "validate:",
 		},
 		{
 			name: "missing language field",
@@ -178,6 +182,7 @@ func TestValidate_InvalidInputs(t *testing.T) {
 				"warnings": [],
 				"status": "complete"
 			}`,
+			wantErr: "missing required field \"language\"",
 		},
 		{
 			name: "null warnings",
@@ -189,6 +194,7 @@ func TestValidate_InvalidInputs(t *testing.T) {
 				"warnings": null,
 				"status": "complete"
 			}`,
+			wantErr: "\"warnings\" must be an array",
 		},
 		{
 			name: "invalid status value",
@@ -200,9 +206,10 @@ func TestValidate_InvalidInputs(t *testing.T) {
 				"warnings": [],
 				"status": "unknown"
 			}`,
+			wantErr: "invalid status",
 		},
 		{
-			name: "missing metric field on module",
+			name: "missing lcom field on module",
 			data: `{
 				"schemaVersion": "1.0",
 				"language": "go",
@@ -222,6 +229,25 @@ func TestValidate_InvalidInputs(t *testing.T) {
 				"warnings": [],
 				"status": "complete"
 			}`,
+			wantErr: "missing required field \"lcom\"",
+		},
+		{
+			name: "missing path field on module",
+			data: `{
+				"schemaVersion": "1.0",
+				"language": "go",
+				"modules": [{
+					"name": "foo",
+					"ca": 0, "ce": 0,
+					"instability": 0, "abstractness": 0, "distance": 0, "lcom": 0,
+					"exportedTypes": 0, "abstractTypes": 0,
+					"zone": "normal"
+				}],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete"
+			}`,
+			wantErr: "missing required field \"path\"",
 		},
 		{
 			name: "invalid zone value",
@@ -231,20 +257,64 @@ func TestValidate_InvalidInputs(t *testing.T) {
 				"modules": [{
 					"path": "foo",
 					"name": "foo",
-					"ca": 0,
-					"ce": 0,
-					"instability": 0,
-					"abstractness": 0,
-					"distance": 0,
-					"lcom": 0,
-					"exportedTypes": 0,
-					"abstractTypes": 0,
+					"ca": 0, "ce": 0,
+					"instability": 0, "abstractness": 0, "distance": 0, "lcom": 0,
+					"exportedTypes": 0, "abstractTypes": 0,
 					"zone": "invalid-zone"
 				}],
 				"cycles": [],
 				"warnings": [],
 				"status": "complete"
 			}`,
+			wantErr: "invalid zone",
+		},
+		{
+			name: "warning missing code field",
+			data: `{
+				"schemaVersion": "1.0",
+				"language": "go",
+				"modules": [],
+				"cycles": [],
+				"warnings": [{"message": "test warning"}],
+				"status": "complete"
+			}`,
+			wantErr: "missing required field \"code\"",
+		},
+		{
+			name: "warning missing message field",
+			data: `{
+				"schemaVersion": "1.0",
+				"language": "go",
+				"modules": [],
+				"cycles": [],
+				"warnings": [{"code": "W001"}],
+				"status": "complete"
+			}`,
+			wantErr: "missing required field \"message\"",
+		},
+		{
+			name: "warning is not an object",
+			data: `{
+				"schemaVersion": "1.0",
+				"language": "go",
+				"modules": [],
+				"cycles": [],
+				"warnings": ["not-an-object"],
+				"status": "complete"
+			}`,
+			wantErr: "must be an object",
+		},
+		{
+			name: "valid warning passes",
+			data: `{
+				"schemaVersion": "1.0",
+				"language": "go",
+				"modules": [],
+				"cycles": [],
+				"warnings": [{"code": "W001", "message": "test"}],
+				"status": "complete"
+			}`,
+			wantErr: "",
 		},
 	}
 
@@ -252,8 +322,17 @@ func TestValidate_InvalidInputs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := Validate([]byte(tt.data))
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("Validate returned unexpected error: %v", err)
+				}
+				return
+			}
 			if err == nil {
-				t.Errorf("Validate returned nil error for %q, want non-nil", tt.name)
+				t.Fatalf("Validate returned nil error, want error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Validate error = %v, want error containing %q", err, tt.wantErr)
 			}
 		})
 	}

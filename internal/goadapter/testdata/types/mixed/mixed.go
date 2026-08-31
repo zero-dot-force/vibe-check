@@ -3,8 +3,11 @@
 //
 // Expected metrics:
 //
-//	ExportedTypes  = 6  (Reader, Writer, Point, Config, Pair, Alias)
+//	ExportedTypes  = 7  (Reader, Writer, Point, Config, Pair, Alias, IReader)
 //	AbstractTypes  = 2  (Reader, Writer — interfaces)
+//
+// IReader is an alias to an interface but is classified as CONCRETE per the
+// go-adapter spec: aliases never contribute to AbstractTypes.
 //
 // Unexported types (internal) are excluded from both counts.
 package mixed
@@ -47,6 +50,11 @@ type Pair struct {
 
 // Alias is a concrete type alias for string.
 type Alias = string
+
+// IReader is a type alias to the exported Reader interface. Although it aliases
+// an interface, it MUST be classified as concrete: aliases introduce no new
+// abstract type and never contribute to AbstractTypes.
+type IReader = Reader
 
 // internal is an unexported struct excluded from exported type counts.
 type internal struct { //nolint:unused // exists to test unexported exclusion

@@ -46,9 +46,11 @@ afferent coupling (Ca) and efferent coupling (Ce) for each package.
 
 ### Requirement: Adapter counts exported and abstract types
 
-The adapter MUST walk the AST of each package to count exported type declarations.
-Exported interfaces MUST be counted as abstract types. All other exported type
-declarations (structs, named types, type aliases) MUST be counted as concrete types.
+The adapter MUST inspect the type-checker scope of each package to count exported type
+declarations. An exported type MUST be counted as abstract when its underlying type is an
+interface (an interface declaration, or a defined type whose underlying type is an
+interface). All other exported types — structs, other named types, and type aliases
+(including an alias to an interface) — MUST be counted as concrete.
 
 #### Scenario: Interface counted as abstract
 
@@ -97,7 +99,7 @@ each `ModuleResult`. The adapter MUST NOT reimplement these computations.
 The adapter MUST compute LCOM4 (Hitz & Montazeri 1995) for each package. LCOM4
 MUST be calculated as the number of connected components in a graph where nodes are
 exported methods (functions with a receiver of an exported type) and edges connect
-methods that access the same struct field or package-level variable.
+methods that access at least one common struct field.
 
 #### Scenario: Fully cohesive package
 
@@ -127,8 +129,9 @@ methods that access the same struct field or package-level variable.
 
 The adapter MUST detect circular dependencies in the package import graph using
 Tarjan's strongly connected components algorithm. Each SCC with more than one package
-MUST be reported as a `metrics.Cycle`, ordered canonically (starting from the
-lexicographically smallest module path).
+MUST be reported as a `metrics.Cycle` — a deterministic, lexicographically-sorted set of
+the member package paths (the ordering carries no traversal meaning). The slice of
+cycles is itself sorted by first element.
 
 #### Scenario: No cycles in valid Go code
 
@@ -227,10 +230,14 @@ error wrapping the context error. Partial results MUST NOT be returned on cancel
 
 ### Requirement: Adapter handles total load failure
 
-When `packages.Load` returns zero packages or returns packages where all have errors,
-the adapter MUST return an appropriate error rather than an empty `ModuleGraph`.
-When individual packages have nil type information (`pkg.Types == nil`), the adapter
-MUST set ExportedTypes and AbstractTypes to 0, LCOM to 0, and add a warning.
+When `packages.Load` returns zero packages, or returns packages where every package has
+load/type errors OR nil type information (i.e., none can be type-checked), the adapter
+MUST return an appropriate error rather than an empty or all-zeroed `ModuleGraph`.
+In a partial build — where at least one package type-checks — individual packages that
+have nil type information (`pkg.Types == nil`) MUST instead get ExportedTypes=0,
+AbstractTypes=0, LCOM=0, and a warning. Note: when a single package with nil type
+information is the only package, this yields the total-load-failure error rather than a
+single zeroed-module graph.
 
 #### Scenario: No Go files in target directory
 
@@ -240,17 +247,20 @@ MUST set ExportedTypes and AbstractTypes to 0, LCOM to 0, and add a warning.
 
 #### Scenario: Package with nil type information
 
-- **GIVEN** a package where type-checking fails (e.g., missing dependency)
+- **GIVEN** a multi-package module in which one package fails to type-check (e.g., missing dependency) while at least one other package type-checks
 - **WHEN** `Analyze` is called
-- **THEN** the adapter MUST set ExportedTypes=0, AbstractTypes=0, LCOM=0 for that package, and add a warning with the package path
+- **THEN** the adapter MUST set ExportedTypes=0, AbstractTypes=0, LCOM=0 for the failing package, and add a warning with the package path
 
 ### Requirement: Adapter populates Go-specific extensions
 
 The adapter MUST populate the `Extensions` field on each `ModuleResult` with
 Go-specific metrics namespaced under the `go.` prefix. Extensions are language-specific
-and do not modify the universal model. The adapter MUST declare `go.interfaceWidth`
-and `go.interfaceProximity` as optional capabilities (these capability constants live
-in the adapter package, not in the universal `metrics` package).
+and do not modify the universal model. The adapter MUST declare the extension
+capabilities as package-level constants — `CapInterfaceWidth` (`"go.interfaceWidth"`) and
+`CapInterfaceProximity` (`"go.interfaceProximity"`) — and expose them via the
+`ExtensionCapabilities() []string` accessor, separately from the universal
+`Capabilities()` method. These constants live in the adapter package, not in the
+universal `metrics` package.
 
 #### Scenario: Extensions present in output
 

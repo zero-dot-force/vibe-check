@@ -48,11 +48,14 @@ func TestCountTypes_Mixed(t *testing.T) {
 	pkg := loadTestPackage(t, "types", "mixed")
 	exported, abstract := countTypes(pkg)
 
-	if exported != 6 {
-		t.Errorf("ExportedTypes: got %d, want %d", exported, 6)
+	// The mixed fixture declares 7 exported types (Reader, Writer, Point,
+	// Config, Pair, Alias, IReader). Only Reader and Writer are abstract.
+	// IReader aliases an interface but MUST be counted concrete per spec.
+	if exported != 7 {
+		t.Errorf("ExportedTypes: got %d, want %d", exported, 7)
 	}
 	if abstract != 2 {
-		t.Errorf("AbstractTypes: got %d, want %d", abstract, 2)
+		t.Errorf("AbstractTypes: got %d, want %d (alias-to-interface must NOT be abstract)", abstract, 2)
 	}
 }
 

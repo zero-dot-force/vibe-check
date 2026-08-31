@@ -59,7 +59,7 @@ with how Go developers reason about coupling.
 ### D2: `golang.org/x/tools/go/packages` for dependency resolution
 
 **Decision**: Use `packages.Load` with `NeedName | NeedImports | NeedTypes | NeedSyntax |
-NeedTypesInfo` mode flags to get type-aware dependency and type information. `NeedTypesInfo`
+NeedTypesInfo | NeedModule` mode flags to get type-aware dependency and type information. `NeedTypesInfo`
 provides the `types.Info` mapping from AST nodes to resolved types, which is required for
 accurate LCOM4 field-access resolution in method bodies.
 
@@ -69,20 +69,22 @@ Raw `go list` output lacks type information needed for abstractness and LCOM com
 
 **Alternatives considered**:
 - `go list -json`: Missing type info (exported/abstract type counts, method-field graphs).
-- `go/build`: Deprecated in favor of `go/packages`.
+- `go/build`: not module-aware; lacks type info.
 - `go/ast` + manual resolution: Reimplements what `go/packages` already provides.
 
-### D3: Abstractness via AST type classification
+### D3: Abstractness via type-checker scope classification
 
-**Decision**: Walk the AST of each package to count exported types and classify
-interfaces as abstract types. An exported type with at least one method in its method
-set is counted. Interfaces are abstract; structs, named types, and type aliases
-are concrete.
+**Decision**: Inspect each package's type-checker scope (`pkg.Types.Scope()`) to count
+exported type declarations and classify types whose underlying type is an interface as
+abstract. Every exported type declaration is counted. A type is abstract when its
+underlying type is an interface (an interface declaration, or a defined type such as
+`type Z SomeInterface`); structs, other named types, and type aliases (including an
+alias to an interface) are concrete.
 
 **Rationale**: Go has a single mechanism for abstraction — interfaces. Unlike Java/C#
 there are no abstract classes. This makes classification unambiguous:
 `ExportedTypes` = count of all exported type declarations,
-`AbstractTypes` = count of exported interface declarations.
+`AbstractTypes` = count of exported non-alias types whose underlying type is an interface.
 
 ### D4: LCOM4 via method-field connected components
 
@@ -91,8 +93,8 @@ and edges connect methods that share field access. LCOM4 = number of connected
 components in this graph.
 
 **Rationale**: LCOM4 (Hitz & Montazeri 1995) uses connected-component semantics which
-are well-defined and deterministic. For Go, "fields" are package-level variables and
-struct fields accessed by methods. Methods sharing no state form separate components,
+are well-defined and deterministic. For Go, "fields" are struct fields accessed by
+methods. Methods sharing no state form separate components,
 indicating the package should potentially be split.
 
 **Scope boundary**: LCOM is computed per package. Methods are functions with a receiver
@@ -132,7 +134,7 @@ subcommand. Flags on the `analyze` command:
 - `--no-circular-deps` — fail if any cycles detected
 - `--max-lcom <int>` — fail if any module's LCOM exceeds this value
 - `--timeout <duration>` — maximum analysis time (e.g., `5m`, `30s`); no timeout by default
-- `--json` — JSON output (default and only format for P0; flag exists for future-proofing)
+- (No `--json` flag: JSON is the sole output format for P0; a format selector is intentionally deferred to future work.)
 
 Exit codes:
 - 0: success, no threshold violations
@@ -273,7 +275,9 @@ and assert JSON output is byte-identical, following the pattern in
 
 **CLI tests coverage target**: >= 80% line coverage for `cmd/vibe-check/`.
 
-**Coverage ratchet**: Enforced by CI via `go test -coverprofile`.
+**Coverage profile**: CI generates a coverage profile (`go test -race -count=1
+-coverprofile=coverage.out ./...`) but does not yet enforce a coverage ratchet or a
+minimum-threshold gate. Ratchet/threshold enforcement is a follow-up.
 
 **Module ordering**: The adapter MUST sort `Modules` by `Module.Path` in lexicographic
 order before returning the `ModuleGraph` to ensure deterministic output across runs.
@@ -283,7 +287,9 @@ order before returning the `ModuleGraph` to ensure deterministic output across r
 **Memory consumption**: `go/packages` with `NeedSyntax | NeedTypes` loads full ASTs and
 type information into memory for all requested packages simultaneously. For large
 codebases (1000+ packages), expect approximately 1-2 MB per package. Users analyzing
-large monorepos should scope analysis to specific packages rather than `./...`.
+large monorepos should expect higher memory use; pointing `analyze` at a specific
+subdirectory (rather than the repository root) reduces the package set loaded, and
+`--timeout` bounds runtime.
 
 **Error messages**: Error messages MUST include the operation that failed, the underlying
 cause, and a suggested remediation when determinable (e.g., "failed to load packages:
@@ -291,8 +297,12 @@ go.mod not found in /path — ensure the target directory contains a Go module")
 
 **Version embedding**: The root command supports `--version` via cobra's built-in version
 flag. Version, commit hash, and build date are embedded at build time via ldflags
-(`-ldflags "-X main.version=... -X main.commit=... -X main.date=..."`). The version
-output format MUST be: `vibe-check version <version> (commit <hash>, built <date>)`.
+(`-ldflags "-X main.version=... -X main.commit=... -X main.date=..."`). When ldflags are
+absent (e.g., `go install github.com/zero-dot-force/vibe-check/cmd/vibe-check@vX`), the
+command falls back to `runtime/debug.ReadBuildInfo()`, reporting the module version from
+build info (plus the `vcs.revision`/`vcs.time` build settings when present, e.g. for VCS
+builds), so `--version` still reports a meaningful version.
+The version output format MUST be: `vibe-check version <version> (commit <hash>, built <date>)`.
 
 **Environment sanitization**: The adapter MUST set `packages.Config.Env` to a sanitized
 environment using `metrics.SanitizeEnvironment` to prevent credential leakage to

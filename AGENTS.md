@@ -6,8 +6,8 @@ Vibe-Check is a design quality and architectural metrics toolkit for
 Go codebases. It computes package-level coupling metrics (afferent/
 efferent coupling, instability, abstractness, distance from main
 sequence), cohesion analysis, and circular dependency detection —
-providing the Martin metrics suite that no single OSS tool currently
-computes for Go.
+providing the full Martin metrics suite, which few OSS tools compute
+for Go.
 
 Vibe-Check also serves as the metrics backbone for the Unbound Force
 ecosystem's entropy sentinel and architectural drift tracking
@@ -237,6 +237,9 @@ hotfixes (retroactively documented).
 ```bash
 # Build
 go build ./...
+
+# Build the CLI binary
+go build ./cmd/vibe-check
 
 # Test (with race detection)
 go test -race -count=1 ./...

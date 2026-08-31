@@ -14,7 +14,7 @@ no value without at least one adapter. AGENTS.md will be updated to reflect this
 
 - Add a Go-native adapter (`internal/goadapter/`) that implements `metrics.Adapter` using
   `golang.org/x/tools/go/packages` for type-aware dependency resolution.
-- Add a `vibe-check analyze [packages...]` CLI command (`cmd/vibe-check/`) using cobra
+- Add a `vibe-check analyze [path]` CLI command (`cmd/vibe-check/`) using cobra
   that invokes the Go adapter, produces JSON output conforming to `metrics.ModuleGraph`,
   and supports CI gate flags for threshold enforcement.
 - Add new external dependencies: `golang.org/x/tools/go/packages`, `github.com/spf13/cobra`.
@@ -55,8 +55,15 @@ no value without at least one adapter. AGENTS.md will be updated to reflect this
 - **CI**: New binary build target; threshold flags enable CI gating in downstream pipelines
 - **Distribution**: `go install github.com/zero-dot-force/vibe-check/cmd/vibe-check@v0.1.0`
   for initial distribution. An initial `v0.1.0` release tag is required for `go install`
-  to work. GoReleaser and release automation tracked as a follow-up change (issue to
-  be filed before PR merge).
+  to resolve.
+- **Follow-up obligations** (issues to file or refresh before PR merge):
+  - Documentation: refresh the scope of the existing docs issue (#18) to cover the new
+    `vibe-check analyze` CLI (usage, flags, exit codes) — it predates this command.
+  - Content: existing blog (#19) and tutorial (#22) issues track ecosystem write-ups.
+  - GoReleaser / release-automation: not yet tracked — file an issue before PR merge.
+  - Website documentation sync: not yet tracked — file an issue before PR merge.
+  - Provenance metadata (Constitution III gap): tracked as a follow-up to emit
+    `producer`, `version`, `timestamp`, and input fields in the `ModuleGraph`.
 
 ## Constitution Alignment
 
@@ -64,8 +71,8 @@ no value without at least one adapter. AGENTS.md will be updated to reflect this
 |-----------|------------|
 | I. Autonomous Collaboration | PASS — Adapter produces self-describing JSON output |
 | II. Composability First | PASS — Implements existing `metrics.Adapter` interface |
-| III. Observable Quality | PASS — JSON output with schema validation; version embedding via ldflags. Provenance metadata in ModuleGraph schema deferred to follow-up (tracked as non-goal with issue reference) |
+| III. Observable Quality | PARTIAL — JSON output with schema validation and `--version` embedding are in place, but provenance metadata (producer, version, timestamp, input) is NOT yet emitted in the `ModuleGraph`. It is deferred to a tracked follow-up issue. |
 | IV. Testability | PASS — Coverage strategy defined in design.md |
 | V. Security by Default | PASS — Path validation via `metrics.ValidateProjectPath`; context cancellation support |
-| VI. Metric Fidelity | PASS — Uses canonical `metrics.Compute*` functions; LCOM4 variant cited |
+| VI. Metric Fidelity | PASS — Uses canonical `metrics.Compute*` functions; LCOM4 (Hitz & Montazeri) variant cited. LCOM4 generic pointer-receiver handling was corrected (e.g., `func (t *T[P]) M()`). |
 | VII. Language Agnosticism | PASS — Adapter pattern; extensions mechanism is language-agnostic (any adapter can use it) |

@@ -33,14 +33,13 @@ func countTypes(pkg *packages.Package) (exportedTypes, abstractTypes int) {
 
 		exportedTypes++
 
-		// Type aliases: check the underlying type of the RHS.
-		// A type alias like `type Foo = SomeInterface` is classified
-		// based on the aliased type. However, most aliases (e.g.,
-		// `type Alias = string`) are concrete.
+		// Type aliases are always classified as concrete per the go-adapter
+		// spec, even when they alias an interface (e.g.,
+		// `type IReader = SomeInterface`). An alias introduces no new abstract
+		// type — it is merely a concrete name for an existing type — so it
+		// counts toward exportedTypes (incremented above) but never
+		// abstractTypes.
 		if tn.IsAlias() {
-			if types.IsInterface(tn.Type()) {
-				abstractTypes++
-			}
 			continue
 		}
 

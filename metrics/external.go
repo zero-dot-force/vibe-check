@@ -219,9 +219,14 @@ func (a *ExternalAdapter) Analyze(ctx context.Context, projectPath string) (*Mod
 		return nil, fmt.Errorf("external analyze: response validation: %w", err)
 	}
 
-	// Step 4: Unmarshal into ModuleGraph.
+	// Step 4: Unmarshal into ModuleGraph using a strict decoder. Rejecting
+	// unknown fields enforces the schema's additionalProperties:false at the
+	// untrusted subprocess boundary: an analyzer that emits unexpected fields is
+	// rejected rather than having them silently ignored.
 	var graph ModuleGraph
-	if err := json.Unmarshal(analyzeResp.Result, &graph); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(analyzeResp.Result))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&graph); err != nil {
 		return nil, fmt.Errorf("external analyze: unmarshal response: %w", err)
 	}
 

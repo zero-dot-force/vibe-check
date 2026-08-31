@@ -7,6 +7,21 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+// Extension capability identifiers for Go-specific metrics. These are optional
+// capabilities beyond the universal metrics.Cap* set defined in the metrics
+// package. They live in the adapter package because they are language-specific,
+// and are surfaced via [Adapter.ExtensionCapabilities] rather than the core
+// [Adapter.Capabilities]. Each constant also serves as the key under which its
+// value is stored in a ModuleResult's Extensions map.
+const (
+	// CapInterfaceWidth is the extension capability and Extensions map key for
+	// per-interface flattened method counts (map[string]int).
+	CapInterfaceWidth = "go.interfaceWidth"
+	// CapInterfaceProximity is the extension capability and Extensions map key
+	// for per-interface "producer"/"consumer" classification (map[string]string).
+	CapInterfaceProximity = "go.interfaceProximity"
+)
+
 // computeExtensions computes Go-specific extension metrics for a package.
 // It populates "go.interfaceWidth" (method count per exported interface) and
 // "go.interfaceProximity" ("producer" or "consumer" per interface).
@@ -73,8 +88,8 @@ func computeExtensions(pkg *packages.Package) map[string]any {
 	}
 
 	return map[string]any{
-		"go.interfaceWidth":     widths,
-		"go.interfaceProximity": proximities,
+		CapInterfaceWidth:     widths,
+		CapInterfaceProximity: proximities,
 	}
 }
 
@@ -104,9 +119,9 @@ func computeProximity(iface *types.Interface, concreteTypes []types.Type) string
 //
 // Returns an error if the key is missing or has an unexpected type.
 func InterfaceWidths(extensions map[string]any) (map[string]int, error) {
-	raw, ok := extensions["go.interfaceWidth"]
+	raw, ok := extensions[CapInterfaceWidth]
 	if !ok {
-		return nil, fmt.Errorf("extension key %q not found", "go.interfaceWidth")
+		return nil, fmt.Errorf("extension key %q not found", CapInterfaceWidth)
 	}
 
 	// Before JSON round-trip: map[string]int.
@@ -121,7 +136,7 @@ func InterfaceWidths(extensions map[string]any) (map[string]int, error) {
 	// After JSON round-trip: map[string]interface{} with float64 values.
 	rawMap, ok := raw.(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("extension key %q: expected map, got %T", "go.interfaceWidth", raw)
+		return nil, fmt.Errorf("extension key %q: expected map, got %T", CapInterfaceWidth, raw)
 	}
 
 	result := make(map[string]int, len(rawMap))
@@ -132,7 +147,7 @@ func InterfaceWidths(extensions map[string]any) (map[string]int, error) {
 		case int:
 			result[k] = n
 		default:
-			return nil, fmt.Errorf("extension key %q: value for %q has unexpected type %T", "go.interfaceWidth", k, v)
+			return nil, fmt.Errorf("extension key %q: value for %q has unexpected type %T", CapInterfaceWidth, k, v)
 		}
 	}
 
@@ -144,9 +159,9 @@ func InterfaceWidths(extensions map[string]any) (map[string]int, error) {
 //
 // Returns an error if the key is missing or has an unexpected type.
 func InterfaceProximities(extensions map[string]any) (map[string]string, error) {
-	raw, ok := extensions["go.interfaceProximity"]
+	raw, ok := extensions[CapInterfaceProximity]
 	if !ok {
-		return nil, fmt.Errorf("extension key %q not found", "go.interfaceProximity")
+		return nil, fmt.Errorf("extension key %q not found", CapInterfaceProximity)
 	}
 
 	// Before JSON round-trip: map[string]string.
@@ -161,14 +176,14 @@ func InterfaceProximities(extensions map[string]any) (map[string]string, error) 
 	// After JSON round-trip: map[string]interface{} with string values.
 	rawMap, ok := raw.(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("extension key %q: expected map, got %T", "go.interfaceProximity", raw)
+		return nil, fmt.Errorf("extension key %q: expected map, got %T", CapInterfaceProximity, raw)
 	}
 
 	result := make(map[string]string, len(rawMap))
 	for k, v := range rawMap {
 		s, ok := v.(string)
 		if !ok {
-			return nil, fmt.Errorf("extension key %q: value for %q has unexpected type %T", "go.interfaceProximity", k, v)
+			return nil, fmt.Errorf("extension key %q: value for %q has unexpected type %T", CapInterfaceProximity, k, v)
 		}
 		result[k] = s
 	}

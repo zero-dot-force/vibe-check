@@ -1,13 +1,14 @@
 package metrics
 
-// Cycle represents a circular dependency between modules as an ordered list
-// of module paths. The cycle starts from the lexicographically smallest module
-// path and does not repeat the start node.
+// Cycle represents a circular dependency between modules as the set of module
+// paths that participate in the cycle. The members are reported as a
+// deterministic, lexicographically-sorted list of package paths. The ordering
+// carries no traversal meaning — it is the sorted membership set — and each
+// member appears exactly once.
 //
-// Example: if modules A→B→C→A form a cycle, it is represented as ["A", "B", "C"].
+// Example: modules that form a cycle among A, B, and C are represented as
+// ["A", "B", "C"] regardless of the direction in which the cycle was traversed.
 //
-// Canonical ordering: when a cycle is detected (e.g., C→A→B→C), it is rotated
-// so that the lexicographically smallest module path appears first, yielding
-// ["A", "B", "C"]. Multiple cycles in a result set are sorted lexicographically
-// by their first element.
+// Multiple cycles in a result set are themselves sorted lexicographically by
+// their first (smallest) element.
 type Cycle []string

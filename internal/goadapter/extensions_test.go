@@ -2,6 +2,7 @@ package goadapter
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -163,5 +164,104 @@ func TestInterfaceProximities_MissingKey(t *testing.T) {
 	_, err := InterfaceProximities(ext)
 	if err == nil {
 		t.Error("expected error for missing key, got nil")
+	}
+}
+
+// TestAdapter_ExtensionCapabilities verifies the exported extension capability
+// constants and the accessor that surfaces them. These are separate from the
+// seven universal capabilities returned by Capabilities.
+func TestAdapter_ExtensionCapabilities(t *testing.T) {
+	t.Parallel()
+
+	if CapInterfaceWidth != "go.interfaceWidth" {
+		t.Errorf("CapInterfaceWidth: got %q, want %q", CapInterfaceWidth, "go.interfaceWidth")
+	}
+	if CapInterfaceProximity != "go.interfaceProximity" {
+		t.Errorf("CapInterfaceProximity: got %q, want %q", CapInterfaceProximity, "go.interfaceProximity")
+	}
+
+	adapter := New()
+	caps := adapter.ExtensionCapabilities()
+	if len(caps) != 2 {
+		t.Fatalf("ExtensionCapabilities count: got %d, want 2", len(caps))
+	}
+
+	want := map[string]bool{CapInterfaceWidth: true, CapInterfaceProximity: true}
+	for _, c := range caps {
+		if !want[c] {
+			t.Errorf("unexpected extension capability: %q", c)
+		}
+		delete(want, c)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing extension capabilities: %v", want)
+	}
+}
+
+// TestInterfaceWidths_WrongContainerType verifies that a non-map value under
+// the interfaceWidth key produces the "expected map" error.
+func TestInterfaceWidths_WrongContainerType(t *testing.T) {
+	t.Parallel()
+
+	ext := map[string]any{CapInterfaceWidth: "not-a-map"}
+
+	_, err := InterfaceWidths(ext)
+	if err == nil {
+		t.Fatal("expected error for wrong container type, got nil")
+	}
+	if !strings.Contains(err.Error(), "expected map") {
+		t.Errorf("error %q does not contain %q", err.Error(), "expected map")
+	}
+}
+
+// TestInterfaceWidths_WrongValueType verifies that a map value whose element is
+// neither float64 nor int produces the "unexpected type" error.
+func TestInterfaceWidths_WrongValueType(t *testing.T) {
+	t.Parallel()
+
+	ext := map[string]any{
+		CapInterfaceWidth: map[string]interface{}{"Reader": "not-a-number"},
+	}
+
+	_, err := InterfaceWidths(ext)
+	if err == nil {
+		t.Fatal("expected error for wrong value type, got nil")
+	}
+	if !strings.Contains(err.Error(), "unexpected type") {
+		t.Errorf("error %q does not contain %q", err.Error(), "unexpected type")
+	}
+}
+
+// TestInterfaceProximities_WrongContainerType verifies that a non-map value
+// under the interfaceProximity key produces the "expected map" error.
+func TestInterfaceProximities_WrongContainerType(t *testing.T) {
+	t.Parallel()
+
+	ext := map[string]any{CapInterfaceProximity: 42}
+
+	_, err := InterfaceProximities(ext)
+	if err == nil {
+		t.Fatal("expected error for wrong container type, got nil")
+	}
+	if !strings.Contains(err.Error(), "expected map") {
+		t.Errorf("error %q does not contain %q", err.Error(), "expected map")
+	}
+}
+
+// TestInterfaceProximities_WrongValueType verifies that a map value whose
+// element is not a string produces the "unexpected type" error.
+func TestInterfaceProximities_WrongValueType(t *testing.T) {
+	t.Parallel()
+
+	ext := map[string]any{
+		CapInterfaceProximity: map[string]interface{}{"Reader": 123},
+	}
+
+	_, err := InterfaceProximities(ext)
+	if err == nil {
+		t.Fatal("expected error for wrong value type, got nil")
+	}
+	if !strings.Contains(err.Error(), "unexpected type") {
+		t.Errorf("error %q does not contain %q", err.Error(), "unexpected type")
 	}
 }

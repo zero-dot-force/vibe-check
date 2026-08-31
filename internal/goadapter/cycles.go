@@ -10,9 +10,10 @@ import (
 // and returns cycles with canonical ordering. Only module-internal edges are
 // considered (edges to packages not in modulePkgs are ignored).
 //
-// Each cycle is rotated so the lexicographically smallest path appears first,
-// per the [metrics.Cycle] contract. The returned slice is sorted by first element.
-// Returns an empty (non-nil) slice if no cycles exist.
+// Each cycle's members are reported as a lexicographically-sorted set of
+// package paths, per the [metrics.Cycle] contract; the ordering does not encode
+// traversal order. The returned slice of cycles is itself sorted by first
+// element. Returns an empty (non-nil) slice if no cycles exist.
 func detectCycles(imports map[string][]string, modulePkgs map[string]bool) []metrics.Cycle {
 	t := &tarjan{
 		imports:    imports,
@@ -105,13 +106,13 @@ func (t *tarjan) strongConnect(v string) {
 	}
 }
 
-// canonicalizeCycle rotates a cycle so the lexicographically smallest element
-// appears first, then sorts the remaining elements in the order they appear
-// in the cycle.
+// canonicalizeCycle returns the SCC members as a deterministic, fully
+// lexicographically-sorted set. Tarjan's algorithm yields SCC members in an
+// order that depends on graph traversal; sorting produces a stable
+// representation independent of traversal order, matching the [metrics.Cycle]
+// contract. The result is the sorted membership set of the cycle, not a
+// traversal path.
 func canonicalizeCycle(scc []string) metrics.Cycle {
-	// Sort the SCC members to find canonical ordering.
-	// Tarjan's returns SCCs in reverse topological order within the component,
-	// so we sort to get a deterministic representation.
 	sorted := make([]string, len(scc))
 	copy(sorted, scc)
 	sort.Strings(sorted)

@@ -10,7 +10,7 @@ const SchemaVersionCurrent = "1.1"
 // It contains all modules with their computed metrics, detected circular
 // dependencies, and any warnings produced during analysis.
 type ModuleGraph struct {
-	// SchemaVersion is the version of the output schema (e.g., "1.0").
+	// SchemaVersion is the version of the output schema (e.g., "1.1").
 	// Consumers use this to detect breaking changes in the JSON structure.
 	SchemaVersion string `json:"schemaVersion"`
 	// Language is the lowercase language identifier (e.g., "go", "python").

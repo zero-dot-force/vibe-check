@@ -530,6 +530,63 @@ func TestValidate_InvalidInputs(t *testing.T) {
 			}`,
 			wantErr: "",
 		},
+		{
+			name: "instability above 1 (out of range)",
+			data: `{
+				"schemaVersion": "1.1",
+				"language": "go",
+				"modules": [{
+					"path": "foo",
+					"name": "foo",
+					"ca": 0, "ce": 0,
+					"instability": 1.5, "abstractness": 0, "distance": 0, "lcom": 0,
+					"exportedTypes": 0, "abstractTypes": 0,
+					"zone": "normal"
+				}],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete"
+			}`,
+			wantErr: "out of range",
+		},
+		{
+			name: "distance below 0 (out of range)",
+			data: `{
+				"schemaVersion": "1.1",
+				"language": "go",
+				"modules": [{
+					"path": "foo",
+					"name": "foo",
+					"ca": 0, "ce": 0,
+					"instability": 0, "abstractness": 0, "distance": -0.5, "lcom": 0,
+					"exportedTypes": 0, "abstractTypes": 0,
+					"zone": "normal"
+				}],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete"
+			}`,
+			wantErr: "out of range",
+		},
+		{
+			name: "negative ca (must be >= 0)",
+			data: `{
+				"schemaVersion": "1.1",
+				"language": "go",
+				"modules": [{
+					"path": "foo",
+					"name": "foo",
+					"ca": -1, "ce": 0,
+					"instability": 0, "abstractness": 0, "distance": 0, "lcom": 0,
+					"exportedTypes": 0, "abstractTypes": 0,
+					"zone": "normal"
+				}],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete"
+			}`,
+			wantErr: "must be >= 0",
+		},
 	}
 
 	for _, tt := range tests {

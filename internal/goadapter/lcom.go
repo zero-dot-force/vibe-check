@@ -27,12 +27,49 @@ func computeLCOM4(pkg *packages.Package) metrics.LCOM {
 	}
 
 	// Phase 1: Collect exported methods and their field accesses.
-	// methodFields maps method index → set of field keys (receiverType.fieldName).
-	type methodInfo struct {
-		name   string
-		fields map[string]bool
+	methods := collectExportedMethods(pkg)
+	if len(methods) == 0 {
+		return 0
 	}
 
+	// Phase 2: Build union-find and merge methods sharing fields.
+	uf := newUnionFind(len(methods))
+
+	// For each pair of methods, check if they share any field.
+	// O(n^2 * f) where n = methods, f = avg fields per method.
+	// Acceptable for typical package sizes.
+	for i := 0; i < len(methods); i++ {
+		for j := i + 1; j < len(methods); j++ {
+			if sharesField(methods[i].fields, methods[j].fields) {
+				uf.union(i, j)
+			}
+		}
+	}
+
+	// Phase 3: Count connected components.
+	roots := make(map[int]bool)
+	for i := range methods {
+		roots[uf.find(i)] = true
+	}
+
+	return metrics.LCOM(len(roots))
+}
+
+// methodInfo captures an exported method's qualified name and the set of struct
+// field keys it accesses. Each methodInfo is a node in the LCOM4 graph; nodes
+// are connected when their field sets overlap.
+type methodInfo struct {
+	name   string
+	fields map[string]bool
+}
+
+// collectExportedMethods walks the package AST and returns one methodInfo per
+// exported method declared on an exported receiver type. It resolves the
+// receiver's base type name (handling value, pointer, and generic receiver
+// forms via resolveReceiverType) and records the struct fields each method
+// body accesses. Package-level functions (no receiver) and methods on
+// unexported types are excluded.
+func collectExportedMethods(pkg *packages.Package) []methodInfo {
 	var methods []methodInfo
 
 	for _, file := range pkg.Syntax {
@@ -67,50 +104,45 @@ func computeLCOM4(pkg *packages.Package) metrics.LCOM {
 		}
 	}
 
-	if len(methods) == 0 {
-		return 0
-	}
-
-	// Phase 2: Build union-find and merge methods sharing fields.
-	uf := newUnionFind(len(methods))
-
-	// For each pair of methods, check if they share any field.
-	// O(n^2 * f) where n = methods, f = avg fields per method.
-	// Acceptable for typical package sizes.
-	for i := 0; i < len(methods); i++ {
-		for j := i + 1; j < len(methods); j++ {
-			if sharesField(methods[i].fields, methods[j].fields) {
-				uf.union(i, j)
-			}
-		}
-	}
-
-	// Phase 3: Count connected components.
-	roots := make(map[int]bool)
-	for i := range methods {
-		roots[uf.find(i)] = true
-	}
-
-	return metrics.LCOM(len(roots))
+	return methods
 }
 
-// resolveReceiverType extracts the type name from a method receiver expression.
-// Handles both value receivers (T) and pointer receivers (*T).
+// resolveReceiverType extracts the base type name from a method receiver
+// expression. It supports every Go receiver form:
+//
+//	func (t T)          Ident                            → "T"
+//	func (t *T)         StarExpr{Ident}                  → "T"
+//	func (t T[P])       IndexExpr{X:Ident}               → "T"
+//	func (t T[P1,P2])   IndexListExpr{X:Ident}           → "T"
+//	func (t *T[P])      StarExpr{IndexExpr{X:Ident}}     → "T"
+//	func (t *T[P1,P2])  StarExpr{IndexListExpr{X:Ident}} → "T"
+//
+// A single pointer indirection is unwrapped first, then the underlying value
+// form is resolved. It returns "" only for genuinely unknown forms.
 func resolveReceiverType(expr ast.Expr) string {
+	// Unwrap a single pointer indirection: *T, *T[P], *T[P1, P2].
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = star.X
+	}
+	return baseTypeName(expr)
+}
+
+// baseTypeName resolves a value-form receiver type expression to its base
+// identifier name. It handles plain identifiers (T) and generic instantiations
+// (T[P] and T[P1, P2]) by extracting the underlying generic type identifier.
+// It returns "" for any other expression form.
+func baseTypeName(expr ast.Expr) string {
 	switch t := expr.(type) {
 	case *ast.Ident:
+		// Value receiver: T.
 		return t.Name
-	case *ast.StarExpr:
-		if ident, ok := t.X.(*ast.Ident); ok {
-			return ident.Name
-		}
 	case *ast.IndexExpr:
-		// Generic type T[P] — extract T.
+		// Single type parameter: T[P] — extract T.
 		if ident, ok := t.X.(*ast.Ident); ok {
 			return ident.Name
 		}
 	case *ast.IndexListExpr:
-		// Generic type T[P1, P2] — extract T.
+		// Multiple type parameters: T[P1, P2] — extract T.
 		if ident, ok := t.X.(*ast.Ident); ok {
 			return ident.Name
 		}

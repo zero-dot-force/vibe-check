@@ -13,6 +13,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -36,12 +37,32 @@ func (e *exitCodeError) Error() string { return e.err.Error() }
 func (e *exitCodeError) Unwrap() error { return e.err }
 
 func main() {
-	if err := rootCmd().Execute(); err != nil {
-		var ece *exitCodeError
-		if errors.As(err, &ece) {
-			os.Exit(ece.code)
-		}
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+	os.Exit(run())
+}
+
+// run executes the root command and returns the process exit code. It is
+// separated from main so the exit-code mapping is unit-testable; main itself
+// only calls os.Exit.
+func run() int {
+	return exitCode(rootCmd().Execute(), os.Stderr)
+}
+
+// exitCode maps a command error to a process exit code:
+//
+//	nil error       → 0 (success)
+//	*exitCodeError  → its carried code (e.g. 1 for policy failures)
+//	any other error → 2 (tool failure), with the error written to stderr
+//
+// Errors carried by *exitCodeError are already reported to stderr by the
+// command layer, so they are not re-printed here.
+func exitCode(err error, stderr io.Writer) int {
+	if err == nil {
+		return 0
 	}
+	var ece *exitCodeError
+	if errors.As(err, &ece) {
+		return ece.code
+	}
+	_, _ = fmt.Fprintln(stderr, err)
+	return 2
 }

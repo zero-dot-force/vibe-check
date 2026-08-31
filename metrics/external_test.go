@@ -33,6 +33,8 @@ func TestHelperProcess(_ *testing.T) {
 		helperOversized()
 	case "env_check":
 		helperEnvCheck()
+	case "unknown_field":
+		helperUnknownField()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown HELPER_MODE: %s\n", mode)
 		os.Exit(2)
@@ -220,6 +222,45 @@ func helperEnvCheck() {
 	}
 }
 
+// helperUnknownField responds to analyze with a schema-valid ModuleGraph that
+// carries an unexpected extra field. The response passes Validate() (which does
+// not enforce additionalProperties) but MUST be rejected by the strict decoder
+// (DisallowUnknownFields) at the trust boundary.
+func helperUnknownField() {
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var req JSONRPCRequest
+		if err := json.Unmarshal(line, &req); err != nil {
+			os.Exit(1)
+		}
+
+		switch req.Method {
+		case "capabilities":
+			sendResponse(req.ID, CapabilitiesResult{
+				Language:        "test",
+				ProtocolVersion: "1.0",
+				Metrics:         []string{"ca"},
+			})
+
+		case "analyze":
+			// Required ModuleGraph fields plus an unexpected top-level key.
+			sendResponse(req.ID, map[string]any{
+				"schemaVersion":   "1.1",
+				"language":        "test",
+				"modules":         []any{},
+				"cycles":          []any{},
+				"warnings":        []any{},
+				"status":          "complete",
+				"unexpectedField": true,
+			})
+
+		case "shutdown":
+			os.Exit(0)
+		}
+	}
+}
+
 // sendResponse marshals a result and writes a JSON-RPC response to stdout.
 func sendResponse(id *int, result any) {
 	resultData, err := json.Marshal(result)
@@ -290,6 +331,33 @@ func TestExternalAdapter_SuccessfulAnalysis(t *testing.T) {
 	}
 	if got, want := mod.Zone, ZoneMainSequence; got != want {
 		t.Errorf("Module.Zone: got %v, want %v", got, want)
+	}
+}
+
+func TestExternalAdapter_RejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+
+	adapter := NewExternalAdapter(os.Args[0], "test",
+		WithAnalyzeTimeout(10*time.Second),
+		WithCapabilitiesTimeout(5*time.Second),
+		WithShutdownTimeout(2*time.Second),
+	)
+	adapter.binaryPath = os.Args[0]
+	adapter.env = []string{
+		"GO_WANT_HELPER_PROCESS=1",
+		"HELPER_MODE=unknown_field",
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+	}
+
+	_, err := adapter.Analyze(context.Background(), projectDir)
+	if err == nil {
+		t.Fatal("Analyze() accepted a response with unknown fields, want error")
+	}
+	if !strings.Contains(err.Error(), "unknown field") {
+		t.Errorf("Analyze() error = %q, want error mentioning 'unknown field'", err.Error())
 	}
 }
 

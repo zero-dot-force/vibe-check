@@ -165,7 +165,46 @@ func validateModule(v interface{}, index int) error {
 		}
 	}
 
+	// Enforce numeric ranges matching modulegraph.schema.json. This hardens the
+	// validator at the trust boundary against out-of-range values from an
+	// untrusted external analyzer. Ratio metrics are bounded to [0, 1]; raw
+	// counts must be non-negative.
+	for _, field := range []string{"instability", "abstractness", "distance"} {
+		val, err := moduleNumber(m, field, index)
+		if err != nil {
+			return err
+		}
+		if val < 0.0 || val > 1.0 {
+			return fmt.Errorf("modules[%d]: field %q value %g out of range [0, 1]", index, field, val)
+		}
+	}
+	for _, field := range []string{"ca", "ce", "lcom", "exportedTypes", "abstractTypes"} {
+		val, err := moduleNumber(m, field, index)
+		if err != nil {
+			return err
+		}
+		if val < 0 {
+			return fmt.Errorf("modules[%d]: field %q value %g must be >= 0", index, field, val)
+		}
+	}
+
 	return nil
+}
+
+// moduleNumber extracts a numeric module field as a float64. JSON unmarshaling
+// represents all numbers as float64, so both integer and ratio fields are read
+// through this helper. It returns an error if the field is missing or is not a
+// JSON number.
+func moduleNumber(m map[string]interface{}, field string, index int) (float64, error) {
+	raw, ok := m[field]
+	if !ok {
+		return 0, fmt.Errorf("modules[%d]: missing required field %q", index, field)
+	}
+	num, ok := raw.(float64)
+	if !ok {
+		return 0, fmt.Errorf("modules[%d]: field %q must be a number", index, field)
+	}
+	return num, nil
 }
 
 // validateWarning checks that a warning element has the required code and message fields.

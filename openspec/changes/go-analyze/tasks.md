@@ -7,8 +7,8 @@
 ## 2. Go Adapter — Dependency Resolution
 
 - [x] 2.1 Implement `internal/goadapter/adapter.go`: `Adapter` struct with `Language()`, `Capabilities()`, and `Analyze()` method skeleton that validates project path via `metrics.ValidateProjectPath` and propagates `context.Context` to `packages.Config.Context`
-- [x] 2.2 Implement `internal/goadapter/resolve.go`: load packages via `packages.Load` with `NeedName|NeedImports|NeedTypes|NeedSyntax|NeedTypesInfo`, filter to module-internal packages, build import adjacency map. Set `packages.Config.Env` to `metrics.SanitizeEnvironment(nil)` to prevent credential leakage.
-- [x] 2.3 Compute Ca/Ce from the import adjacency map: Ce = number of distinct imports (module-internal + external), Ca = number of module-internal packages that import this package
+- [x] 2.2 Implement `internal/goadapter/resolve.go`: load packages via `packages.Load` with `NeedName|NeedImports|NeedTypes|NeedSyntax|NeedTypesInfo|NeedModule`, filter to module-internal packages, build import adjacency map. Set `packages.Config.Env` to `metrics.SanitizeEnvironment(packageEnvAllowlist)` — an explicit allowlist (`GOPATH`, `GOROOT`, `GOMODCACHE`, `GOPROXY`, `GONOSUMCHECK`, `GOMOD`) that deliberately excludes credential-bearing and injection-prone variables such as `GOFLAGS` — to prevent credential leakage.
+- [x] 2.3 Compute Ca/Ce: Ce = `len(pkg.Imports)` (all imports, including standard library and third-party, per Martin's definition); Ca = number of module-internal packages that import this package (only Ca uses the internal import adjacency map)
 - [x] 2.4 Write tests for dependency resolution: use `testdata/` fixture module with known import graph, verify Ca/Ce values, verify stdlib/external exclusion from module list
 
 ## 3. Go Adapter — Type Analysis

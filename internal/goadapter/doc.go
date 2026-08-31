@@ -9,9 +9,12 @@
 //
 // # Type Classification
 //
-// Go interfaces are classified as abstract types. All other exported type
-// declarations (structs, type aliases, named types) are classified as concrete.
-// Unexported types are excluded from both counts.
+// An exported type is classified as abstract when its underlying type is an
+// interface — this covers interface declarations and defined types whose
+// underlying type is an interface (e.g., type Z SomeInterface). All other
+// exported types (structs, other named types, and type aliases, including an
+// alias to an interface) are classified as concrete. Unexported types are
+// excluded from both counts.
 //
 // # LCOM4 Computation
 //
@@ -28,4 +31,12 @@
 //
 // Use [InterfaceWidths] and [InterfaceProximities] to safely extract typed
 // extension values after JSON round-trip.
+//
+// # Security
+//
+// Analysis loads packages with [golang.org/x/tools/go/packages], which invokes
+// the Go toolchain and may execute code (e.g., cgo preprocessing) from the
+// analyzed module. Run vibe-check only on trusted, self-owned code. The adapter
+// sanitizes the subprocess environment via [metrics.SanitizeEnvironment] and
+// excludes GOFLAGS to remove the -toolexec command-execution vector.
 package goadapter

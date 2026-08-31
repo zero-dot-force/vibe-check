@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -733,6 +734,96 @@ func TestRunAnalyze_JSONOutputContainsModules(t *testing.T) {
 		if _, ok := byName[name]; !ok {
 			t.Errorf("expected package %q not found in results", name)
 		}
+	}
+}
+
+// --- Command-level tests: exercise analyzeCmd RunE via Execute() ---
+
+// TestAnalyzeCommand_ExitCodes drives the analyze subcommand through the cobra
+// command (RunE), rather than calling RunAnalyze directly, and asserts the
+// *exitCodeError code returned by Execute(). This covers the RunE wiring:
+// policy violations (exit 1), tool failures (exit 2), and — critically — the
+// Flags().Changed()→pointer conversion that distinguishes an unset threshold
+// from one explicitly set to zero.
+func TestAnalyzeCommand_ExitCodes(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	coupling := couplingFixtureDir(t)
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantErr  bool
+		wantCode int // asserted only when wantErr is true
+	}{
+		{
+			// Explicit zero instability threshold: pkga and pkgc have I=1.0 > 0,
+			// so this is a policy violation. If the flag were treated as unset,
+			// there would be no violation and Execute would return nil.
+			name:     "policy_violation_instability_zero",
+			args:     []string{"analyze", "--max-instability", "0", coupling},
+			wantErr:  true,
+			wantCode: 1,
+		},
+		{
+			// Explicit zero distance threshold is honored: pkgb has D=1.0 > 0.
+			// Pairs with no_thresholds_success below to prove the
+			// Changed()→pointer wiring distinguishes "set to 0" from "not set".
+			name:     "explicit_zero_distance_honored",
+			args:     []string{"analyze", "--max-distance", "0", coupling},
+			wantErr:  true,
+			wantCode: 1,
+		},
+		{
+			// No thresholds set: analysis succeeds with no violations (exit 0).
+			// Proves the "not set" path does not spuriously violate.
+			name:    "no_thresholds_success",
+			args:    []string{"analyze", coupling},
+			wantErr: false,
+		},
+		{
+			// Tool failure: the target directory does not exist (exit 2).
+			name:     "tool_failure_nonexistent_dir",
+			args:     []string{"analyze", "/nonexistent/path/that/does/not/exist"},
+			wantErr:  true,
+			wantCode: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := rootCmd()
+			var out, errOut bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("Execute: unexpected error: %v\nstderr: %s", err, errOut.String())
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("Execute: expected error, got nil")
+			}
+
+			var ece *exitCodeError
+			if !errors.As(err, &ece) {
+				t.Fatalf("Execute: error is not *exitCodeError: %T (%v)", err, err)
+			}
+			if ece.code != tt.wantCode {
+				t.Errorf("exit code: got %d, want %d", ece.code, tt.wantCode)
+			}
+		})
 	}
 }
 

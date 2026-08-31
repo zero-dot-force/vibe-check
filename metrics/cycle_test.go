@@ -26,14 +26,15 @@ func TestCycle_Construction(t *testing.T) {
 func TestCycle_CanonicalOrdering(t *testing.T) {
 	t.Parallel()
 
-	// Per the spec, a cycle C→A→B→C is represented starting from the
-	// lexicographically smallest path: ["A", "B", "C"].
+	// Per the Cycle contract, a cycle's members are reported as a
+	// deterministic, lexicographically-sorted set of package paths:
+	// ["A", "B", "C"]. The ordering carries no traversal meaning.
 	// This test verifies that a correctly constructed Cycle follows
-	// the canonical ordering convention (smallest path first, no
-	// repeated start node).
+	// the sorted-set convention (smallest element first, no repeated
+	// start node).
 	//
-	// Note: Canonical ordering enforcement (rotation of detected cycles)
-	// is the responsibility of the cycle detection algorithm in language
+	// Note: producing the sorted set from detected cycles is the
+	// responsibility of the cycle detection algorithm in language
 	// adapters, not the Cycle type itself. This test validates the
 	// convention on a pre-constructed cycle.
 	cycle := Cycle{"A", "B", "C"}

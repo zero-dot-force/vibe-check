@@ -5,32 +5,90 @@
   "type": "object",
   "required": ["schemaVersion", "language", "modules", "cycles", "warnings", "status"],
   "properties": {
-    "schemaVersion": { "type": "string" },
-    "language": { "type": "string", "minLength": 1 },
+    "schemaVersion": {
+      "type": "string",
+      "enum": ["1.0", "1.1"],
+      "description": "Version of the output schema. Consumers check this to detect breaking changes in the JSON structure."
+    },
+    "language": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Lowercase language identifier (e.g., \"go\", \"python\")."
+    },
     "modules": {
       "type": "array",
+      "description": "Analysis results for each module in the project.",
       "items": {
         "type": "object",
         "required": ["path", "name", "ca", "ce", "instability", "abstractness", "distance", "lcom", "exportedTypes", "abstractTypes", "zone"],
         "properties": {
-          "path": { "type": "string" },
-          "name": { "type": "string" },
-          "ca": { "type": "integer", "minimum": 0 },
-          "ce": { "type": "integer", "minimum": 0 },
-          "instability": { "type": "number", "minimum": 0, "maximum": 1 },
-          "abstractness": { "type": "number", "minimum": 0, "maximum": 1 },
-          "distance": { "type": "number", "minimum": 0, "maximum": 1 },
-          "lcom": { "type": "integer", "minimum": 0 },
-          "exportedTypes": { "type": "integer", "minimum": 0 },
-          "abstractTypes": { "type": "integer", "minimum": 0 },
-          "zone": { "type": "string", "enum": ["main-sequence", "zone-of-pain", "zone-of-uselessness", "normal"] },
-          "extensions": { "type": "object" }
+          "path": {
+            "type": "string",
+            "description": "Unique identifier for this module (e.g., \"github.com/foo/bar\")."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable short name (e.g., \"bar\")."
+          },
+          "ca": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Afferent coupling — the number of modules that depend on this module."
+          },
+          "ce": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Efferent coupling — the number of modules this module depends on."
+          },
+          "instability": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Instability metric I = Ce / (Ca + Ce), in [0, 1]."
+          },
+          "abstractness": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Abstractness A = abstractTypes / totalExported, in [0, 1]."
+          },
+          "distance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Distance from main sequence D = |A + I - 1|, in [0, 1]."
+          },
+          "lcom": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Lack of Cohesion of Methods (LCOM4 variant); the number of connected components."
+          },
+          "exportedTypes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Total count of exported types in this module."
+          },
+          "abstractTypes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Count of abstract types (e.g., Go interfaces, Python ABCs)."
+          },
+          "zone": {
+            "type": "string",
+            "enum": ["main-sequence", "zone-of-pain", "zone-of-uselessness", "normal"],
+            "description": "Classification of the module's position relative to the main sequence."
+          },
+          "extensions": {
+            "type": "object",
+            "description": "Language-specific metric extensions namespaced by language (e.g., \"go.interfaceWidth\")."
+          }
         },
         "additionalProperties": false
       }
     },
     "cycles": {
       "type": "array",
+      "description": "Detected circular dependencies between modules, each reported as a lexicographically-sorted set of module paths.",
       "items": {
         "type": "array",
         "items": { "type": "string" }
@@ -38,18 +96,32 @@
     },
     "warnings": {
       "type": "array",
+      "description": "Language-specific caveats about metric accuracy. Always present (empty when there are none).",
       "items": {
         "type": "object",
         "required": ["code", "message"],
         "properties": {
-          "code": { "type": "string" },
-          "message": { "type": "string" },
-          "module": { "type": "string" }
+          "code": {
+            "type": "string",
+            "description": "Machine-readable warning identifier (e.g., \"load-error\")."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable description of the warning."
+          },
+          "module": {
+            "type": "string",
+            "description": "Path of the affected module (empty if the warning applies globally)."
+          }
         },
         "additionalProperties": false
       }
     },
-    "status": { "type": "string", "enum": ["complete", "partial", "error"] }
+    "status": {
+      "type": "string",
+      "enum": ["complete", "partial", "error"],
+      "description": "Overall analysis outcome."
+    }
   },
   "additionalProperties": false
 }

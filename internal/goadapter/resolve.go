@@ -24,19 +24,33 @@ const loadFlags = packages.NeedName |
 	packages.NeedTypesInfo |
 	packages.NeedModule
 
+// packageEnvAllowlist enumerates the environment variables passed through to
+// go/packages (and any subprocess it spawns) via metrics.SanitizeEnvironment.
+// Only variables required to resolve modules and locate the build cache are
+// included. Credential-bearing and command-injection vectors — notably
+// GOFLAGS — are deliberately excluded. This is an immutable package-level
+// slice, not mutable global state.
+var packageEnvAllowlist = []string{
+	"GOPATH",
+	"GOROOT",
+	"GOMODCACHE",
+	"GOPROXY",
+	"GONOSUMCHECK",
+	"GOMOD",
+}
+
 // resolvePackages loads Go packages from projectPath using go/packages and
-// builds the import adjacency map for coupling analysis. It filters results
-// to module-internal packages and computes Ca/Ce from the import graph.
+// builds the module-internal import adjacency map used to compute Ca/Ce. It
+// filters results to module-internal packages and records warnings for any
+// package that fails to load or type-check.
 //
 // Returns:
 //   - pkgs: loaded module-internal packages (may include packages with errors)
-//   - modulePath: the Go module path (e.g., "github.com/foo/bar")
 //   - imports: adjacency map of module-internal import edges (pkg → its module-internal imports)
 //   - warnings: any non-fatal issues encountered during loading
 //   - err: fatal error if package loading fails entirely
 func resolvePackages(ctx context.Context, projectPath string) (
 	pkgs []*packages.Package,
-	modulePath string,
 	imports map[string][]string,
 	warnings []metrics.Warning,
 	err error,
@@ -45,23 +59,23 @@ func resolvePackages(ctx context.Context, projectPath string) (
 		Mode:    loadFlags,
 		Dir:     projectPath,
 		Context: ctx,
-		Env:     metrics.SanitizeEnvironment([]string{"GOPATH", "GOROOT", "GOMODCACHE", "GOPROXY", "GONOSUMCHECK", "GOMOD"}),
+		Env:     metrics.SanitizeEnvironment(packageEnvAllowlist),
 		Tests:   false,
 	}
 
 	allPkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
-		return nil, "", nil, nil, fmt.Errorf("resolve packages: %w", err)
+		return nil, nil, nil, fmt.Errorf("resolve packages: %w — verify the path is a valid Go module directory containing go.mod and .go files", err)
 	}
 
 	if len(allPkgs) == 0 {
-		return nil, "", nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// Determine module path from the first package with module info.
-	modulePath = detectModulePath(allPkgs)
+	modulePath := detectModulePath(allPkgs)
 	if modulePath == "" {
-		return nil, "", nil, nil, fmt.Errorf("resolve packages: unable to determine module path")
+		return nil, nil, nil, fmt.Errorf("resolve packages: unable to determine module path — ensure the target directory contains a go.mod (run 'go mod init' if missing)")
 	}
 
 	// Filter to module-internal packages and collect warnings for errored packages.
@@ -75,12 +89,25 @@ func resolvePackages(ctx context.Context, projectPath string) (
 		internalSet[pkg.PkgPath] = true
 		internal = append(internal, pkg)
 
+		relPath := relativeModulePath(pkg.PkgPath, modulePath)
+
 		// Collect load/type errors as warnings rather than failing.
 		for _, pkgErr := range pkg.Errors {
-			relPath := relativeModulePath(pkg.PkgPath, modulePath)
 			warnings = append(warnings, metrics.Warning{
 				Code:    "load-error",
 				Message: fmt.Sprintf("package %s: %s", relPath, pkgErr.Msg),
+				Module:  pkg.PkgPath,
+			})
+		}
+
+		// A package with no reported errors but nil type information could not
+		// be type-checked. Record a warning so its zeroed type metrics (emitted
+		// by the adapter per the go-adapter partial-build scenario) are
+		// explained to consumers.
+		if len(pkg.Errors) == 0 && pkg.Types == nil {
+			warnings = append(warnings, metrics.Warning{
+				Code:    "load-error",
+				Message: fmt.Sprintf("package %s: type information unavailable (type-checking did not complete)", relPath),
 				Module:  pkg.PkgPath,
 			})
 		}
@@ -99,7 +126,23 @@ func resolvePackages(ctx context.Context, projectPath string) (
 		imports[pkg.PkgPath] = internalImports
 	}
 
-	return internal, modulePath, imports, warnings, nil
+	return internal, imports, warnings, nil
+}
+
+// anyPackageTypeChecked reports whether at least one package in pkgs was
+// successfully type-checked — that is, it has no load/type errors and non-nil
+// type information. It distinguishes a partial build (at least one usable
+// package, so analysis proceeds with warnings for the rest) from a total load
+// failure (no usable package, so Analyze must return an error rather than a
+// graph of all-zeroed modules). The predicate mirrors the per-package guard in
+// Adapter.Analyze that gates type classification and LCOM computation.
+func anyPackageTypeChecked(pkgs []*packages.Package) bool {
+	for _, pkg := range pkgs {
+		if len(pkg.Errors) == 0 && pkg.Types != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // countCe counts the efferent coupling for a package: the number of distinct

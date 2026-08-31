@@ -168,13 +168,29 @@ func TestAdapter_Determinism(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
+	// Verify byte-identical JSON output across repeated runs over multiple
+	// fixtures. The coupling fixture exercises module ordering; the partial
+	// fixture additionally exercises stable warning ordering (it yields
+	// warnings for its errored package).
+	for _, fixture := range []string{"coupling", "partial"} {
+		t.Run(fixture, func(t *testing.T) {
+			t.Parallel()
+			assertDeterministicAnalyze(t, fixture, 10)
+		})
+	}
+}
+
+// assertDeterministicAnalyze runs Analyze over the named fixture n times and
+// fails if any run's marshaled JSON differs from the first run's output.
+func assertDeterministicAnalyze(t *testing.T, fixture string, n int) {
+	t.Helper()
+
 	adapter := New()
 	ctx := context.Background()
-	dir := fixtureDir(t, "coupling")
+	dir := fixtureDir(t, fixture)
 
-	// Run analysis 10 times and verify byte-identical JSON output.
 	var reference []byte
-	for i := 0; i < 10; i++ {
+	for i := 0; i < n; i++ {
 		graph, err := adapter.Analyze(ctx, dir)
 		if err != nil {
 			t.Fatalf("run %d: Analyze: %v", i, err)
@@ -313,16 +329,71 @@ func TestAdapter_PartialBuild(t *testing.T) {
 		t.Errorf("Warning.Module %q should reference the bad package", w.Module)
 	}
 
-	// The good package should still be in the results.
-	found := false
+	byName := make(map[string]metrics.ModuleResult)
 	for _, m := range graph.Modules {
-		if m.Name == "good" {
-			found = true
+		byName[m.Name] = m
+	}
+
+	// The good package should still be in the results.
+	if _, ok := byName["good"]; !ok {
+		t.Error("good package not found in partial build results")
+	}
+
+	// Per the go-adapter partial-build scenario, the errored package MUST appear
+	// as a zeroed ModuleResult rather than being silently dropped.
+	bad, ok := byName["bad"]
+	if !ok {
+		t.Fatal(`errored package "bad" not found in results; it must appear as a zeroed ModuleResult`)
+	}
+	if bad.ExportedTypes != 0 {
+		t.Errorf("bad.ExportedTypes: got %d, want 0", bad.ExportedTypes)
+	}
+	if bad.AbstractTypes != 0 {
+		t.Errorf("bad.AbstractTypes: got %d, want 0", bad.AbstractTypes)
+	}
+	if bad.LCOM != 0 {
+		t.Errorf("bad.LCOM: got %d, want 0", bad.LCOM)
+	}
+
+	// A warning MUST exist naming the errored package.
+	foundWarning := false
+	for _, w := range graph.Warnings {
+		if w.Module == bad.Path {
+			foundWarning = true
 			break
 		}
 	}
-	if !found {
-		t.Error("good package not found in partial build results")
+	if !foundWarning {
+		t.Errorf("no warning found for errored package %q", bad.Path)
+	}
+}
+
+// TestAdapter_TotalLoadFailure verifies the go-adapter total-load-failure
+// scenario: when packages are found but NONE can be type-checked, Analyze must
+// return an error rather than a graph of all-zeroed modules. Emitting all-zero
+// metrics as if real, when nothing could be analyzed, would violate Metric
+// Fidelity. This is distinct from the partial build (TestAdapter_PartialBuild),
+// where at least one package type-checks and the graph is returned with
+// warnings for the errored packages.
+func TestAdapter_TotalLoadFailure(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	adapter := New()
+	// The allbad fixture contains only packages that import non-existent
+	// packages, so every package fails to type-check.
+	graph, err := adapter.Analyze(context.Background(), fixtureDir(t, "allbad"))
+	if err == nil {
+		t.Fatal("expected error when no package can be type-checked, got nil")
+	}
+	if !errors.Is(err, errTotalLoadFailure) {
+		t.Errorf("expected error wrapping errTotalLoadFailure, got: %v", err)
+	}
+	// A total load failure MUST NOT yield a graph of all-zeroed modules.
+	if graph != nil {
+		t.Errorf("expected nil graph on total load failure, got %d modules", len(graph.Modules))
 	}
 }
 

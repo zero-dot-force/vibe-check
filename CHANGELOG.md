@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `vibe-check diff <base.json> <pr.json>` compares two ModuleGraph JSON
+  snapshots and reports the structural-entropy delta (per-module Ca, Ce,
+  instability, abstractness, distance, and LCOM deltas), new and resolved
+  circular dependencies, an entropy direction (improving/stable/
+  degrading), and a verdict (APPROVE/COMMENT/REQUEST_CHANGES). Protected
+  gate thresholds — ΔInstability ≥ 0.15, ΔDistance ≥ 0.20, ΔLCOM ≥ 2, or a
+  new circular dependency — yield REQUEST_CHANGES; smaller non-zero shifts
+  yield COMMENT; improving or stable yields APPROVE. Exit code is 0
+  whenever both inputs are valid (the verdict travels in the payload, not
+  the exit code); exit code 2 is reserved for missing, unreadable, or
+  schema-invalid input and for a looser-than-default (non-tightening)
+  threshold override. `--json` emits a machine-readable payload; the
+  `--max-instability-delta`, `--max-distance-delta`, and
+  `--max-lcom-delta` overrides are tighten-only.
+- `vibe-check init [path]` deploys the embedded Review Council agent
+  assets into `.opencode/agents/` — skipping existing files by default,
+  overwriting with `--force`, and printing a machine-readable summary of
+  written/skipped/forced files with `--json`. Path defaults to `.`.
+- `divisor-entropy` Review Council agent (embedded source of truth,
+  deployed by `vibe-check init`): measures the base↔PR design-quality
+  delta via `vibe-check analyze` and `vibe-check diff` inside an isolated
+  git worktree and reports a verdict. Runs only on trusted refs.
+- `vibe-check analyze --output <file>` (`-o`) writes the ModuleGraph JSON
+  to a file instead of stdout (stdout remains the default; a failed write
+  exits with code 2 and a stderr diagnostic without emitting partial
+  stdout).
+
+### Changed
+
+- `vibe-check analyze` now forces `GOTOOLCHAIN=local` for its
+  `go/packages` subprocess, so analysis never downloads a toolchain named
+  by a target module's `go.mod`. Trade-off: a trusted module whose
+  `go.mod` `toolchain` directive requires a newer-than-local Go must be
+  built/analyzed manually.
+
 ## [0.1.0] - 2026-08-31
 
 Initial release: package-level design-quality and architectural metrics

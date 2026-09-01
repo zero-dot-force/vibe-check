@@ -241,6 +241,20 @@ go build ./...
 # Build the CLI binary
 go build ./cmd/vibe-check
 
+# Deploy embedded Review Council agent assets into .opencode/agents/ of a project
+go run ./cmd/vibe-check init .            # --force to overwrite, --json for machine output
+
+# Analyze a module and write ModuleGraph JSON to a file (default: stdout)
+go run ./cmd/vibe-check analyze -o graph.json ./...   # --output is the long form
+
+# Compare two ModuleGraph snapshots (base vs PR): entropy delta + verdict
+go run ./cmd/vibe-check diff base.json pr.json        # --json for machine output
+
+# Note: `vibe-check analyze` forces GOTOOLCHAIN=local for its go/packages
+# subprocess, so analysis never downloads a toolchain named by a target
+# module's go.mod. Trade-off: a trusted module whose go.mod `toolchain`
+# directive requires a newer-than-local Go must be built/analyzed manually.
+
 # Test (with race detection)
 go test -race -count=1 ./...
 
@@ -260,7 +274,9 @@ golangci-lint run ./...
 cmd/vibe-check/     # CLI entry point (Layer 3)
   main.go           # Binary entry point with ldflags version embedding
   root.go           # Cobra root command with --version flag
-  analyze.go        # analyze subcommand with threshold flags
+  analyze.go        # analyze subcommand with threshold flags (incl --output/-o)
+  diff.go           # diff subcommand (base vs PR entropy delta + verdict)
+  init.go           # init subcommand (deploys embedded agent assets)
 internal/goadapter/ # Go language adapter (Layer 2)
   adapter.go        # Adapter struct implementing metrics.Adapter
   resolve.go        # Package loading via go/packages
@@ -270,10 +286,18 @@ internal/goadapter/ # Go language adapter (Layer 2)
   extensions.go     # go.interfaceWidth and go.interfaceProximity extensions
   doc.go            # Package-level GoDoc
   testdata/         # Test fixtures (coupling, types, lcom, extensions, partial)
+internal/scaffold/  # Embedded agent-asset deployment for `vibe-check init`
+  doc.go            # Package-level GoDoc
+  embed.go          # //go:embed assets/agents/*.md (embedded source of truth)
+  scaffold.go       # Symlink-safe asset writer (skip/force; 0o755 dirs, 0o644 files)
+  scaffold_test.go  # Writer + embedded-asset contract tests
+  assets/agents/    # Embedded Review Council agent assets
+    divisor-entropy.md  # Structural-entropy divisor agent (source of truth)
 metrics/            # Universal coupling metrics model (Layer 1)
   adapter.go        # Adapter interface and Capability type
   compute.go        # Metric computation functions
   cycle.go          # Cycle type for circular dependency representation
+  delta.go          # GraphDelta + ComputeDelta (base vs PR deltas, entropy direction)
   doc.go            # Package-level GoDoc
   external.go       # ExternalAdapter (JSON-RPC subprocess)
   graph.go          # ModuleGraph and ModuleResult types (with Extensions)
@@ -285,8 +309,10 @@ metrics/            # Universal coupling metrics model (Layer 1)
   security.go       # Path validation and environment sanitization
   validate.go       # JSON schema validation (accepts v1.0 and v1.1)
   values.go         # Named metric types (Instability, Abstractness, etc.)
+  verdict.go        # Verdict + DecideVerdict (protected entropy gate thresholds)
   warning.go        # Warning type for analysis caveats
   zone.go           # Zone and Status types
+  testdata/entropy/ # ModuleGraph diff fixtures + validation README (entropy divisor)
 openspec/           # OpenSpec change artifacts (proposals, specs, tasks)
   changes/          # Individual change directories
   schemas/          # Spec validation schemas
@@ -300,7 +326,10 @@ The architecture follows a three-layer design per the RFC phasing:
 - **Layer 1** (`metrics/`): Language-agnostic universal model — Ca, Ce,
   Instability, Abstractness, Distance from Main Sequence, LCOM4,
   circular dependency detection, JSON schema validation, adapter
-  interface, and security primitives.
+  interface, security primitives, and the base↔PR entropy delta engine
+  (`ComputeDelta`) plus verdict engine (`DecideVerdict`) with protected
+  gate thresholds (ΔInstability ≥ 0.15, ΔDistance ≥ 0.20, ΔLCOM ≥ 2, or a
+  new circular dependency).
 - **Layer 2** (`internal/goadapter/`): Go language adapter implementing
   `metrics.Adapter`. Uses `golang.org/x/tools/go/packages` for
   type-aware dependency resolution, AST-based type classification,
@@ -309,8 +338,11 @@ The architecture follows a three-layer design per the RFC phasing:
   (`go.interfaceWidth`, `go.interfaceProximity`).
 - **Layer 3** (`cmd/vibe-check/`): CLI entry point using cobra. Provides
   `vibe-check analyze` with threshold flags (`--max-instability`,
-  `--max-distance`, `--max-lcom`, `--no-circular-deps`, `--timeout`)
-  and JSON output.
+  `--max-distance`, `--max-lcom`, `--no-circular-deps`, `--timeout`,
+  `--output`/`-o`) and JSON output; `vibe-check diff <base.json> <pr.json>`
+  computing the entropy delta and verdict (with tighten-only threshold
+  overrides); and `vibe-check init [path]` deploying the embedded Review
+  Council agent assets into `.opencode/agents/`.
 
 RFC phasing status:
 

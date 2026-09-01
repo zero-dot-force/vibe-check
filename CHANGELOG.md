@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Agent-design convention pack (`.opencode/uf/packs/agent-design.md`) defining
+  10 structural quality rules (AD-001 through AD-010) covering coupling,
+  cohesion, complexity, naming, file size, duplication, contract coverage, and
+  test assertion depth. Enforcement mapped to vibe-check, gaze, golangci-lint,
+  and review agents. Includes `agent-design-custom.md` placeholder for
+  project-level overrides.
 - `vibe-check diff <base.json> <pr.json>` compares two ModuleGraph JSON
   snapshots and reports the structural-entropy delta (per-module Ca, Ce,
   instability, abstractness, distance, and LCOM deltas), new and resolved

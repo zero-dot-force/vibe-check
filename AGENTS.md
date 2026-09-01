@@ -438,6 +438,8 @@ This repository uses convention packs scaffolded by
 unbound-force. Agents MUST read the applicable pack(s)
 before writing or reviewing code.
 
+- `.opencode/uf/packs/agent-design-custom.md`
+- `.opencode/uf/packs/agent-design.md`
 - `.opencode/uf/packs/ci-custom.md`
 - `.opencode/uf/packs/ci.md`
 - `.opencode/uf/packs/content-custom.md`

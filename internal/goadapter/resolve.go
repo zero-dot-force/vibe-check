@@ -39,6 +39,18 @@ var packageEnvAllowlist = []string{
 	"GOMOD",
 }
 
+// packageEnv builds the environment for the go/packages subprocess. It starts
+// from the sanitized allowlist ([metrics.SanitizeEnvironment]) and appends
+// "GOTOOLCHAIN=local" as the LAST entry so it wins: on exec a duplicated key is
+// resolved last-wins, forcing the local toolchain regardless of the host
+// environment. This blocks a target module's go.mod "toolchain" directive from
+// triggering a Go toolchain download and execution during subprocess package
+// loading. GOTOOLCHAIN is intentionally NOT in packageEnvAllowlist, so no host
+// value ever passes through — the appended value is authoritative.
+func packageEnv() []string {
+	return append(metrics.SanitizeEnvironment(packageEnvAllowlist), "GOTOOLCHAIN=local")
+}
+
 // resolvePackages loads Go packages from projectPath using go/packages and
 // builds the module-internal import adjacency map used to compute Ca/Ce. It
 // filters results to module-internal packages and records warnings for any
@@ -59,7 +71,7 @@ func resolvePackages(ctx context.Context, projectPath string) (
 		Mode:    loadFlags,
 		Dir:     projectPath,
 		Context: ctx,
-		Env:     metrics.SanitizeEnvironment(packageEnvAllowlist),
+		Env:     packageEnv(),
 		Tests:   false,
 	}
 

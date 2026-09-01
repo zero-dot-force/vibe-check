@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1023,5 +1024,138 @@ func TestCheckThresholds(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- Task 2.6: --output / -o flag ---
+
+func TestRunAnalyze_OutputFileWritesGraphNotStdout(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	outPath := filepath.Join(t.TempDir(), "graph.json")
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		Path:       couplingFixtureDir(t),
+		OutputPath: outPath,
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunAnalyze returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode: got %d, want 0", result.ExitCode)
+	}
+
+	// Nothing must be echoed to stdout when writing to a file.
+	if stdout.Len() != 0 {
+		t.Errorf("stdout should be empty when --output is set, got %d bytes", stdout.Len())
+	}
+
+	// The file must contain schema-valid ModuleGraph JSON.
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("output file is empty, expected JSON")
+	}
+	if err := metrics.Validate(data); err != nil {
+		t.Errorf("output file failed schema validation: %v", err)
+	}
+}
+
+func TestRunAnalyze_NoOutputFlagWritesStdout(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Path:   couplingFixtureDir(t),
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunAnalyze returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode: got %d, want 0", result.ExitCode)
+	}
+	if stdout.Len() == 0 {
+		t.Fatal("stdout is empty, expected JSON output when --output is absent")
+	}
+	if err := metrics.Validate(stdout.Bytes()); err != nil {
+		t.Errorf("stdout JSON failed schema validation: %v", err)
+	}
+}
+
+func TestRunAnalyze_UnwritableOutputPathExitsTwo(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	// A path under a nonexistent subdirectory cannot be created by os.WriteFile,
+	// which does not create parent directories.
+	outPath := filepath.Join(t.TempDir(), "nonexistent-subdir", "out.json")
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		Path:       couplingFixtureDir(t),
+		OutputPath: outPath,
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected error for unwritable output path, got nil")
+	}
+	if result.ExitCode != 2 {
+		t.Errorf("ExitCode: got %d, want 2", result.ExitCode)
+	}
+	// No partial graph must be emitted to stdout on output-file failure.
+	if stdout.Len() != 0 {
+		t.Errorf("stdout should be empty on output-file failure, got %d bytes", stdout.Len())
+	}
+}
+
+// TestAnalyzeCommand_OutputFlagWiring drives the -o short flag through the cobra
+// command (Execute) to cover the StringVarP registration and the OutputPath
+// wiring, asserting the file is written and stdout stays empty.
+func TestAnalyzeCommand_OutputFlagWiring(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	outPath := filepath.Join(t.TempDir(), "graph.json")
+	cmd := rootCmd()
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"analyze", "-o", outPath, couplingFixtureDir(t)})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: unexpected error: %v\nstderr: %s", err, errOut.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout should be empty when -o is set, got %d bytes", out.Len())
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if err := metrics.Validate(data); err != nil {
+		t.Errorf("output file failed schema validation: %v", err)
 	}
 }

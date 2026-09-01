@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -24,6 +25,9 @@ type AnalyzeOptions struct {
 	Stderr io.Writer
 	// Path is the project directory to analyze.
 	Path string
+	// OutputPath, when non-empty, names a file to which the ModuleGraph JSON is
+	// written (mode 0o644) instead of Stdout. Empty (the default) writes to Stdout.
+	OutputPath string
 
 	// MaxInstability is the threshold for instability violations.
 	// nil means not set (no threshold check). Must be in [0.0, 1.0].
@@ -97,7 +101,14 @@ func RunAnalyze(ctx context.Context, opts AnalyzeOptions) (*AnalyzeResult, error
 		return &AnalyzeResult{ExitCode: 2}, fmt.Errorf("analyze: %w", ctx.Err())
 	}
 
-	if _, err := fmt.Fprintln(opts.Stdout, string(data)); err != nil {
+	// Step 5b: Emit the graph. With --output set, write to the file and NOTHING
+	// to stdout (not even a partial write on error); otherwise preserve the
+	// stdout default. Threshold checking still runs after a successful write.
+	if opts.OutputPath != "" {
+		if err := os.WriteFile(opts.OutputPath, data, 0o644); err != nil {
+			return &AnalyzeResult{ExitCode: 2}, fmt.Errorf("write output file %s: %w", opts.OutputPath, err)
+		}
+	} else if _, err := fmt.Fprintln(opts.Stdout, string(data)); err != nil {
 		return &AnalyzeResult{ExitCode: 2}, fmt.Errorf("write output: %w", err)
 	}
 
@@ -201,6 +212,7 @@ func analyzeCmd() *cobra.Command {
 		maxLCOM        int
 		noCircularDeps bool
 		timeout        time.Duration
+		output         string
 	)
 
 	cmd := &cobra.Command{
@@ -235,6 +247,7 @@ JSON output is always written to stdout, even when violations are detected.`,
 				Stdout:         cmd.OutOrStdout(),
 				Stderr:         cmd.ErrOrStderr(),
 				Path:           path,
+				OutputPath:     output,
 				NoCircularDeps: noCircularDeps,
 				Timeout:        timeout,
 			}
@@ -278,6 +291,7 @@ JSON output is always written to stdout, even when violations are detected.`,
 	cmd.Flags().IntVar(&maxLCOM, "max-lcom", 0, "Maximum allowed LCOM value (>= 1)")
 	cmd.Flags().BoolVar(&noCircularDeps, "no-circular-deps", false, "Treat circular dependencies as violations")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Analysis timeout (e.g., 30s, 2m)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Write ModuleGraph JSON to file instead of stdout")
 
 	return cmd
 }

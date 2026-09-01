@@ -30,7 +30,10 @@ vibe-check analyze [path]
 ```
 
 `analyze` takes a single optional path to a Go module directory and defaults to the
-current directory (`.`). It writes the analysis as JSON to stdout.
+current directory (`.`). It writes the analysis as JSON to stdout, or to a file with
+`--output`/`-o`. Analysis forces `GOTOOLCHAIN=local` for its internal `go/packages`
+subprocess, so it never downloads a Go toolchain named by the target module's `go.mod`
+(a trusted module that requires a newer-than-local toolchain must be built manually).
 
 ```bash
 # Analyze the current module
@@ -49,6 +52,7 @@ vibe-check analyze ./myproject --max-instability 0.8 --no-circular-deps
 | `--max-lcom` | int | unset (no check) | Fail if any module's LCOM4 exceeds this value. Must be `>= 1`. |
 | `--no-circular-deps` | bool | `false` | Treat any detected circular dependency as a violation. |
 | `--timeout` | duration | none | Bound total analysis time (e.g., `30s`, `2m`). No timeout by default. |
+| `--output`, `-o` | string | stdout | Write the ModuleGraph JSON to a file instead of stdout. Exits `2` (with no partial stdout) if the file cannot be written. |
 | `--version` | — | — | Print version, commit, and build date, then exit. Use on the root command: `vibe-check --version`. |
 
 Threshold comparisons use strict greater-than: a metric exactly equal to the threshold
@@ -113,6 +117,43 @@ Vibe-Check analyzes Go **packages**, but the universal output schema names each 
 analysis a `module`. Throughout vibe-check's output — every `modules[]` entry in the JSON
 and each `VIOLATION: module ...` line on stderr — one `module` corresponds to one Go
 package.
+
+## Comparing snapshots: `vibe-check diff`
+
+`diff` compares two `analyze` JSON snapshots — a base and a PR — and reports the change in
+design-quality metrics plus a verdict:
+
+```bash
+vibe-check analyze --output base.json ./...   # on the base revision
+vibe-check analyze --output pr.json  ./...     # on the PR revision
+vibe-check diff base.json pr.json              # add --json for machine-readable output
+```
+
+`diff` computes per-module deltas (Ca, Ce, instability, abstractness, distance, LCOM), new
+and resolved cycles, an entropy direction (`improving`, `stable`, or `degrading`), and a
+verdict — `APPROVE`, `COMMENT`, or `REQUEST_CHANGES`. The protected gates are
+Δinstability ≥ 0.15, Δdistance ≥ 0.20, ΔLCOM ≥ 2, or a new circular dependency (any of
+which yields `REQUEST_CHANGES`); smaller non-zero shifts yield `COMMENT`; an improving or
+flat delta yields `APPROVE`. A partial/unreliable input is always downgraded to `COMMENT`.
+
+It exits `0` whenever both inputs are valid — the verdict is data in the payload, so a
+`REQUEST_CHANGES` verdict still exits `0` — and `2` when an input is missing, unreadable, or
+schema-invalid, or when a `--max-instability-delta`, `--max-distance-delta`, or
+`--max-lcom-delta` override is looser than the protected default (overrides may only tighten).
+
+## Deploying agents: `vibe-check init`
+
+`init` deploys the embedded Review Council agent assets into a project's `.opencode/agents/`
+directory:
+
+```bash
+vibe-check init [path]     # path defaults to "."; --force to overwrite, --json for machine output
+```
+
+It writes the bundled `divisor-entropy` agent — a structural-entropy reviewer that runs
+`analyze` + `diff` across a base↔PR pair in an isolated worktree — and skips files that
+already exist unless `--force` is given. It exits `0` on success (including when every asset
+is skipped) and `2` on an invalid target path or I/O failure.
 
 ## Known limitations
 

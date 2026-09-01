@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1.1",
+  "language": "go",
+  "modules": [
+    {
+      "path": "example.com/app/a",
+      "name": "a",
+      "ca": 1,
+      "ce": 1,
+      "instability": 0.5,
+      "abstractness": 0.0,
+      "distance": 0.5,
+      "lcom": 1,
+      "exportedTypes": 2,
+      "abstractTypes": 0,
+      "zone": "normal"
+    },
+    {
+      "path": "example.com/app/b",
+      "name": "b",
+      "ca": 1,
+      "ce": 1,
+      "instability": 0.5,
+      "abstractness": 0.0,
+      "distance": 0.5,
+      "lcom": 1,
+      "exportedTypes": 2,
+      "abstractTypes": 0,
+      "zone": "normal"
+    }
+  ],
+  "cycles": [],
+  "warnings": [],
+  "status": "complete"
+}

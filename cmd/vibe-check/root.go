@@ -19,6 +19,8 @@ and circular dependency detection for Go codebases.`,
 	}
 
 	cmd.AddCommand(analyzeCmd())
+	cmd.AddCommand(diffCmd())
+	cmd.AddCommand(initCmd())
 
 	return cmd
 }

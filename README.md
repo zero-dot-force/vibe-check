@@ -141,19 +141,24 @@ It exits `0` whenever both inputs are valid — the verdict is data in the paylo
 schema-invalid, or when a `--max-instability-delta`, `--max-distance-delta`, or
 `--max-lcom-delta` override is looser than the protected default (overrides may only tighten).
 
-## Deploying agents: `vibe-check init`
+## Deploying agents and commands: `vibe-check init`
 
-`init` deploys the embedded Review Council agent assets into a project's `.opencode/agents/`
-directory:
+`init` deploys the embedded agent and command assets into a project's `.opencode/` directory:
 
 ```bash
 vibe-check init [path]     # path defaults to "."; --force to overwrite, --json for machine output
 ```
 
-It writes the bundled `divisor-entropy` agent — a structural-entropy reviewer that runs
-`analyze` + `diff` across a base↔PR pair in an isolated worktree — and skips files that
-already exist unless `--force` is given. It exits `0` on success (including when every asset
-is skipped) and `2` on an invalid target path or I/O failure.
+It writes assets to two directories:
+
+- `.opencode/agents/` — the `divisor-entropy` agent (structural-entropy reviewer that runs
+  `analyze` + `diff` across a base↔PR pair) and the `vibe-check-reporter` agent (interactive
+  metrics interpreter with summary, detailed, and trending modes).
+- `.opencode/commands/` — the `/vibe-check` slash command, which delegates to the
+  `vibe-check-reporter` agent for conversational architectural analysis.
+
+Existing files are skipped unless `--force` is given. Exit code `0` on success (including
+when every asset is skipped), `2` on an invalid target path or I/O failure.
 
 ## Known limitations
 

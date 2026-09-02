@@ -13,20 +13,31 @@ import (
 )
 
 const (
-	// assetSourceDir is the directory within the embedded filesystem that holds
-	// the agent asset templates. The embed glob is assetSourceDir + "/*.md".
-	assetSourceDir = "assets/agents"
-
-	// targetSubdir is the directory, relative to the target repository root,
-	// into which agent assets are deployed.
-	targetSubdir = ".opencode/agents"
-
 	// dirPerm is the mode applied to directories created during deployment.
 	dirPerm fs.FileMode = 0o755
 
 	// filePerm is the mode applied to asset files written during deployment.
 	filePerm fs.FileMode = 0o644
 )
+
+// category describes one class of embedded assets (agents or commands) and the
+// directory structure used to embed and deploy them.
+type category struct {
+	// sourceDir is the directory within the embedded filesystem that holds the
+	// asset templates. The embed glob is sourceDir + "/*.md".
+	sourceDir string
+	// targetSubdir is the directory, relative to the target repository root,
+	// into which assets of this category are deployed.
+	targetSubdir string
+	// prefix is the short category name prepended to filenames in Result slices
+	// (e.g. "agents" or "commands") to disambiguate entries across categories.
+	prefix string
+}
+
+var categories = []category{
+	{sourceDir: "assets/agents", targetSubdir: ".opencode/agents", prefix: "agents"},
+	{sourceDir: "assets/commands", targetSubdir: ".opencode/commands", prefix: "commands"},
+}
 
 // Options configures a scaffold Run.
 type Options struct {
@@ -47,8 +58,9 @@ type Options struct {
 	WriteFile func(path string, data []byte, perm fs.FileMode) error
 }
 
-// Result reports the outcome of a scaffold Run. Each slice holds the base
-// filenames of the affected assets in stable, ascending lexicographic order.
+// Result reports the outcome of a scaffold Run. Each slice holds
+// category-prefixed relative paths (e.g. "agents/divisor-entropy.md",
+// "commands/vibe-check.md") in stable, ascending lexicographic order.
 type Result struct {
 	// Written lists assets that were newly created.
 	Written []string
@@ -62,18 +74,20 @@ type Result struct {
 	Forced []string
 }
 
-// Run deploys the embedded agent assets into opts.TargetDir. It validates the
-// target directory, creates the .opencode/agents tree if necessary, and writes
-// each embedded asset, skipping or overwriting existing files according to
-// opts.Force. It returns a Result describing which assets were written,
-// skipped, or forced.
+// Run deploys the embedded agent and command assets into opts.TargetDir. It
+// validates the target directory, creates the .opencode/agents and
+// .opencode/commands trees if necessary, and writes each embedded asset,
+// skipping or overwriting existing files according to opts.Force. It returns a
+// Result describing which assets were written, skipped, or forced, with
+// category-prefixed paths (e.g. "agents/divisor-entropy.md").
 func Run(opts Options) (*Result, error) {
-	return run(assetsFS, opts)
+	return run(agentAssetsFS, commandAssetsFS, opts)
 }
 
-// run is the core scaffold routine parameterized over the source filesystem so
-// tests can inject a synthetic fs.FS. Run calls it with the embedded assetsFS.
-func run(assets fs.FS, opts Options) (*Result, error) {
+// run is the core scaffold routine parameterized over the source filesystems so
+// tests can inject synthetic fs.FS values. Run calls it with the embedded asset
+// filesystems.
+func run(agentAssets, commandAssets fs.FS, opts Options) (*Result, error) {
 	if err := metrics.ValidateProjectPath(opts.TargetDir); err != nil {
 		return nil, fmt.Errorf("scaffold: validate target directory: %w", err)
 	}
@@ -91,51 +105,17 @@ func run(assets fs.FS, opts Options) (*Result, error) {
 		writeFile = os.WriteFile
 	}
 
-	entries, err := fs.Glob(assets, assetSourceDir+"/*.md")
-	if err != nil {
-		return nil, fmt.Errorf("scaffold: enumerate embedded assets: %w", err)
-	}
-
-	destDir, err := ensureDir(root, targetSubdir)
-	if err != nil {
-		return nil, err
-	}
-
+	// Deploy each asset category, collecting results into a single Result.
+	sources := []fs.FS{agentAssets, commandAssets}
 	result := &Result{}
-	for _, entry := range entries {
-		name := path.Base(entry)
-
-		data, err := fs.ReadFile(assets, entry)
-		if err != nil {
-			return nil, fmt.Errorf("scaffold: read embedded asset %q: %w", entry, err)
-		}
-
-		destPath := filepath.Join(destDir, name)
-
-		existed, err := regularFileExists(destPath)
+	for i, cat := range categories {
+		written, skipped, forced, err := deployCategory(sources[i], cat, root, writeFile, opts.Force)
 		if err != nil {
 			return nil, err
 		}
-		if existed && !opts.Force {
-			result.Skipped = append(result.Skipped, name)
-			continue
-		}
-
-		if err := writeFile(destPath, data, filePerm); err != nil {
-			return nil, fmt.Errorf("scaffold: write asset %q: %w", destPath, err)
-		}
-		// os.WriteFile preserves an existing file's mode on overwrite and is
-		// subject to umask on create, so normalize the mode explicitly to keep
-		// deployment deterministic.
-		if err := os.Chmod(destPath, filePerm); err != nil {
-			return nil, fmt.Errorf("scaffold: set mode on %q: %w", destPath, err)
-		}
-
-		if existed {
-			result.Forced = append(result.Forced, name)
-		} else {
-			result.Written = append(result.Written, name)
-		}
+		result.Written = append(result.Written, written...)
+		result.Skipped = append(result.Skipped, skipped...)
+		result.Forced = append(result.Forced, forced...)
 	}
 
 	sort.Strings(result.Written)
@@ -143,6 +123,60 @@ func run(assets fs.FS, opts Options) (*Result, error) {
 	sort.Strings(result.Forced)
 
 	return result, nil
+}
+
+// deployCategory deploys all *.md assets from a single category (e.g. agents or
+// commands) into the appropriate target subdirectory under root. It returns
+// category-prefixed filenames for each outcome.
+func deployCategory(assets fs.FS, cat category, root string, writeFile func(string, []byte, fs.FileMode) error, force bool) (written, skipped, forced []string, err error) {
+	entries, err := fs.Glob(assets, cat.sourceDir+"/*.md")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("scaffold: enumerate embedded %s assets: %w", cat.prefix, err)
+	}
+
+	destDir, err := ensureDir(root, cat.targetSubdir)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	for _, entry := range entries {
+		name := path.Base(entry)
+		prefixedName := cat.prefix + "/" + name
+
+		data, err := fs.ReadFile(assets, entry)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("scaffold: read embedded asset %q: %w", entry, err)
+		}
+
+		destPath := filepath.Join(destDir, name)
+
+		existed, err := regularFileExists(destPath)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if existed && !force {
+			skipped = append(skipped, prefixedName)
+			continue
+		}
+
+		if err := writeFile(destPath, data, filePerm); err != nil {
+			return nil, nil, nil, fmt.Errorf("scaffold: write asset %q: %w", destPath, err)
+		}
+		// os.WriteFile preserves an existing file's mode on overwrite and is
+		// subject to umask on create, so normalize the mode explicitly to keep
+		// deployment deterministic.
+		if err := os.Chmod(destPath, filePerm); err != nil {
+			return nil, nil, nil, fmt.Errorf("scaffold: set mode on %q: %w", destPath, err)
+		}
+
+		if existed {
+			forced = append(forced, prefixedName)
+		} else {
+			written = append(written, prefixedName)
+		}
+	}
+
+	return written, skipped, forced, nil
 }
 
 // ensureDir creates rel (a slash-separated path relative to root) one component

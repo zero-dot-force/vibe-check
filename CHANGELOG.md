@@ -37,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deployed by `vibe-check init`): measures the base↔PR design-quality
   delta via `vibe-check analyze` and `vibe-check diff` inside an isolated
   git worktree and reports a verdict. Runs only on trusted refs.
+- `/vibe-check` slash command asset (deployed by `vibe-check init` to
+  `.opencode/commands/vibe-check.md`): delegates to the `vibe-check-reporter`
+  agent for conversational architectural analysis with three modes —
+  summary (traffic-light health indicator), detailed (per-package
+  breakdown), and trending (longitudinal metric comparison via Dewey
+  snapshots).
+- `vibe-check-reporter` agent asset (deployed by `vibe-check init` to
+  `.opencode/agents/vibe-check-reporter.md`): interprets Martin coupling
+  metrics in natural language, runs `vibe-check analyze` to gather data,
+  and stores metric snapshots in Dewey for trend tracking.
+- `vibe-check init` now deploys command assets to `.opencode/commands/`
+  alongside agent assets in `.opencode/agents/`. The scaffold system
+  uses a `deployCategory` helper to iterate both asset categories with
+  the same symlink-safe, containment-checked pattern.
 - `vibe-check analyze --output <file>` (`-o`) writes the ModuleGraph JSON
   to a file instead of stdout (stdout remains the default; a failed write
   exits with code 2 and a stderr diagnostic without emitting partial

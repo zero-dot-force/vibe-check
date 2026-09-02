@@ -44,3 +44,4 @@
 - [x] 5.6 File a documentation issue against `zero-dot-force/vibe-check` for README/AGENTS.md updates and a website documentation sync issue against `unbound-force/website` (constitution requirement)
 
 <!-- spec-review: passed -->
+<!-- code-review: passed -->

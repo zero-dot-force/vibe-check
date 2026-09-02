@@ -43,14 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summary (traffic-light health indicator), detailed (per-package
   breakdown), and trending (longitudinal metric comparison via Dewey
   snapshots).
+  Spec: `openspec/changes/vibe-check-command-and-reporter/`
 - `vibe-check-reporter` agent asset (deployed by `vibe-check init` to
   `.opencode/agents/vibe-check-reporter.md`): interprets Martin coupling
   metrics in natural language, runs `vibe-check analyze` to gather data,
   and stores metric snapshots in Dewey for trend tracking.
+  Spec: `openspec/changes/vibe-check-command-and-reporter/`
 - `vibe-check init` now deploys command assets to `.opencode/commands/`
   alongside agent assets in `.opencode/agents/`. The scaffold system
   uses a `deployCategory` helper to iterate both asset categories with
   the same symlink-safe, containment-checked pattern.
+  Spec: `openspec/changes/vibe-check-command-and-reporter/`
 - `vibe-check analyze --output <file>` (`-o`) writes the ModuleGraph JSON
   to a file instead of stdout (stdout remains the default; a failed write
   exits with code 2 and a stderr diagnostic without emitting partial

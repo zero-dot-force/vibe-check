@@ -14,8 +14,8 @@
 
 ## 3. Cohesion and Duplication Rules (vibe-check)
 
-- [x] 3.1 Write AD-008 DRY No Duplication rule (blocks ≥ 6 consecutive lines, enforcement: `vibe-check --max-duplication=5`, mark as forward reference)
-- [x] 3.2 Write AD-009 Package Cohesion rule (LCOM4 ≤ 3, enforcement: `vibe-check --max-lcom=3`)
+- [x] 3.1 Write AD-008 DRY No Duplication rule (blocks ≥ 6 consecutive lines, enforcement: `vibe-check analyze --max-duplication=5`, mark as forward reference)
+- [x] 3.2 Write AD-009 Package Cohesion rule (LCOM4 ≤ 3, enforcement: `vibe-check analyze --max-lcom=3`)
 
 ## 4. Complexity and Coverage Rules (gaze)
 
@@ -33,7 +33,7 @@
 - [x] [P] 6.1 Verify all 10 rules (AD-001 through AD-010) are present with required fields (ID, Name, Severity, Rationale, Threshold, Enforcement, Example)
 - [x] [P] 6.2 Verify AD-002, AD-003, AD-004, AD-008, AD-009 reference vibe-check
 - [x] [P] 6.3 Verify AD-001, AD-006, AD-010 reference gaze
-- [x] [P] 6.4 Verify AD-008 references `vibe-check --max-duplication`
+- [x] [P] 6.4 Verify AD-008 references `vibe-check analyze --max-duplication`
 - [x] 6.5 Update AGENTS.md convention packs list to include `.opencode/uf/packs/agent-design.md` and `.opencode/uf/packs/agent-design-custom.md`
 - [x] 6.6 Add CHANGELOG.md entry documenting the new agent-design convention pack
 <!-- spec-review: passed -->

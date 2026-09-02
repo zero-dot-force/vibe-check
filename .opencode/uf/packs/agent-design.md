@@ -49,7 +49,10 @@ are exempt because their instability cannot propagate.
 **Threshold**: I < 0.7 for non-leaf packages (Ca > 0). Leaf packages (Ca = 0)
 are exempt.
 
-**Enforcement**: `vibe-check analyze --max-instability=0.7`
+**Enforcement**: `vibe-check analyze --max-instability=0.7` — note that the CLI
+flag applies the threshold uniformly to all packages. The leaf-package exemption
+(Ca = 0) is enforced by review agents, which inspect the Ca value in the JSON
+output and skip leaf packages when evaluating this rule.
 
 **Example**:
 - PASS: A non-leaf package (Ca = 3) has Instability of 0.55

@@ -92,13 +92,18 @@ This avoids needing to re-release the pack when features ship.
 
 ## Risks / Trade-offs
 
-- **[Forward references]** → Rules AD-002 (`--max-ce`), AD-008
-  (`--max-duplication`), and AD-009 (LCOM threshold via `--max-lcom` already
-  exists but AD-009's threshold of 3 aligns with the existing flag) reference
-  vibe-check capabilities that may not yet be fully automated. **Mitigation**:
-  Mark these as "planned" enforcement; agents apply heuristically until tooling
-  catches up. AD-009 uses the existing `--max-lcom` flag with an integer
-  threshold consistent with LCOM4's connected-component semantics.
+- **[Forward references]** → Rules AD-002 (`--max-ce`) and AD-008
+  (`--max-duplication`) reference vibe-check CLI flags that are not yet
+  implemented. **Mitigation**: Mark these as "planned" enforcement; agents
+  apply heuristically until tooling catches up.
+
+- **[Leaf-package exemption]** → AD-003's leaf-package exemption (Ca = 0
+  packages are exempt from the instability threshold) is not enforced by the
+  `--max-instability` CLI flag, which applies uniformly to all packages.
+  **Mitigation**: Review agents enforce the exemption by inspecting the Ca
+  value in vibe-check JSON output and skipping leaf packages. AD-009 uses the
+  existing `--max-lcom` flag with an integer threshold consistent with LCOM4's
+  connected-component semantics.
 
 - **[Threshold rigidity]** → Hard thresholds (e.g., Ce < 10) may be too strict
   or too lenient for some codebases. **Mitigation**: Thresholds are documented

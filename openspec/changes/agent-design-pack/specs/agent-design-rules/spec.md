@@ -123,7 +123,7 @@ increase merge conflict probability.
 
 ### Requirement: AD-008 DRY No Duplication
 The convention pack SHALL define rule AD-008 prohibiting duplicated blocks of 6
-or more consecutive lines. Enforcement: `vibe-check --max-duplication=5` (maximum
+or more consecutive lines. Enforcement: `vibe-check analyze --max-duplication=5` (maximum
 allowed block size is 5 lines; blocks of 6+ lines are violations). The rule SHALL
 note that this enforcement flag is a forward reference to a planned feature.
 

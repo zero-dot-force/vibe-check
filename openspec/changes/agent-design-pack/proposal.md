@@ -65,8 +65,8 @@ None
 - **Dependencies**: Rules reference existing vibe-check CLI flags
   (`--max-instability`, `--no-circular-deps`, `--max-lcom`) and gaze CLI
   capabilities (CRAP scores, assertion depth, contract coverage). Rules AD-002
-  (`--max-ce`), AD-008 (`--max-duplication`), and AD-009 (LCOM threshold
-  normalization) reference forward-planned vibe-check features that are not yet
-  implemented — agents apply these rules heuristically until tooling ships
+  (`--max-ce`) and AD-008 (`--max-duplication`) reference forward-planned
+  vibe-check features that are not yet implemented — agents apply these rules
+  heuristically until tooling ships
 - **Systems**: No CI workflow changes required — convention packs are consumed by
   agents at review time, not by CI pipelines directly

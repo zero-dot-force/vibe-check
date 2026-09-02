@@ -13,15 +13,26 @@ import (
 	"testing"
 )
 
-// initAssetName is the single embedded Review Council asset that init deploys.
-// The scaffold writer reports assets by basename, so this is the value that
-// appears in InitResult slices and in the --json payload.
-const initAssetName = "divisor-entropy.md"
+// initAssetNames lists the category-prefixed asset names that scaffold.Run
+// deploys. The scaffold writer reports assets with category prefixes (e.g.
+// "agents/divisor-entropy.md"), sorted lexicographically. These appear in
+// InitResult slices and in the --json payload.
+var initAssetNames = []string{
+	"agents/divisor-entropy.md",
+	"agents/vibe-check-reporter.md",
+	"commands/vibe-check.md",
+}
 
-// deployedInitAssetPath returns the on-disk location of the deployed asset for a
-// given project root.
-func deployedInitAssetPath(root string) string {
-	return filepath.Join(root, ".opencode", "agents", initAssetName)
+// deployedAgentAssetPath returns the on-disk location of the divisor-entropy
+// agent asset for a given project root.
+func deployedAgentAssetPath(root string) string {
+	return filepath.Join(root, ".opencode", "agents", "divisor-entropy.md")
+}
+
+// deployedCommandAssetPath returns the on-disk location of the vibe-check
+// command asset for a given project root.
+func deployedCommandAssetPath(root string) string {
+	return filepath.Join(root, ".opencode", "commands", "vibe-check.md")
 }
 
 // initFailingWriter is an io.Writer whose Write always fails, used to exercise
@@ -46,8 +57,8 @@ func TestRunInit_HumanSummaryLifecycle(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("first run ExitCode: got %d, want 0", res.ExitCode)
 	}
-	if got, want := res.Written, []string{initAssetName}; !slices.Equal(got, want) {
-		t.Errorf("first run Written: got %v, want %v", got, want)
+	if got := res.Written; !slices.Equal(got, initAssetNames) {
+		t.Errorf("first run Written: got %v, want %v", got, initAssetNames)
 	}
 	if len(res.Skipped) != 0 || len(res.Forced) != 0 {
 		t.Errorf("first run should have no skips/forced: skipped=%v forced=%v", res.Skipped, res.Forced)
@@ -56,11 +67,17 @@ func TestRunInit_HumanSummaryLifecycle(t *testing.T) {
 	if !strings.Contains(out, "Written:") {
 		t.Errorf("summary missing Written section; got:\n%s", out)
 	}
-	if !strings.Contains(out, initAssetName) {
-		t.Errorf("summary missing asset name; got:\n%s", out)
+	if !strings.Contains(out, "agents/divisor-entropy.md") {
+		t.Errorf("summary missing agent asset name; got:\n%s", out)
 	}
-	if _, statErr := os.Stat(deployedInitAssetPath(dir)); statErr != nil {
-		t.Errorf("expected deployed asset on disk: %v", statErr)
+	if !strings.Contains(out, "commands/vibe-check.md") {
+		t.Errorf("summary missing command asset name; got:\n%s", out)
+	}
+	if _, statErr := os.Stat(deployedAgentAssetPath(dir)); statErr != nil {
+		t.Errorf("expected deployed agent asset on disk: %v", statErr)
+	}
+	if _, statErr := os.Stat(deployedCommandAssetPath(dir)); statErr != nil {
+		t.Errorf("expected deployed command asset on disk: %v", statErr)
 	}
 
 	// Second run: the existing asset is skipped.
@@ -69,8 +86,8 @@ func TestRunInit_HumanSummaryLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second RunInit returned error: %v", err)
 	}
-	if got, want := res2.Skipped, []string{initAssetName}; !slices.Equal(got, want) {
-		t.Errorf("second run Skipped: got %v, want %v", got, want)
+	if got := res2.Skipped; !slices.Equal(got, initAssetNames) {
+		t.Errorf("second run Skipped: got %v, want %v", got, initAssetNames)
 	}
 	if len(res2.Written) != 0 {
 		t.Errorf("second run Written should be empty: got %v", res2.Written)
@@ -85,8 +102,8 @@ func TestRunInit_HumanSummaryLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("force RunInit returned error: %v", err)
 	}
-	if got, want := res3.Forced, []string{initAssetName}; !slices.Equal(got, want) {
-		t.Errorf("force run Forced: got %v, want %v", got, want)
+	if got := res3.Forced; !slices.Equal(got, initAssetNames) {
+		t.Errorf("force run Forced: got %v, want %v", got, initAssetNames)
 	}
 	if len(res3.Written) != 0 || len(res3.Skipped) != 0 {
 		t.Errorf("force run should only report forced: written=%v skipped=%v", res3.Written, res3.Skipped)
@@ -133,8 +150,8 @@ func TestRunInit_JSONLifecycle(t *testing.T) {
 
 	// First run: only written is populated; skipped and forced are empty arrays.
 	first := run(false)
-	if got, want := first.Written, []string{initAssetName}; !slices.Equal(got, want) {
-		t.Errorf("first run written: got %v, want %v", got, want)
+	if got := first.Written; !slices.Equal(got, initAssetNames) {
+		t.Errorf("first run written: got %v, want %v", got, initAssetNames)
 	}
 	if len(first.Skipped) != 0 {
 		t.Errorf("first run skipped: got %v, want empty", first.Skipped)
@@ -145,8 +162,8 @@ func TestRunInit_JSONLifecycle(t *testing.T) {
 
 	// Second run: the asset moves to skipped.
 	second := run(false)
-	if got, want := second.Skipped, []string{initAssetName}; !slices.Equal(got, want) {
-		t.Errorf("second run skipped: got %v, want %v", got, want)
+	if got := second.Skipped; !slices.Equal(got, initAssetNames) {
+		t.Errorf("second run skipped: got %v, want %v", got, initAssetNames)
 	}
 	if len(second.Written) != 0 {
 		t.Errorf("second run written: got %v, want empty", second.Written)
@@ -154,8 +171,8 @@ func TestRunInit_JSONLifecycle(t *testing.T) {
 
 	// Force run: the asset moves to forced.
 	forced := run(true)
-	if got, want := forced.Forced, []string{initAssetName}; !slices.Equal(got, want) {
-		t.Errorf("force run forced: got %v, want %v", got, want)
+	if got := forced.Forced; !slices.Equal(got, initAssetNames) {
+		t.Errorf("force run forced: got %v, want %v", got, initAssetNames)
 	}
 	if len(forced.Written) != 0 || len(forced.Skipped) != 0 {
 		t.Errorf("force run should only populate forced: written=%v skipped=%v", forced.Written, forced.Skipped)
@@ -317,11 +334,17 @@ func TestInitCmd_Execute(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("initCmd Execute returned error: %v", err)
 	}
-	if !strings.Contains(stdout.String(), initAssetName) {
-		t.Errorf("expected asset name in output; got:\n%s", stdout.String())
+	if !strings.Contains(stdout.String(), "agents/divisor-entropy.md") {
+		t.Errorf("expected agent asset name in output; got:\n%s", stdout.String())
 	}
-	if _, statErr := os.Stat(deployedInitAssetPath(dir)); statErr != nil {
-		t.Errorf("expected deployed asset on disk: %v", statErr)
+	if !strings.Contains(stdout.String(), "commands/vibe-check.md") {
+		t.Errorf("expected command asset name in output; got:\n%s", stdout.String())
+	}
+	if _, statErr := os.Stat(deployedAgentAssetPath(dir)); statErr != nil {
+		t.Errorf("expected deployed agent asset on disk: %v", statErr)
+	}
+	if _, statErr := os.Stat(deployedCommandAssetPath(dir)); statErr != nil {
+		t.Errorf("expected deployed command asset on disk: %v", statErr)
 	}
 }
 
@@ -344,8 +367,11 @@ func TestInitCmd_JSONFlag(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &p); err != nil {
 		t.Fatalf("json.Unmarshal(%q): %v", stdout.String(), err)
 	}
-	if !slices.Contains(p.Written, initAssetName) {
-		t.Errorf("expected %s in written; got %v", initAssetName, p.Written)
+	if !slices.Contains(p.Written, "agents/divisor-entropy.md") {
+		t.Errorf("expected agents/divisor-entropy.md in written; got %v", p.Written)
+	}
+	if !slices.Contains(p.Written, "commands/vibe-check.md") {
+		t.Errorf("expected commands/vibe-check.md in written; got %v", p.Written)
 	}
 }
 

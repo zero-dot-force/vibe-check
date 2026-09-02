@@ -23,10 +23,10 @@ type InitOptions struct {
 	Stdout io.Writer
 	// Stderr is the writer for diagnostics and errors. Required.
 	Stderr io.Writer
-	// Path is the target project directory into which agent assets are deployed.
-	// Empty defaults to the current directory (".").
+	// Path is the target project directory into which agent and command assets
+	// are deployed. Empty defaults to the current directory (".").
 	Path string
-	// Force overwrites existing agent asset files instead of skipping them.
+	// Force overwrites existing asset files instead of skipping them.
 	Force bool
 	// JSON selects machine-readable JSON output when true; otherwise a
 	// human-readable summary is written.
@@ -42,12 +42,14 @@ type InitOptions struct {
 // InitResult contains the outcome of an init deployment.
 // It follows the AP-001 Result struct pattern.
 type InitResult struct {
-	// Written lists the asset filenames newly created.
+	// Written lists the category-prefixed asset paths newly created (e.g.
+	// "agents/divisor-entropy.md", "commands/vibe-check.md").
 	Written []string
-	// Skipped lists the asset filenames left untouched because they already
-	// existed and Force was not set.
+	// Skipped lists the category-prefixed asset paths left untouched because
+	// they already existed and Force was not set.
 	Skipped []string
-	// Forced lists the asset filenames overwritten because Force was set.
+	// Forced lists the category-prefixed asset paths overwritten because Force
+	// was set.
 	Forced []string
 	// ExitCode is the process exit code: 0 on success (including an all-skipped
 	// run), 2 on an invalid target path or an I/O failure.
@@ -64,10 +66,10 @@ type initJSON struct {
 	Forced  []string `json:"forced"`
 }
 
-// RunInit deploys the embedded Review Council agent assets into the target
-// project's .opencode/agents/ directory and writes a summary to opts.Stdout. It
-// is the testable entry point per AP-002/AP-003: all business logic lives here,
-// not in the cobra command layer.
+// RunInit deploys the embedded agent and command assets into the target
+// project's .opencode/agents/ and .opencode/commands/ directories and writes a
+// summary to opts.Stdout. It is the testable entry point per AP-002/AP-003: all
+// business logic lives here, not in the cobra command layer.
 //
 // Exit code semantics (also mirrored in the returned InitResult.ExitCode):
 //   - 0: assets were deployed (or all skipped) and the summary was written.
@@ -147,12 +149,13 @@ func writeInitJSON(w io.Writer, res *scaffold.Result) error {
 }
 
 // writeInitSummary renders the deployment result as a human-readable summary to
-// w. It names the target agents directory, then lists the written, skipped, and
-// forced assets. The lists are consumed in the stable, sorted order scaffold.Run
-// guarantees, so output is byte-stable across runs.
+// w. It names the target .opencode directory, then lists the written, skipped,
+// and forced assets. The lists contain category-prefixed paths (e.g.
+// "agents/divisor-entropy.md", "commands/vibe-check.md") in stable sorted
+// order.
 func writeInitSummary(w io.Writer, targetDir string, res *scaffold.Result) {
-	agentsDir := filepath.Join(targetDir, ".opencode", "agents")
-	_, _ = fmt.Fprintf(w, "Deployed agent assets under %s:\n", agentsDir)
+	openCodeDir := filepath.Join(targetDir, ".opencode")
+	_, _ = fmt.Fprintf(w, "Deployed agent and command assets under %s:\n", openCodeDir)
 	writeListSection(w, "Written:", res.Written)
 	writeListSection(w, "Skipped:", res.Skipped)
 	writeListSection(w, "Forced:", res.Forced)
@@ -178,10 +181,11 @@ func initCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init [path]",
-		Short: "Deploy vibe-check Review Council agent assets into a project",
-		Long: `Init deploys the embedded vibe-check Review Council agent assets (such as the
-divisor-entropy structural-entropy reviewer) into a target project's
-.opencode/agents/ directory.
+		Short: "Deploy vibe-check agent and command assets into a project",
+		Long: `Init deploys the embedded vibe-check agent assets (such as the
+divisor-entropy structural-entropy reviewer and the vibe-check-reporter) and
+command assets (such as the /vibe-check slash command) into a target project's
+.opencode/agents/ and .opencode/commands/ directories.
 
 Existing files are skipped by default; use --force to overwrite them. The target
 path defaults to the current directory. Output is a human-readable summary by
@@ -237,7 +241,7 @@ path is invalid or an asset cannot be written.`,
 		},
 	}
 
-	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing agent asset files instead of skipping them")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing asset files instead of skipping them")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit a machine-readable JSON payload instead of a summary")
 
 	return cmd

@@ -81,14 +81,14 @@ become `pending`.
 Before any pipeline logic, clean up stale worktrees from
 previous interrupted runs:
 
-1. Call `swarm_worktree_list` with the project path.
-2. If any worktrees exist, call `swarm_worktree_cleanup`
+1. Call `forge_worktree_list` with the project path.
+2. If any worktrees exist, call `forge_worktree_cleanup`
    with `cleanup_all: true` to remove them.
 3. This cleanup does NOT affect resumability -- spec.md,
    plan.md, tasks.md, and task checkboxes live in the main
    working directory, not in worktrees.
 
-If `swarm_worktree_list` is not available (Replicator
+If `forge_worktree_list` is not available (Replicator
 not installed), skip this step silently.
 
 > CHECKPOINT: Mark Step 0 complete in the execution
@@ -431,7 +431,7 @@ logic used by `/uf.review-council` and `/uf.review-pr`.
    `tasks.md` immediately.
 
 3. **Parallel execution**: check if
-   `swarm_worktree_create` is available.
+   `forge_worktree_create` is available.
 
    **If Swarm worktrees are available**:
 
@@ -446,10 +446,10 @@ logic used by `/uf.review-council` and `/uf.review-pr`.
       the next batch.
 
    c. For each `[P]` task in the current batch:
-      - Call `swarm_worktree_create` with the project
+      - Call `forge_worktree_create` with the project
         path, task ID, and current commit hash to create
         a dedicated worktree.
-      - Call `swarm_spawn_subtask` with the task
+      - Call `forge_spawn_subtask` with the task
         description, files from the task, and the
         worktree path.
 
@@ -461,7 +461,7 @@ logic used by `/uf.review-council` and `/uf.review-pr`.
    e. **If any worker fails**: stop spawning new workers
       (do not start the next batch). Wait for any
       already-running workers to complete or fail. Then
-      call `swarm_worktree_cleanup` with `cleanup_all:
+      call `forge_worktree_cleanup` with `cleanup_all:
       true` to remove all worktrees. **EXIT** with error
       context:
 
@@ -483,16 +483,16 @@ logic used by `/uf.review-council` and `/uf.review-pr`.
 
    f. After all workers in a batch complete successfully,
       merge each worktree back:
-      - Call `swarm_worktree_merge` for each worktree.
+      - Call `forge_worktree_merge` for each worktree.
         This uses cherry-pick to apply the worker's
         commits to the main branch.
       - After each merge, check for conflict markers
         (`<<<<<<<`, `=======`, `>>>>>>>`) in the
         affected files.
       - If NO conflict markers remain: merge succeeded.
-        Call `swarm_worktree_cleanup` for that worktree.
+        Call `forge_worktree_cleanup` for that worktree.
       - If conflict markers remain: auto-resolution
-        failed. Call `swarm_worktree_cleanup` with
+        failed. Call `forge_worktree_cleanup` with
         `cleanup_all: true`. **EXIT** with conflict
         details:
 

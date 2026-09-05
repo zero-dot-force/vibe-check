@@ -114,14 +114,17 @@ func (a *ExternalAdapter) Language() string {
 	return a.language
 }
 
-// Capabilities returns the list of metrics this adapter can compute.
-// It spawns the subprocess, sends a capabilities request, and returns the
-// result. The subprocess is shut down after the call.
+// Capabilities spawns the external analyzer subprocess, queries its supported
+// metrics via a JSON-RPC "capabilities" call, and returns them as a typed slice.
+// Internally it creates a derived context with [context.WithTimeout] using the
+// configured capabilities timeout to bound the subprocess lifetime.
 //
-// A nil or empty return value may indicate either that the adapter supports
-// no capabilities or that a communication error occurred (spawn failure,
-// protocol error, etc.). Use [ExternalAdapter.Analyze] for detailed error
-// diagnostics when capabilities discovery fails.
+// It returns a non-nil []Capability containing one entry per supported metric
+// on success. On any failure (spawn error, protocol error, JSON unmarshal
+// error), it returns nil. A nil or empty return value may indicate either that
+// the adapter supports no capabilities or that a communication error occurred;
+// use [ExternalAdapter.Analyze] for detailed error diagnostics when capabilities
+// discovery fails.
 func (a *ExternalAdapter) Capabilities() []Capability {
 	// Capabilities is defined without error return in the Adapter interface.
 	// On failure, return an empty slice — callers can use Analyze to get
@@ -164,7 +167,15 @@ func (a *ExternalAdapter) Capabilities() []Capability {
 }
 
 // Analyze spawns the external analyzer subprocess, sends the capabilities and
-// analyze requests, validates the response, and returns the resulting ModuleGraph.
+// analyze requests, validates the response against the ModuleGraph JSON schema,
+// and returns the resulting *[ModuleGraph]. It returns a non-nil *ModuleGraph and
+// nil error on success. On any failure — invalid project path, spawn error, RPC
+// error, schema validation failure, or unknown fields in the response — it
+// returns nil and a wrapped error describing the failure stage.
+//
+// Internally it creates a derived context with [context.WithTimeout] using the
+// configured analyze timeout to bound the subprocess lifetime; the caller's
+// context deadline is respected if it is earlier.
 func (a *ExternalAdapter) Analyze(ctx context.Context, projectPath string) (*ModuleGraph, error) {
 	if err := ValidateProjectPath(projectPath); err != nil {
 		return nil, fmt.Errorf("external analyze: %w", err)
@@ -368,9 +379,12 @@ func newLimitedBuffer(maxSize int64) *limitedBuffer {
 	return &limitedBuffer{maxSize: maxSize}
 }
 
-// Write implements io.Writer. Writes that would exceed the maximum size are
-// silently truncated. The full input length is always reported as written to
-// avoid breaking the subprocess's stderr pipe.
+// Write implements [io.Writer]. It appends p to the internal buffer (lb.buf) up
+// to the configured maximum size. It always returns len(p), nil — the full input
+// length is reported as written regardless of truncation or internal write errors
+// to avoid breaking the subprocess's stderr pipe. Writes that would exceed the
+// maximum size are silently truncated; internal write failures set a flag that
+// is surfaced by [limitedBuffer.String].
 func (lb *limitedBuffer) Write(p []byte) (int, error) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()

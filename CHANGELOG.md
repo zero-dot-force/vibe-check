@@ -66,6 +66,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by a target module's `go.mod`. Trade-off: a trusted module whose
   `go.mod` `toolchain` directive requires a newer-than-local Go must be
   built/analyzed manually.
+- Strengthened test assertions across `internal/goadapter` and `metrics/`
+  packages: added nil-guard assertions for `goadapter.New()` in 5 tests,
+  added return-value assertions for `goadapter.Analyze()`, and added
+  explicit `(*limitedBuffer).String()` content assertions. Per-function
+  contract coverage rose from 94.4% to 98.2% (no function at 0%).
+  Spec: `openspec/changes/contract-coverage-gap/`
+- Enhanced GoDoc annotations on `ExternalAdapter.Analyze`,
+  `ExternalAdapter.Capabilities`, `Registry.Register`, `RunAnalyze`,
+  `RunDiff`, `RunInit`, and `(*limitedBuffer).Write` to explicitly
+  document return-value semantics and mutation contracts.
 
 ## [0.1.0] - 2026-08-31
 

@@ -17,8 +17,10 @@ func NewRegistry() *Registry {
 	}
 }
 
-// Register adds an adapter to the registry, keyed by its Language() return value.
-// Returns an error if an adapter for the same language is already registered.
+// Register adds an adapter to the registry, keyed by its Language() return
+// value. It returns nil on success after inserting the adapter into the internal
+// map. If the language key is already registered, it returns a non-nil error
+// describing the duplicate and leaves the map unchanged.
 func (r *Registry) Register(a Adapter) error {
 	lang := a.Language()
 	if _, exists := r.adapters[lang]; exists {

@@ -47,7 +47,8 @@ func run() int {
 	return exitCode(rootCmd().Execute(), os.Stderr)
 }
 
-// exitCode maps a command error to a process exit code:
+// exitCode maps a command error to a process exit code and returns the
+// corresponding integer:
 //
 //	nil error       → 0 (success)
 //	*exitCodeError  → its carried code (e.g. 1 for policy failures)

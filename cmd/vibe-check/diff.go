@@ -73,15 +73,17 @@ type diffJSON struct {
 }
 
 // RunDiff reads two ModuleGraph JSON documents, computes their structural delta,
-// renders an entropy verdict, and writes a report to opts.Stdout. It is the
-// testable entry point per AP-002/AP-003: all business logic lives here, not in
-// the cobra command layer.
+// renders an entropy verdict, and writes a report to opts.Stdout. It returns a
+// non-nil *DiffResult and nil error on success. On any failure it returns a
+// non-nil *DiffResult with ExitCode 2 and a wrapped error; nothing is written to
+// opts.Stdout on error paths. This is the testable entry point per AP-002/AP-003:
+// all business logic lives here, not in the cobra command layer.
 //
 // Exit code semantics (also mirrored in the returned DiffResult.ExitCode):
 //   - 0: both inputs were read and validated, the delta and verdict were
-//     computed, and the report was written. A REQUEST_CHANGES verdict still
-//     returns 0 — diff is a reporting tool and conveys the verdict in its
-//     payload, not in the process exit code.
+//     computed, and the report was written to opts.Stdout. A REQUEST_CHANGES
+//     verdict still returns 0 — diff is a reporting tool and conveys the
+//     verdict in its payload, not in the process exit code.
 //   - 2: either input is missing/unreadable or fails ModuleGraph schema
 //     validation. In that case nothing is written to opts.Stdout and the
 //     returned error describes the failure for the command layer to report.
@@ -151,9 +153,10 @@ func RunDiff(ctx context.Context, opts DiffOptions) (*DiffResult, error) {
 	}, nil
 }
 
-// writeDiffJSON renders the diff as a single indented JSON object to w. A nil
-// reasons slice is normalized to an empty slice so the reasons key is always a
-// JSON array, never null.
+// writeDiffJSON renders the diff as a single indented JSON object to w and
+// returns nil on success. A nil reasons slice is normalized to an empty slice so
+// the reasons key is always a JSON array, never null. Returns a wrapped error if
+// marshaling or writing to w fails.
 func writeDiffJSON(w io.Writer, delta metrics.GraphDelta, verdict metrics.Verdict, reasons []string) error {
 	if reasons == nil {
 		reasons = []string{}
@@ -256,7 +259,7 @@ func writeListSection(w io.Writer, title string, items []string) {
 
 // normFloat maps negative zero to positive zero so a delta of exactly zero
 // always renders as "0.0000" rather than "-0.0000", keeping the table output
-// stable.
+// stable. Returns the input unchanged for all other values.
 func normFloat(f float64) float64 {
 	if f == 0 {
 		return 0

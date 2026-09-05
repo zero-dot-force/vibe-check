@@ -745,3 +745,49 @@ func TestExternalAdapter_Capabilities(t *testing.T) {
 		}
 	}
 }
+
+func TestLimitedBuffer_String_NormalContent(t *testing.T) {
+	t.Parallel()
+
+	lb := newLimitedBuffer(1024)
+	content := "test stderr output"
+	if _, err := lb.Write([]byte(content)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	got := lb.String()
+	if got != content {
+		t.Errorf("String(): got %q, want %q", got, content)
+	}
+}
+
+func TestLimitedBuffer_String_Truncated(t *testing.T) {
+	t.Parallel()
+
+	lb := newLimitedBuffer(10)
+	// Write more than maxSize to trigger truncation notice.
+	if _, err := lb.Write([]byte("this is a long message that exceeds the buffer")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	got := lb.String()
+	wantSuffix := "\n[stderr truncated at 10 bytes]"
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Errorf("String(): got %q, want suffix %q", got, wantSuffix)
+	}
+	// The content portion should be exactly maxSize bytes.
+	wantPrefix := "this is a "
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("String(): got %q, want prefix %q", got, wantPrefix)
+	}
+}
+
+func TestLimitedBuffer_String_Empty(t *testing.T) {
+	t.Parallel()
+
+	lb := newLimitedBuffer(1024)
+	got := lb.String()
+	if got != "" {
+		t.Errorf("String(): got %q, want empty string", got)
+	}
+}

@@ -56,9 +56,17 @@ type AnalyzeResult struct {
 	ExitCode int
 }
 
-// RunAnalyze executes the analysis and returns a result.
-// This is the testable entry point per AP-002/AP-003: all business logic
-// lives here, not in the cobra command layer.
+// RunAnalyze executes the analysis and returns a non-nil *AnalyzeResult with the
+// computed graph, any threshold violations, and the exit code. It always returns
+// a non-nil *AnalyzeResult even when the returned error is non-nil; on error the
+// result contains ExitCode 2 and zero-value fields. This is the testable entry
+// point per AP-002/AP-003: all business logic lives here, not in the cobra
+// command layer.
+//
+// When opts.Timeout is positive, RunAnalyze creates a derived context with
+// [context.WithTimeout] to bound the analysis. When opts.OutputPath is set, the
+// graph JSON is written to the named file via [os.WriteFile]; otherwise it is
+// written to opts.Stdout.
 //
 // Exit code semantics:
 //   - 0: success, no violations
@@ -157,9 +165,10 @@ func validateFlags(opts AnalyzeOptions) error {
 	return nil
 }
 
-// checkThresholds compares module metrics against configured thresholds.
-// Uses strict > (greater than) comparison: if metric == threshold, it passes.
-// All violations are collected — does not short-circuit on first violation.
+// checkThresholds compares module metrics against configured thresholds and
+// returns a slice of violation messages. Uses strict > (greater than) comparison:
+// if metric == threshold, it passes. All violations are collected — does not
+// short-circuit on first violation. Returns nil when no violations are found.
 func checkThresholds(graph *metrics.ModuleGraph, opts AnalyzeOptions) []string {
 	var violations []string
 

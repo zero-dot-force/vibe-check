@@ -25,7 +25,7 @@ and circular dependency detection for Go codebases.`,
 	return cmd
 }
 
-// versionString builds the --version output value in the form
+// versionString returns the --version output string in the form
 // "<version> (commit <hash>, built <date>)". When the ldflags-injected version
 // is empty or the default "dev" (e.g., the binary was installed via
 // `go install github.com/zero-dot-force/vibe-check/cmd/vibe-check@vX`), it falls

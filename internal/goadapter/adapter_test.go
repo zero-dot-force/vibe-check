@@ -25,9 +25,15 @@ func TestAdapter_CouplingMetrics(t *testing.T) {
 	}
 
 	adapter := New()
+	if adapter == nil {
+		t.Fatal("New returned nil")
+	}
 	graph, err := adapter.Analyze(context.Background(), fixtureDir(t, "coupling"))
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
+	}
+	if graph == nil {
+		t.Fatal("Analyze returned nil graph")
 	}
 
 	// Build lookup by package name for easier assertions.
@@ -100,9 +106,15 @@ func TestAdapter_ExternalExclusion(t *testing.T) {
 	}
 
 	adapter := New()
+	if adapter == nil {
+		t.Fatal("New returned nil")
+	}
 	graph, err := adapter.Analyze(context.Background(), fixtureDir(t, "coupling"))
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
+	}
+	if graph == nil {
+		t.Fatal("Analyze returned nil graph")
 	}
 
 	// All modules should have paths starting with the module prefix.
@@ -186,6 +198,9 @@ func assertDeterministicAnalyze(t *testing.T, fixture string, n int) {
 	t.Helper()
 
 	adapter := New()
+	if adapter == nil {
+		t.Fatal("New returned nil")
+	}
 	ctx := context.Background()
 	dir := fixtureDir(t, fixture)
 
@@ -194,6 +209,12 @@ func assertDeterministicAnalyze(t *testing.T, fixture string, n int) {
 		graph, err := adapter.Analyze(ctx, dir)
 		if err != nil {
 			t.Fatalf("run %d: Analyze: %v", i, err)
+		}
+		if graph == nil {
+			t.Fatalf("run %d: Analyze returned nil graph", i)
+		}
+		if len(graph.Modules) == 0 {
+			t.Fatalf("run %d: Analyze returned empty Modules", i)
 		}
 
 		data, err := json.Marshal(graph)
@@ -219,6 +240,9 @@ func TestAdapter_ContextCancellation(t *testing.T) {
 	}
 
 	adapter := New()
+	if adapter == nil {
+		t.Fatal("New returned nil")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately.
 
@@ -238,6 +262,9 @@ func TestAdapter_ContextDeadline(t *testing.T) {
 	}
 
 	adapter := New()
+	if adapter == nil {
+		t.Fatal("New returned nil")
+	}
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
@@ -410,6 +437,9 @@ func TestAdapter_Capabilities(t *testing.T) {
 	t.Parallel()
 
 	adapter := New()
+	if adapter == nil {
+		t.Fatal("New returned nil")
+	}
 	caps := adapter.Capabilities()
 
 	if len(caps) != 7 {

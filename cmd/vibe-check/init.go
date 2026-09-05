@@ -66,13 +66,17 @@ type initJSON struct {
 	Forced  []string `json:"forced"`
 }
 
-// RunInit deploys the embedded agent and command assets into the target
+// RunInit deploys the embedded Review Council agent and command assets into the
 // project's .opencode/agents/ and .opencode/commands/ directories and writes a
-// summary to opts.Stdout. It is the testable entry point per AP-002/AP-003: all
-// business logic lives here, not in the cobra command layer.
+// deployment summary (table or JSON) to opts.Stdout. It returns a non-nil
+// *InitResult and nil error on success. On any failure it returns a non-nil
+// *InitResult with ExitCode 2 and a wrapped error; nothing is written to
+// opts.Stdout on error paths. This is the testable entry point per AP-002/AP-003:
+// all business logic lives here, not in the cobra command layer.
 //
 // Exit code semantics (also mirrored in the returned InitResult.ExitCode):
-//   - 0: assets were deployed (or all skipped) and the summary was written.
+//   - 0: assets were deployed (or all skipped) and the summary was written to
+//     opts.Stdout.
 //   - 2: the target path is invalid (missing, not a directory, or traversal) or
 //     an I/O failure occurred while writing an asset. In that case nothing is
 //     written to opts.Stdout and the returned error describes the failure.
@@ -131,7 +135,9 @@ func RunInit(ctx context.Context, opts InitOptions) (*InitResult, error) {
 }
 
 // writeInitJSON renders the deployment result as a single indented JSON object
-// to w. Each slice is normalized so its key is always a JSON array, never null.
+// to w and returns nil on success. Each slice is normalized so its key is always
+// a JSON array, never null. Returns a wrapped error if marshaling or writing to
+// w fails.
 func writeInitJSON(w io.Writer, res *scaffold.Result) error {
 	payload := initJSON{
 		Written: normStringSlice(res.Written),

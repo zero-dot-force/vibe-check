@@ -43,6 +43,11 @@ type AnalyzeOptions struct {
 
 	// Timeout is the analysis timeout duration. Zero means no timeout.
 	Timeout time.Duration
+
+	// NoProvenance when true omits the provenance object from the output JSON,
+	// yielding byte-reproducible output across runs. Provenance is emitted by
+	// default.
+	NoProvenance bool
 }
 
 // AnalyzeResult contains the analysis outcome.
@@ -90,6 +95,21 @@ func RunAnalyze(ctx context.Context, opts AnalyzeOptions) (*AnalyzeResult, error
 	graph, err := adapter.Analyze(ctx, opts.Path)
 	if err != nil {
 		return &AnalyzeResult{ExitCode: 2}, fmt.Errorf("analyze: %w", err)
+	}
+
+	// Step 3b: Populate provenance metadata. The adapter set Provenance.Input
+	// (analyzed path + resolved module path); the CLI fills in the remaining
+	// producer/version/generatedAt fields. With --no-provenance, provenance is
+	// dropped entirely so output is byte-reproducible across runs.
+	if opts.NoProvenance {
+		graph.Provenance = nil
+	} else {
+		if graph.Provenance == nil {
+			graph.Provenance = &metrics.Provenance{}
+		}
+		graph.Provenance.Producer = "vibe-check"
+		graph.Provenance.Version = semanticVersion()
+		graph.Provenance.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 
 	// Step 4: Check context before writing output.
@@ -220,6 +240,7 @@ func analyzeCmd() *cobra.Command {
 		maxDistance    float64
 		maxLCOM        int
 		noCircularDeps bool
+		noProvenance   bool
 		timeout        time.Duration
 		output         string
 	)
@@ -231,7 +252,8 @@ func analyzeCmd() *cobra.Command {
 afferent coupling (Ca), efferent coupling (Ce), instability, abstractness,
 distance from main sequence, LCOM4 cohesion, and circular dependency detection.
 
-Output is JSON conforming to the ModuleGraph schema (version 1.1).
+Output is JSON conforming to the ModuleGraph schema (version 1.2).
+Use --no-provenance to omit provenance metadata for byte-reproducible output.
 
 Use threshold flags (--max-instability, --max-distance, --max-lcom,
 --no-circular-deps) for CI gate enforcement. Violations cause exit code 1.
@@ -258,6 +280,7 @@ JSON output is always written to stdout, even when violations are detected.`,
 				Path:           path,
 				OutputPath:     output,
 				NoCircularDeps: noCircularDeps,
+				NoProvenance:   noProvenance,
 				Timeout:        timeout,
 			}
 
@@ -299,6 +322,7 @@ JSON output is always written to stdout, even when violations are detected.`,
 	cmd.Flags().Float64Var(&maxDistance, "max-distance", 0, "Maximum allowed distance from main sequence [0.0, 1.0]")
 	cmd.Flags().IntVar(&maxLCOM, "max-lcom", 0, "Maximum allowed LCOM value (>= 1)")
 	cmd.Flags().BoolVar(&noCircularDeps, "no-circular-deps", false, "Treat circular dependencies as violations")
+	cmd.Flags().BoolVar(&noProvenance, "no-provenance", false, "Omit provenance metadata for byte-reproducible output")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Analysis timeout (e.g., 30s, 2m)")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Write ModuleGraph JSON to file instead of stdout")
 

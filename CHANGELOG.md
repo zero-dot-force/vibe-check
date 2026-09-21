@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `vibe-check analyze` now emits a top-level `provenance` object in its JSON
+  output recording how the graph was produced: `producer` (`"vibe-check"`),
+  `version` (the tool's semantic version), `generatedAt` (an RFC 3339 UTC
+  timestamp), and `input` (`path` and `modulePath`). A new `--no-provenance`
+  flag omits it for byte-reproducible output. The ModuleGraph schema is bumped
+  to `1.2` (additive; `1.0` and `1.1` remain valid), and `ComputeDelta`/
+  `vibe-check diff` ignore provenance entirely.
+  Spec: `openspec/changes/emit-provenance-metadata/`
 - Agent-design convention pack (`.opencode/uf/packs/agent-design.md`) defining
   10 structural quality rules (AD-001 through AD-010) covering coupling,
   cohesion, complexity, naming, file size, duplication, contract coverage, and

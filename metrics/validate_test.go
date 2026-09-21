@@ -297,6 +297,49 @@ func TestValidate_SchemaVersion11(t *testing.T) {
 	}
 }
 
+func TestValidate_SchemaVersion12(t *testing.T) {
+	t.Parallel()
+
+	// Validate accepts schema version "1.2" with a provenance object.
+	data := []byte(`{
+		"schemaVersion": "1.2",
+		"language": "go",
+		"modules": [],
+		"cycles": [],
+		"warnings": [],
+		"status": "complete",
+		"provenance": {
+			"producer": "vibe-check",
+			"version": "0.1.0",
+			"generatedAt": "2026-09-21T12:00:00Z",
+			"input": {
+				"path": ".",
+				"modulePath": "example.com/foo"
+			}
+		}
+	}`)
+	if err := Validate(data); err != nil {
+		t.Fatalf("Validate rejected schema version 1.2 with provenance: %v", err)
+	}
+}
+
+func TestValidate_ProvenanceOmitted(t *testing.T) {
+	t.Parallel()
+
+	// Schema version 1.2 without provenance must still validate (provenance is optional).
+	data := []byte(`{
+		"schemaVersion": "1.2",
+		"language": "go",
+		"modules": [],
+		"cycles": [],
+		"warnings": [],
+		"status": "complete"
+	}`)
+	if err := Validate(data); err != nil {
+		t.Fatalf("Validate rejected schema version 1.2 without provenance: %v", err)
+	}
+}
+
 func TestValidate_InvalidInputs(t *testing.T) {
 	t.Parallel()
 
@@ -586,6 +629,96 @@ func TestValidate_InvalidInputs(t *testing.T) {
 				"status": "complete"
 			}`,
 			wantErr: "must be >= 0",
+		},
+		{
+			name: "provenance is not an object",
+			data: `{
+				"schemaVersion": "1.2",
+				"language": "go",
+				"modules": [],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete",
+				"provenance": "not-an-object"
+			}`,
+			wantErr: "field \"provenance\" must be an object",
+		},
+		{
+			name: "provenance missing input",
+			data: `{
+				"schemaVersion": "1.2",
+				"language": "go",
+				"modules": [],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete",
+				"provenance": {
+					"producer": "vibe-check",
+					"version": "0.1.0",
+					"generatedAt": "2026-09-21T12:00:00Z"
+				}
+			}`,
+			wantErr: "missing required field \"provenance.input\"",
+		},
+		{
+			name: "provenance input modulePath is not a string",
+			data: `{
+				"schemaVersion": "1.2",
+				"language": "go",
+				"modules": [],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete",
+				"provenance": {
+					"producer": "vibe-check",
+					"version": "0.1.0",
+					"generatedAt": "2026-09-21T12:00:00Z",
+					"input": {
+						"path": ".",
+						"modulePath": 42
+					}
+				}
+			}`,
+			wantErr: "field \"provenance.input.modulePath\" must be a string",
+		},
+		{
+			name: "provenance producer is not a string",
+			data: `{
+				"schemaVersion": "1.2",
+				"language": "go",
+				"modules": [],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete",
+				"provenance": {
+					"producer": 42,
+					"version": "0.1.0",
+					"generatedAt": "2026-09-21T12:00:00Z",
+					"input": {
+						"path": ".",
+						"modulePath": "example.com/foo"
+					}
+				}
+			}`,
+			wantErr: "field \"provenance.producer\" must be a string",
+		},
+		{
+			name: "provenance missing producer/version/generatedAt",
+			data: `{
+				"schemaVersion": "1.2",
+				"language": "go",
+				"modules": [],
+				"cycles": [],
+				"warnings": [],
+				"status": "complete",
+				"provenance": {
+					"input": {
+						"path": ".",
+						"modulePath": "example.com/foo"
+					}
+				}
+			}`,
+			wantErr: "missing required field \"provenance.producer\"",
 		},
 	}
 

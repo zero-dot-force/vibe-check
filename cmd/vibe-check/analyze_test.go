@@ -107,6 +107,18 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestSemanticVersion(t *testing.T) {
+	// semanticVersion returns the ldflags-injected version verbatim. This test
+	// mutates the package-level version var, so it must not run in parallel.
+	orig := version
+	defer func() { version = orig }()
+
+	version = "1.2.3"
+	if got, want := semanticVersion(), "1.2.3"; got != want {
+		t.Errorf("semanticVersion() = %q, want %q", got, want)
+	}
+}
+
 func TestAnalyzeFlagParsing(t *testing.T) {
 	t.Parallel()
 
@@ -122,6 +134,7 @@ func TestAnalyzeFlagParsing(t *testing.T) {
 		"--max-distance", "0.3",
 		"--max-lcom", "3",
 		"--no-circular-deps",
+		"--no-provenance",
 		"--timeout", "30s",
 	})
 	if err != nil {
@@ -159,6 +172,14 @@ func TestAnalyzeFlagParsing(t *testing.T) {
 	}
 	if !noCycles {
 		t.Error("no-circular-deps: got false, want true")
+	}
+
+	noProvenance, err := cmd.Flags().GetBool("no-provenance")
+	if err != nil {
+		t.Fatalf("GetBool no-provenance: %v", err)
+	}
+	if !noProvenance {
+		t.Error("no-provenance: got false, want true")
 	}
 
 	timeout, err := cmd.Flags().GetDuration("timeout")
@@ -691,14 +712,112 @@ func TestRunAnalyze_JSONOutputPrettyPrinted(t *testing.T) {
 	}
 
 	// Verify expected fields are present.
-	if graph.SchemaVersion != "1.1" {
-		t.Errorf("SchemaVersion: got %q, want %q", graph.SchemaVersion, "1.1")
+	if graph.SchemaVersion != "1.2" {
+		t.Errorf("SchemaVersion: got %q, want %q", graph.SchemaVersion, "1.2")
 	}
 	if graph.Language != "go" {
 		t.Errorf("Language: got %q, want %q", graph.Language, "go")
 	}
 	if len(graph.Modules) == 0 {
 		t.Error("Modules is empty, expected at least one module")
+	}
+}
+
+func TestRunAnalyze_ProvenancePopulated(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Path:   couplingFixtureDir(t),
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunAnalyze returned error: %v", err)
+	}
+	if result.Graph == nil {
+		t.Fatal("Graph is nil")
+	}
+
+	p := result.Graph.Provenance
+	if p == nil {
+		t.Fatal("Provenance is nil, want non-nil")
+	}
+	if p.Producer != "vibe-check" {
+		t.Errorf("Provenance.Producer: got %q, want %q", p.Producer, "vibe-check")
+	}
+	if p.Version == "" {
+		t.Error("Provenance.Version is empty, want non-empty")
+	}
+	if _, err := time.Parse(time.RFC3339, p.GeneratedAt); err != nil {
+		t.Errorf("Provenance.GeneratedAt is not RFC3339: %v", err)
+	}
+	if p.Input.ModulePath != "example.com/coupling" {
+		t.Errorf("Provenance.Input.ModulePath: got %q, want %q", p.Input.ModulePath, "example.com/coupling")
+	}
+	if p.Input.Path == "" {
+		t.Error("Provenance.Input.Path is empty, want non-empty")
+	}
+}
+
+func TestRunAnalyze_NoProvenance(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout:       &stdout,
+		Stderr:       &stderr,
+		Path:         couplingFixtureDir(t),
+		NoProvenance: true,
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunAnalyze returned error: %v", err)
+	}
+	if result.Graph == nil {
+		t.Fatal("Graph is nil")
+	}
+	if result.Graph.Provenance != nil {
+		t.Errorf("Provenance: got %+v, want nil", result.Graph.Provenance)
+	}
+	if strings.Contains(stdout.String(), `"provenance"`) {
+		t.Error("output contains provenance key, want omitted")
+	}
+}
+
+func TestRunAnalyze_NoProvenanceDeterministic(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	run := func() string {
+		var stdout, stderr bytes.Buffer
+		opts := AnalyzeOptions{
+			Stdout:       &stdout,
+			Stderr:       &stderr,
+			Path:         couplingFixtureDir(t),
+			NoProvenance: true,
+		}
+		if _, err := RunAnalyze(context.Background(), opts); err != nil {
+			t.Fatalf("RunAnalyze returned error: %v", err)
+		}
+		return stdout.String()
+	}
+
+	first := run()
+	second := run()
+	if first != second {
+		t.Error("output is not byte-identical across runs with --no-provenance")
 	}
 }
 

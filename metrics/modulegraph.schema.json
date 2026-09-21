@@ -7,7 +7,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "enum": ["1.0", "1.1"],
+      "enum": ["1.0", "1.1", "1.2"],
       "description": "Version of the output schema. Consumers check this to detect breaking changes in the JSON structure."
     },
     "language": {
@@ -121,6 +121,42 @@
       "type": "string",
       "enum": ["complete", "partial", "error"],
       "description": "Overall analysis outcome."
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Optional metadata about how the graph was produced (producer, version, timestamp, input). Omitted for byte-reproducible output.",
+      "required": ["producer", "version", "generatedAt", "input"],
+      "properties": {
+        "producer": {
+          "type": "string",
+          "description": "Name of the tool that produced the graph (e.g., \"vibe-check\")."
+        },
+        "version": {
+          "type": "string",
+          "description": "Semantic version of the producing tool (e.g., \"0.1.0\")."
+        },
+        "generatedAt": {
+          "type": "string",
+          "description": "RFC3339 UTC timestamp at which the graph was produced."
+        },
+        "input": {
+          "type": "object",
+          "description": "Identifies the source that was analyzed.",
+          "required": ["path", "modulePath"],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Path to the analyzed project directory."
+            },
+            "modulePath": {
+              "type": "string",
+              "description": "Resolved module import path (e.g., \"github.com/foo/bar\")."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

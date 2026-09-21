@@ -31,7 +31,11 @@ func Validate(data []byte) error {
 		return err
 	}
 
-	return validateWarnings(raw)
+	if err := validateWarnings(raw); err != nil {
+		return err
+	}
+
+	return validateProvenance(raw)
 }
 
 // validateTopLevel checks required top-level fields, schema version, language,
@@ -45,13 +49,14 @@ func validateTopLevel(raw map[string]interface{}) error {
 	}
 
 	// Validate schemaVersion is a supported value.
-	// Accept both "1.0" (no extensions) and "1.1" (with extensions) for backward compatibility.
+	// Accept "1.0" (no extensions), "1.1" (with extensions), and "1.2" (with
+	// provenance) for backward compatibility.
 	version, ok := raw["schemaVersion"].(string)
 	if !ok {
 		return fmt.Errorf("validate: field \"schemaVersion\" must be a string")
 	}
-	if version != "1.0" && version != "1.1" {
-		return fmt.Errorf("validate: unsupported schema version %q (supported: \"1.0\", \"1.1\")", version)
+	if version != "1.0" && version != "1.1" && version != "1.2" {
+		return fmt.Errorf("validate: unsupported schema version %q (supported: \"1.0\", \"1.1\", \"1.2\")", version)
 	}
 
 	// Validate language is a non-empty string.
@@ -219,6 +224,54 @@ func validateWarning(v interface{}, index int) error {
 	}
 	if _, ok := w["message"]; !ok {
 		return fmt.Errorf("warnings[%d]: missing required field \"message\"", index)
+	}
+
+	return nil
+}
+
+// validateProvenance checks the optional top-level provenance object. When
+// present it must contain string producer, version, and generatedAt fields, and
+// an input object with string path and modulePath fields. The producer, version,
+// and generatedAt fields are required whenever provenance is present, matching
+// the required-fields contract in modulegraph.schema.json so the hand-rolled
+// validator and the embedded JSON Schema stay in lockstep.
+func validateProvenance(raw map[string]interface{}) error {
+	provRaw, exists := raw["provenance"]
+	if !exists {
+		return nil
+	}
+	p, ok := provRaw.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("validate: field \"provenance\" must be an object")
+	}
+
+	for _, field := range []string{"producer", "version", "generatedAt"} {
+		v, ok := p[field]
+		if !ok {
+			return fmt.Errorf("validate: missing required field \"provenance.%s\"", field)
+		}
+		if _, isString := v.(string); !isString {
+			return fmt.Errorf("validate: field \"provenance.%s\" must be a string", field)
+		}
+	}
+
+	inputRaw, ok := p["input"]
+	if !ok {
+		return fmt.Errorf("validate: missing required field \"provenance.input\"")
+	}
+	input, ok := inputRaw.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("validate: field \"provenance.input\" must be an object")
+	}
+	for _, field := range []string{"path", "modulePath"} {
+		if _, ok := input[field]; !ok {
+			return fmt.Errorf("validate: missing required field \"provenance.input.%s\"", field)
+		}
+		if v, ok := input[field].(string); !ok {
+			return fmt.Errorf("validate: field \"provenance.input.%s\" must be a string", field)
+		} else if v == "" {
+			return fmt.Errorf("validate: field \"provenance.input.%s\" must be non-empty", field)
+		}
 	}
 
 	return nil

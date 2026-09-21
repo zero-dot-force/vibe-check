@@ -60,11 +60,13 @@ func packageEnv() []string {
 //   - pkgs: loaded module-internal packages (may include packages with errors)
 //   - imports: adjacency map of module-internal import edges (pkg → its module-internal imports)
 //   - warnings: any non-fatal issues encountered during loading
+//   - modulePath: the resolved Go module import path (e.g., "github.com/foo/bar")
 //   - err: fatal error if package loading fails entirely
 func resolvePackages(ctx context.Context, projectPath string) (
 	pkgs []*packages.Package,
 	imports map[string][]string,
 	warnings []metrics.Warning,
+	modulePath string,
 	err error,
 ) {
 	cfg := &packages.Config{
@@ -77,17 +79,17 @@ func resolvePackages(ctx context.Context, projectPath string) (
 
 	allPkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("resolve packages: %w — verify the path is a valid Go module directory containing go.mod and .go files", err)
+		return nil, nil, nil, "", fmt.Errorf("resolve packages: %w — verify the path is a valid Go module directory containing go.mod and .go files", err)
 	}
 
 	if len(allPkgs) == 0 {
-		return nil, nil, nil, nil
+		return nil, nil, nil, "", nil
 	}
 
 	// Determine module path from the first package with module info.
-	modulePath := detectModulePath(allPkgs)
+	modulePath = detectModulePath(allPkgs)
 	if modulePath == "" {
-		return nil, nil, nil, fmt.Errorf("resolve packages: unable to determine module path — ensure the target directory contains a go.mod (run 'go mod init' if missing)")
+		return nil, nil, nil, "", fmt.Errorf("resolve packages: unable to determine module path — ensure the target directory contains a go.mod (run 'go mod init' if missing)")
 	}
 
 	// Filter to module-internal packages and collect warnings for errored packages.
@@ -138,7 +140,7 @@ func resolvePackages(ctx context.Context, projectPath string) (
 		imports[pkg.PkgPath] = internalImports
 	}
 
-	return internal, imports, warnings, nil
+	return internal, imports, warnings, modulePath, nil
 }
 
 // anyPackageTypeChecked reports whether at least one package in pkgs was

@@ -7,7 +7,7 @@
 //	vibe-check --version         Print version information
 //
 // The analyze command produces JSON output conforming to the ModuleGraph schema
-// (version 1.1) and supports CI gate flags for threshold enforcement.
+// (version 1.2) and supports CI gate flags for threshold enforcement.
 package main
 
 import (

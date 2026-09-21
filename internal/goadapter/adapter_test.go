@@ -138,8 +138,25 @@ func TestAdapter_Integration(t *testing.T) {
 	}
 
 	// Verify schema version.
-	if graph.SchemaVersion != "1.1" {
-		t.Errorf("SchemaVersion: got %q, want %q", graph.SchemaVersion, "1.1")
+	if graph.SchemaVersion != "1.2" {
+		t.Errorf("SchemaVersion: got %q, want %q", graph.SchemaVersion, "1.2")
+	}
+
+	// Verify provenance input is populated by the adapter (producer/version/
+	// generatedAt are left empty for the CLI to fill in).
+	if graph.Provenance == nil {
+		t.Fatal("Provenance is nil, want non-nil")
+	}
+	if graph.Provenance.Input.ModulePath != "example.com/coupling" {
+		t.Errorf("Provenance.Input.ModulePath: got %q, want %q",
+			graph.Provenance.Input.ModulePath, "example.com/coupling")
+	}
+	if graph.Provenance.Input.Path == "" {
+		t.Error("Provenance.Input.Path is empty, want non-empty")
+	}
+	if graph.Provenance.Producer != "" || graph.Provenance.Version != "" || graph.Provenance.GeneratedAt != "" {
+		t.Errorf("adapter must leave Producer/Version/GeneratedAt empty (got %q, %q, %q)",
+			graph.Provenance.Producer, graph.Provenance.Version, graph.Provenance.GeneratedAt)
 	}
 
 	// Verify language.

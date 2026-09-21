@@ -55,3 +55,19 @@ func versionString() string {
 	}
 	return fmt.Sprintf("%s (commit %s, built %s)", v, c, d)
 }
+
+// semanticVersion returns the semantic version only (no commit/date decoration).
+// It applies the same ldflags → build-info fallback as versionString: when the
+// ldflags-injected version is empty or the default "dev", it falls back to the
+// main module version embedded by the Go toolchain.
+func semanticVersion() string {
+	v := version
+	if v == "" || v == "dev" {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			if mv := info.Main.Version; mv != "" && mv != "(devel)" {
+				v = mv
+			}
+		}
+	}
+	return v
+}

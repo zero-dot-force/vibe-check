@@ -453,3 +453,26 @@ func TestComputeDelta_Deterministic(t *testing.T) {
 		t.Errorf("ComputeDelta not deterministic:\n got %+v\nwant %+v", second, first)
 	}
 }
+
+func TestComputeDelta_IgnoresProvenance(t *testing.T) {
+	t.Parallel()
+
+	mods := []ModuleResult{mod("m", 1, 1, 0.30, 0.0, 0.0, 0)}
+	base := mustGraph(t, StatusComplete, mods, nil, nil)
+
+	withoutProvenance := mustGraph(t, StatusComplete, mods, nil, nil)
+	withProvenance := mustGraph(t, StatusComplete, mods, nil, nil)
+	withProvenance.Provenance = &Provenance{
+		Producer:    "vibe-check",
+		Version:     "9.9.9",
+		GeneratedAt: "2099-01-01T00:00:00Z",
+		Input:       ProvenanceInput{Path: "/somewhere", ModulePath: "example.com/other"},
+	}
+
+	baseDelta := ComputeDelta(base, withoutProvenance)
+	provenanceDelta := ComputeDelta(base, withProvenance)
+
+	if !reflect.DeepEqual(baseDelta, provenanceDelta) {
+		t.Errorf("ComputeDelta should ignore provenance:\n got %+v\nwant %+v", provenanceDelta, baseDelta)
+	}
+}

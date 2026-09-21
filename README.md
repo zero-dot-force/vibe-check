@@ -51,6 +51,7 @@ vibe-check analyze ./myproject --max-instability 0.8 --no-circular-deps
 | `--max-distance` | float | unset (no check) | Fail if any module's distance from the main sequence exceeds this value. Must be in `[0.0, 1.0]`. |
 | `--max-lcom` | int | unset (no check) | Fail if any module's LCOM4 exceeds this value. Must be `>= 1`. |
 | `--no-circular-deps` | bool | `false` | Treat any detected circular dependency as a violation. |
+| `--no-provenance` | bool | `false` | Omit the `provenance` object from output for byte-reproducible JSON. |
 | `--timeout` | duration | none | Bound total analysis time (e.g., `30s`, `2m`). No timeout by default. |
 | `--output`, `-o` | string | stdout | Write the ModuleGraph JSON to a file instead of stdout. Exits `2` (with no partial stdout) if the file cannot be written. |
 | `--version` | — | — | Print version, commit, and build date, then exit. Use on the root command: `vibe-check --version`. |
@@ -73,16 +74,20 @@ gate.
 
 ## Output
 
-The analysis is printed to stdout as pretty-printed JSON with `schemaVersion` `"1.1"`. Each
+The analysis is printed to stdout as pretty-printed JSON with `schemaVersion` `"1.2"`. Each
 entry in `modules[]` carries `ca`, `ce`, `instability`, `abstractness`, `distance`, `lcom`,
 `exportedTypes`, `abstractTypes`, `zone`, and an optional `extensions` object. For Go, the
 extensions may include `go.interfaceWidth` (method count per exported interface) and
 `go.interfaceProximity` (`"producer"` or `"consumer"` per interface). Detected cycles appear
 in `cycles` as lexicographically-sorted sets of package paths.
 
+A top-level `provenance` object records how the graph was produced: `producer` (`"vibe-check"`),
+`version` (the tool version), `generatedAt` (an RFC 3339 UTC timestamp), and `input`
+(`path` and `modulePath`). Pass `--no-provenance` to omit it for byte-reproducible output.
+
 ```json
 {
-  "schemaVersion": "1.1",
+  "schemaVersion": "1.2",
   "language": "go",
   "modules": [
     {
@@ -105,7 +110,16 @@ in `cycles` as lexicographically-sorted sets of package paths.
   ],
   "cycles": [],
   "warnings": [],
-  "status": "complete"
+  "status": "complete",
+  "provenance": {
+    "producer": "vibe-check",
+    "version": "0.1.0",
+    "generatedAt": "2026-09-21T12:00:00Z",
+    "input": {
+      "path": ".",
+      "modulePath": "github.com/you/proj"
+    }
+  }
 }
 ```
 
@@ -166,8 +180,6 @@ when every asset is skipped), `2` on an invalid target path or I/O failure.
   package patterns.
 - There is no default timeout — set `--timeout` to bound long analyses (for example, on large
   monorepos).
-- Provenance metadata (producer, version, timestamp, input) is not yet emitted in the output;
-  it is deferred to a follow-up.
 - Large-repository performance is a P2 item: `go/packages` loads full ASTs and type
   information into memory, so very large monorepos may be slow.
 

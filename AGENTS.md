@@ -303,14 +303,14 @@ metrics/            # Universal coupling metrics model (Layer 1)
   delta.go          # GraphDelta + ComputeDelta (base vs PR deltas, entropy direction)
   doc.go            # Package-level GoDoc
   external.go       # ExternalAdapter (JSON-RPC subprocess)
-  graph.go          # ModuleGraph and ModuleResult types (with Extensions)
+  graph.go          # ModuleGraph, ModuleResult, Provenance, ProvenanceInput types
   jsonrpc.go        # JSON-RPC 2.0 protocol types
   module.go         # Module type (universal unit of analysis)
-  modulegraph.schema.json  # JSON Schema for ModuleGraph validation (v1.1)
+  modulegraph.schema.json  # JSON Schema for ModuleGraph validation (v1.2)
   registry.go       # Adapter registry (dependency-injected)
   schema.go         # Embedded JSON schema access
   security.go       # Path validation and environment sanitization
-  validate.go       # JSON schema validation (accepts v1.0 and v1.1)
+  validate.go       # JSON schema validation (accepts v1.0, v1.1, and v1.2)
   values.go         # Named metric types (Instability, Abstractness, etc.)
   verdict.go        # Verdict + DecideVerdict (protected entropy gate thresholds)
   warning.go        # Warning type for analysis caveats
@@ -329,7 +329,8 @@ The architecture follows a three-layer design per the RFC phasing:
 - **Layer 1** (`metrics/`): Language-agnostic universal model — Ca, Ce,
   Instability, Abstractness, Distance from Main Sequence, LCOM4,
   circular dependency detection, JSON schema validation, adapter
-  interface, security primitives, and the base↔PR entropy delta engine
+  interface, security primitives, provenance metadata (`Provenance`/
+  `ProvenanceInput` types, schema `1.2`), and the base↔PR entropy delta engine
   (`ComputeDelta`) plus verdict engine (`DecideVerdict`) with protected
   gate thresholds (ΔInstability ≥ 0.15, ΔDistance ≥ 0.20, ΔLCOM ≥ 2, or a
   new circular dependency).
@@ -342,7 +343,8 @@ The architecture follows a three-layer design per the RFC phasing:
 - **Layer 3** (`cmd/vibe-check/`): CLI entry point using cobra. Provides
   `vibe-check analyze` with threshold flags (`--max-instability`,
   `--max-distance`, `--max-lcom`, `--no-circular-deps`, `--timeout`,
-  `--output`/`-o`) and JSON output; `vibe-check diff <base.json> <pr.json>`
+  `--output`/`-o`, `--no-provenance`) and JSON output (with an optional
+  `provenance` object); `vibe-check diff <base.json> <pr.json>`
   computing the entropy delta and verdict (with tighten-only threshold
   overrides); and   `vibe-check init [path]` deploying the embedded agent assets
   into `.opencode/agents/` and command assets into `.opencode/commands/`.

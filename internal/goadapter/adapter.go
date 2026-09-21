@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 
 	"github.com/zero-dot-force/vibe-check/metrics"
@@ -65,7 +66,7 @@ func (a *Adapter) ExtensionCapabilities() []string {
 // type classification (exported/abstract), LCOM4 cohesion, derived metrics
 // (instability, abstractness, distance, zone), and detects circular dependencies.
 //
-// The returned [metrics.ModuleGraph] conforms to schema version "1.1".
+// The returned [metrics.ModuleGraph] conforms to schema version "1.2".
 // Status is [metrics.StatusComplete] when all packages load without errors,
 // or [metrics.StatusPartial] when some packages have errors but analysis
 // can still proceed.
@@ -88,7 +89,7 @@ func (a *Adapter) Analyze(ctx context.Context, projectPath string) (*metrics.Mod
 	}
 
 	// Step 3: Load and resolve packages.
-	pkgs, imports, warnings, err := resolvePackages(ctx, projectPath)
+	pkgs, imports, warnings, modulePath, err := resolvePackages(ctx, projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("analyze: %w", err)
 	}
@@ -193,5 +194,11 @@ func (a *Adapter) Analyze(ctx context.Context, projectPath string) (*metrics.Mod
 		Cycles:        cycles,
 		Warnings:      warnings,
 		Status:        status,
+		Provenance: &metrics.Provenance{
+			Input: metrics.ProvenanceInput{
+				Path:       filepath.Clean(projectPath),
+				ModulePath: modulePath,
+			},
+		},
 	}, nil
 }

@@ -277,6 +277,7 @@ cmd/vibe-check/     # CLI entry point (Layer 3)
   analyze.go        # analyze subcommand with threshold flags (incl --output/-o)
   diff.go           # diff subcommand (base vs PR entropy delta + verdict)
   init.go           # init subcommand (deploys embedded agent and command assets)
+  provenance.go     # shared provenance envelope (producer/version/generatedAt)
 internal/goadapter/ # Go language adapter (Layer 2)
   adapter.go        # Adapter struct implementing metrics.Adapter
   resolve.go        # Package loading via go/packages
@@ -346,8 +347,12 @@ The architecture follows a three-layer design per the RFC phasing:
   `--output`/`-o`, `--no-provenance`) and JSON output (with an optional
   `provenance` object); `vibe-check diff <base.json> <pr.json>`
   computing the entropy delta and verdict (with tighten-only threshold
-  overrides); and   `vibe-check init [path]` deploying the embedded agent assets
-  into `.opencode/agents/` and command assets into `.opencode/commands/`.
+  overrides), whose `--json` output carries an optional `provenance` object
+  (producer/version/generatedAt) omittable via `--no-provenance`; and
+  `vibe-check init [path]` deploying the embedded agent assets into
+  `.opencode/agents/` and command assets into `.opencode/commands/`, whose
+  `--json` output likewise carries the optional `provenance` object omittable
+  via `--no-provenance`.
 
 RFC phasing status:
 

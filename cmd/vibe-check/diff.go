@@ -35,6 +35,10 @@ type DiffOptions struct {
 	// JSON selects machine-readable JSON output when true; otherwise a
 	// human-readable table is written.
 	JSON bool
+	// NoProvenance when true omits the provenance envelope from the JSON
+	// payload, yielding byte-reproducible output across runs. Provenance is
+	// emitted by default.
+	NoProvenance bool
 }
 
 // DiffResult contains the outcome of a diff comparison.
@@ -61,6 +65,7 @@ type DiffResult struct {
 // measurement is unreliable, an unreliable payload never carries added/removed
 // signal.
 type diffJSON struct {
+	Provenance       *provenanceEnvelope      `json:"provenance,omitempty"`
 	Verdict          metrics.Verdict          `json:"verdict"`
 	Reasons          []string                 `json:"reasons"`
 	EntropyDirection metrics.EntropyDirection `json:"entropyDirection"`
@@ -129,7 +134,7 @@ func RunDiff(ctx context.Context, opts DiffOptions) (*DiffResult, error) {
 	// deterministic.
 	var buf bytes.Buffer
 	if opts.JSON {
-		if err := writeDiffJSON(&buf, delta, verdict, reasons); err != nil {
+		if err := writeDiffJSON(&buf, delta, verdict, reasons, opts.NoProvenance); err != nil {
 			return &DiffResult{ExitCode: 2}, fmt.Errorf("encode diff json: %w", err)
 		}
 	} else {
@@ -155,9 +160,10 @@ func RunDiff(ctx context.Context, opts DiffOptions) (*DiffResult, error) {
 
 // writeDiffJSON renders the diff as a single indented JSON object to w and
 // returns nil on success. A nil reasons slice is normalized to an empty slice so
-// the reasons key is always a JSON array, never null. Returns a wrapped error if
-// marshaling or writing to w fails.
-func writeDiffJSON(w io.Writer, delta metrics.GraphDelta, verdict metrics.Verdict, reasons []string) error {
+// the reasons key is always a JSON array, never null. Unless noProvenance is
+// true, a provenance envelope is attached so consumers can attribute and audit
+// the output. Returns a wrapped error if marshaling or writing to w fails.
+func writeDiffJSON(w io.Writer, delta metrics.GraphDelta, verdict metrics.Verdict, reasons []string, noProvenance bool) error {
 	if reasons == nil {
 		reasons = []string{}
 	}
@@ -171,6 +177,9 @@ func writeDiffJSON(w io.Writer, delta metrics.GraphDelta, verdict metrics.Verdic
 		Removed:          delta.Removed,
 		NewCycles:        delta.NewCycles,
 		ResolvedCycles:   delta.ResolvedCycles,
+	}
+	if !noProvenance {
+		payload.Provenance = newProvenanceEnvelope()
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -306,6 +315,7 @@ func diffCmd() *cobra.Command {
 		maxInstabilityDelta float64
 		maxDistanceDelta    float64
 		maxLCOMDelta        int
+		noProvenance        bool
 	)
 
 	defaults := metrics.DefaultVerdictThresholds()
@@ -329,7 +339,11 @@ only when an input is missing, unreadable, or schema-invalid.
 
 The --max-*-delta override flags are TIGHTEN-ONLY: a value looser than the
 protected default (instability 0.15, distance 0.20, LCOM 2) is rejected with
-exit code 2.`,
+exit code 2.
+
+With --json, a provenance envelope (producer, version, generatedAt) is included
+by default so downstream consumers can attribute and audit the output. Use
+--no-provenance to omit it for byte-reproducible output.`,
 		Args: cobra.ExactArgs(2),
 		// SilenceUsage prevents cobra from printing usage on RunE errors; we
 		// report errors ourselves.
@@ -365,12 +379,13 @@ exit code 2.`,
 			defer stop()
 
 			opts := DiffOptions{
-				Stdout:     cmd.OutOrStdout(),
-				Stderr:     cmd.ErrOrStderr(),
-				BasePath:   args[0],
-				PRPath:     args[1],
-				Thresholds: thresholds,
-				JSON:       jsonOut,
+				Stdout:       cmd.OutOrStdout(),
+				Stderr:       cmd.ErrOrStderr(),
+				BasePath:     args[0],
+				PRPath:       args[1],
+				Thresholds:   thresholds,
+				JSON:         jsonOut,
+				NoProvenance: noProvenance,
 			}
 
 			result, err := RunDiff(ctx, opts)
@@ -402,6 +417,7 @@ exit code 2.`,
 	cmd.Flags().Float64Var(&maxInstabilityDelta, "max-instability-delta", defaults.MaxInstabilityDelta, "Tighten-only instability-increase gate (must be <= 0.15)")
 	cmd.Flags().Float64Var(&maxDistanceDelta, "max-distance-delta", defaults.MaxDistanceDelta, "Tighten-only distance-increase gate (must be <= 0.20)")
 	cmd.Flags().IntVar(&maxLCOMDelta, "max-lcom-delta", defaults.MaxLCOMDelta, "Tighten-only LCOM-increase gate (must be <= 2)")
+	cmd.Flags().BoolVar(&noProvenance, "no-provenance", false, "Omit provenance metadata for byte-reproducible output")
 
 	return cmd
 }

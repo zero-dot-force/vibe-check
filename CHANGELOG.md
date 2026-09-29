@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `1.2` (additive; `1.0` and `1.1` remain valid), and `ComputeDelta`/
   `vibe-check diff` ignore provenance entirely.
   Spec: `openspec/changes/emit-provenance-metadata/`
+- `vibe-check diff --json` and `vibe-check init --json` now emit a top-level
+  `provenance` object (`producer` `"vibe-check"`, `version`, and `generatedAt`)
+  mirroring `analyze`, sourced from a shared `cmd/vibe-check/provenance.go`
+  helper (`producerName` constant + `newProvenanceEnvelope()`). Each command
+  gains a `--no-provenance` flag to omit the envelope for byte-reproducible
+  output. The `analyze` command was refactored to source producer/version/
+  generatedAt from the same shared helper (its `input` sub-object is unchanged).
+  Spec: `openspec/changes/add-diff-init-provenance/`
 - Agent-design convention pack (`.opencode/uf/packs/agent-design.md`) defining
   10 structural quality rules (AD-001 through AD-010) covering coupling,
   cohesion, complexity, naming, file size, duplication, contract coverage, and

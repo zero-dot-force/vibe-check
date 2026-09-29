@@ -107,9 +107,10 @@ func RunAnalyze(ctx context.Context, opts AnalyzeOptions) (*AnalyzeResult, error
 		if graph.Provenance == nil {
 			graph.Provenance = &metrics.Provenance{}
 		}
-		graph.Provenance.Producer = "vibe-check"
-		graph.Provenance.Version = semanticVersion()
-		graph.Provenance.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+		env := newProvenanceEnvelope()
+		graph.Provenance.Producer = env.Producer
+		graph.Provenance.Version = env.Version
+		graph.Provenance.GeneratedAt = env.GeneratedAt
 	}
 
 	// Step 4: Check context before writing output.

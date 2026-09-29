@@ -31,6 +31,10 @@ type InitOptions struct {
 	// JSON selects machine-readable JSON output when true; otherwise a
 	// human-readable summary is written.
 	JSON bool
+	// NoProvenance when true omits the provenance envelope from the JSON
+	// payload, yielding byte-reproducible output across runs. Provenance is
+	// emitted by default.
+	NoProvenance bool
 
 	// writeFile is an optional filesystem seam forwarded to scaffold.Run so the
 	// I/O-failure exit path can be exercised deterministically in tests. When
@@ -61,9 +65,10 @@ type InitResult struct {
 // three slices are normalized to empty (never null) so each key is always a JSON
 // array.
 type initJSON struct {
-	Written []string `json:"written"`
-	Skipped []string `json:"skipped"`
-	Forced  []string `json:"forced"`
+	Provenance *provenanceEnvelope `json:"provenance,omitempty"`
+	Written    []string            `json:"written"`
+	Skipped    []string            `json:"skipped"`
+	Forced     []string            `json:"forced"`
 }
 
 // RunInit deploys the embedded Review Council agent and command assets into the
@@ -115,7 +120,7 @@ func RunInit(ctx context.Context, opts InitOptions) (*InitResult, error) {
 	// output atomic (no partial payload on a write error) and deterministic.
 	var buf bytes.Buffer
 	if opts.JSON {
-		if err := writeInitJSON(&buf, res); err != nil {
+		if err := writeInitJSON(&buf, res, opts.NoProvenance); err != nil {
 			return &InitResult{ExitCode: 2}, fmt.Errorf("encode init json: %w", err)
 		}
 	} else {
@@ -136,13 +141,17 @@ func RunInit(ctx context.Context, opts InitOptions) (*InitResult, error) {
 
 // writeInitJSON renders the deployment result as a single indented JSON object
 // to w and returns nil on success. Each slice is normalized so its key is always
-// a JSON array, never null. Returns a wrapped error if marshaling or writing to
-// w fails.
-func writeInitJSON(w io.Writer, res *scaffold.Result) error {
+// a JSON array, never null. Unless noProvenance is true, a provenance envelope
+// is attached so consumers can attribute and audit the output. Returns a wrapped
+// error if marshaling or writing to w fails.
+func writeInitJSON(w io.Writer, res *scaffold.Result, noProvenance bool) error {
 	payload := initJSON{
 		Written: normStringSlice(res.Written),
 		Skipped: normStringSlice(res.Skipped),
 		Forced:  normStringSlice(res.Forced),
+	}
+	if !noProvenance {
+		payload.Provenance = newProvenanceEnvelope()
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -181,8 +190,9 @@ func normStringSlice(s []string) []string {
 // business logic in the command layer).
 func initCmd() *cobra.Command {
 	var (
-		force   bool
-		jsonOut bool
+		force        bool
+		jsonOut      bool
+		noProvenance bool
 	)
 
 	cmd := &cobra.Command{
@@ -196,6 +206,10 @@ command assets (such as the /vibe-check slash command) into a target project's
 Existing files are skipped by default; use --force to overwrite them. The target
 path defaults to the current directory. Output is a human-readable summary by
 default or a JSON object with --json.
+
+With --json, a provenance envelope (producer, version, generatedAt) is included
+by default so downstream consumers can attribute and audit the output. Use
+--no-provenance to omit it for byte-reproducible output.
 
 Exit code is 0 on success (including an all-skipped run) and 2 when the target
 path is invalid or an asset cannot be written.`,
@@ -215,11 +229,12 @@ path is invalid or an asset cannot be written.`,
 			defer stop()
 
 			opts := InitOptions{
-				Stdout: cmd.OutOrStdout(),
-				Stderr: cmd.ErrOrStderr(),
-				Path:   path,
-				Force:  force,
-				JSON:   jsonOut,
+				Stdout:       cmd.OutOrStdout(),
+				Stderr:       cmd.ErrOrStderr(),
+				Path:         path,
+				Force:        force,
+				JSON:         jsonOut,
+				NoProvenance: noProvenance,
 			}
 
 			result, err := RunInit(ctx, opts)
@@ -249,6 +264,7 @@ path is invalid or an asset cannot be written.`,
 
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing asset files instead of skipping them")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit a machine-readable JSON payload instead of a summary")
+	cmd.Flags().BoolVar(&noProvenance, "no-provenance", false, "Omit provenance metadata for byte-reproducible output")
 
 	return cmd
 }

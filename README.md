@@ -150,6 +150,10 @@ verdict — `APPROVE`, `COMMENT`, or `REQUEST_CHANGES`. The protected gates are
 which yields `REQUEST_CHANGES`); smaller non-zero shifts yield `COMMENT`; an improving or
 flat delta yields `APPROVE`. A partial/unreliable input is always downgraded to `COMMENT`.
 
+When run with `--json`, `diff` also emits a top-level `provenance` object with `producer` (the constant
+`"vibe-check"`), `version` (the tool version), and `generatedAt` (an RFC 3339 UTC timestamp); pass
+`--no-provenance` to omit it for byte-reproducible output.
+
 It exits `0` whenever both inputs are valid — the verdict is data in the payload, so a
 `REQUEST_CHANGES` verdict still exits `0` — and `2` when an input is missing, unreadable, or
 schema-invalid, or when a `--max-instability-delta`, `--max-distance-delta`, or
@@ -173,6 +177,10 @@ It writes assets to two directories:
 
 Existing files are skipped unless `--force` is given. Exit code `0` on success (including
 when every asset is skipped), `2` on an invalid target path or I/O failure.
+
+When run with `--json`, `init` also emits a top-level `provenance` object with `producer` (the constant
+`"vibe-check"`), `version` (the tool version), and `generatedAt` (an RFC 3339 UTC timestamp); pass
+`--no-provenance` to omit it for byte-reproducible output.
 
 ## Known limitations
 

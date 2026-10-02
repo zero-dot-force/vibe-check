@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `vibe-check diff --gate` adds a CI-regression gate: when `--gate` is set, a
+  `REQUEST_CHANGES` verdict exits `1` (instead of `0`) so CI can block a PR on
+  structural regression; `APPROVE` and `COMMENT` still exit `0`, and tool failures
+  still exit `2`. The verdict and reasons remain in the payload. A new
+  `.github/workflows/structural-gate.yml` workflow runs `analyze` on both the PR
+  head and base (skipping forked PRs) and then `diff --gate` on the
+  `pull_request` event.
+  Spec: `openspec/changes/ci-regression-gate/`
 - `vibe-check analyze` now emits a top-level `provenance` object in its JSON
   output recording how the graph was produced: `producer` (`"vibe-check"`),
   `version` (the tool's semantic version), `generatedAt` (an RFC 3339 UTC

@@ -39,6 +39,12 @@ type DiffOptions struct {
 	// payload, yielding byte-reproducible output across runs. Provenance is
 	// emitted by default.
 	NoProvenance bool
+	// Gate when true maps a REQUEST_CHANGES verdict to exit code 1 so a CI
+	// workflow can block the PR on structural regression. The report is still
+	// written to opts.Stdout; only the exit code changes. An APPROVE or COMMENT
+	// verdict still exits 0, and tool failures (unreadable/schema-invalid input)
+	// still exit 2.
+	Gate bool
 }
 
 // DiffResult contains the outcome of a diff comparison.
@@ -52,9 +58,10 @@ type DiffResult struct {
 	// an APPROVE verdict.
 	Reasons []string
 	// ExitCode is the process exit code: 0 when both inputs are valid and a
-	// verdict was computed, 2 on a tool failure (unreadable or schema-invalid
-	// input). A REQUEST_CHANGES verdict still exits 0 — the verdict travels in
-	// the payload, not the exit code.
+	// verdict was computed (including a REQUEST_CHANGES verdict without --gate),
+	// 1 when --gate is set and the verdict is REQUEST_CHANGES (a gate failure),
+	// and 2 on a tool failure (unreadable or schema-invalid input). Without
+	// --gate the verdict travels in the payload, not the exit code.
 	ExitCode int
 }
 
@@ -86,9 +93,12 @@ type diffJSON struct {
 //
 // Exit code semantics (also mirrored in the returned DiffResult.ExitCode):
 //   - 0: both inputs were read and validated, the delta and verdict were
-//     computed, and the report was written to opts.Stdout. A REQUEST_CHANGES
-//     verdict still returns 0 — diff is a reporting tool and conveys the
-//     verdict in its payload, not in the process exit code.
+//     computed, and the report was written to opts.Stdout. Without --gate a
+//     REQUEST_CHANGES verdict still returns 0 — diff conveys the verdict in its
+//     payload, not in the process exit code.
+//   - 1: only when opts.Gate is set and the verdict is REQUEST_CHANGES (a gate
+//     failure). The report is still written to opts.Stdout; the non-zero exit
+//     code signals CI to block the PR. An APPROVE or COMMENT verdict exits 0.
 //   - 2: either input is missing/unreadable or fails ModuleGraph schema
 //     validation. In that case nothing is written to opts.Stdout and the
 //     returned error describes the failure for the command layer to report.
@@ -150,11 +160,16 @@ func RunDiff(ctx context.Context, opts DiffOptions) (*DiffResult, error) {
 		return &DiffResult{ExitCode: 2}, fmt.Errorf("write diff output: %w", err)
 	}
 
+	exitCode := 0
+	if opts.Gate && verdict == metrics.VerdictRequestChanges {
+		exitCode = 1
+	}
+
 	return &DiffResult{
 		Delta:    delta,
 		Verdict:  verdict,
 		Reasons:  reasons,
-		ExitCode: 0,
+		ExitCode: exitCode,
 	}, nil
 }
 
@@ -316,6 +331,7 @@ func diffCmd() *cobra.Command {
 		maxDistanceDelta    float64
 		maxLCOMDelta        int
 		noProvenance        bool
+		gate                bool
 	)
 
 	defaults := metrics.DefaultVerdictThresholds()
@@ -333,9 +349,11 @@ Both inputs must be JSON documents conforming to the ModuleGraph schema, as
 produced by 'vibe-check analyze'. Output is a human-readable table by default or
 a JSON object with --json.
 
-The verdict is reported in the output payload, not the exit code: diff exits 0
-whenever both inputs are valid (even for a REQUEST_CHANGES verdict) and exits 2
-only when an input is missing, unreadable, or schema-invalid.
+The verdict is reported in the output payload. By default diff exits 0 whenever
+both inputs are valid (even for a REQUEST_CHANGES verdict) and exits 2 only when
+an input is missing, unreadable, or schema-invalid. With --gate, a
+REQUEST_CHANGES verdict instead exits 1 so CI can block the PR on structural
+regression.
 
 The --max-*-delta override flags are TIGHTEN-ONLY: a value looser than the
 protected default (instability 0.15, distance 0.20, LCOM 2) is rejected with
@@ -386,6 +404,7 @@ by default so downstream consumers can attribute and audit the output. Use
 				Thresholds:   thresholds,
 				JSON:         jsonOut,
 				NoProvenance: noProvenance,
+				Gate:         gate,
 			}
 
 			result, err := RunDiff(ctx, opts)
@@ -401,11 +420,13 @@ by default so downstream consumers can attribute and audit the output. Use
 			}
 
 			if result.ExitCode != 0 {
-				// Defensive: RunDiff couples every non-zero exit code with a
-				// non-nil error handled above, so this path is not expected.
+			// Gate failure — the verdict and reasons are already written to
+			// stdout. Return an exitCodeError with a descriptive message: cobra
+			// prints it to stderr (SilenceErrors is not set) and main() then
+			// sets the correct exit code (1) without re-printing it.
 				return &exitCodeError{
 					code: result.ExitCode,
-					err:  fmt.Errorf("diff failed with exit code %d", result.ExitCode),
+					err:  fmt.Errorf("structural regression detected"),
 				}
 			}
 
@@ -418,6 +439,7 @@ by default so downstream consumers can attribute and audit the output. Use
 	cmd.Flags().Float64Var(&maxDistanceDelta, "max-distance-delta", defaults.MaxDistanceDelta, "Tighten-only distance-increase gate (must be <= 0.20)")
 	cmd.Flags().IntVar(&maxLCOMDelta, "max-lcom-delta", defaults.MaxLCOMDelta, "Tighten-only LCOM-increase gate (must be <= 2)")
 	cmd.Flags().BoolVar(&noProvenance, "no-provenance", false, "Omit provenance metadata for byte-reproducible output")
+	cmd.Flags().BoolVar(&gate, "gate", false, "Exit 1 when the verdict is REQUEST_CHANGES (for CI regression gating)")
 
 	return cmd
 }

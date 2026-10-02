@@ -866,6 +866,112 @@ func TestDiffCommand_TightenAppliesStricter(t *testing.T) {
 	}
 }
 
+func TestRunDiff_GateExitCodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		build    func() (metrics.ModuleGraph, metrics.ModuleGraph)
+		gate     bool
+		wantExit int
+		wantVerb metrics.Verdict
+	}{
+		{name: "gate_request_changes_exits_one", build: degradeCycleFixtures, gate: true, wantExit: 1, wantVerb: metrics.VerdictRequestChanges},
+		{name: "gate_approve_exits_zero", build: improvementFixtures, gate: true, wantExit: 0, wantVerb: metrics.VerdictApprove},
+		{name: "gate_comment_exits_zero", build: commentBandFixtures, gate: true, wantExit: 0, wantVerb: metrics.VerdictComment},
+		{name: "no_gate_request_changes_exits_zero", build: degradeCycleFixtures, gate: false, wantExit: 0, wantVerb: metrics.VerdictRequestChanges},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			base, pr := tt.build()
+			basePath, prPath := writeGraphPair(t, base, pr)
+
+			var stdout, stderr bytes.Buffer
+			result, err := RunDiff(context.Background(), DiffOptions{
+				Stdout:     &stdout,
+				Stderr:     &stderr,
+				BasePath:   basePath,
+				PRPath:     prPath,
+				Thresholds: metrics.DefaultVerdictThresholds(),
+				JSON:       true,
+				Gate:       tt.gate,
+			})
+			if err != nil {
+				t.Fatalf("RunDiff returned error: %v", err)
+			}
+			if result.ExitCode != tt.wantExit {
+				t.Errorf("ExitCode: got %d, want %d", result.ExitCode, tt.wantExit)
+			}
+			if result.Verdict != tt.wantVerb {
+				t.Errorf("verdict: got %v, want %v", result.Verdict, tt.wantVerb)
+			}
+			if stdout.Len() == 0 {
+				t.Error("stdout must carry the diff payload even on a gate failure")
+			}
+		})
+	}
+}
+
+func TestDiffCommand_GateFlagWiring(t *testing.T) {
+	t.Parallel()
+
+	t.Run("gate_request_changes_exits_one", func(t *testing.T) {
+		t.Parallel()
+		base, pr := degradeCycleFixtures()
+		basePath, prPath := writeGraphPair(t, base, pr)
+
+		cmd := rootCmd()
+		var out, errOut bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&errOut)
+		cmd.SetArgs([]string{"diff", "--gate", "--json", basePath, prPath})
+
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected exit-1 error for --gate REQUEST_CHANGES, got nil")
+		}
+		var ece *exitCodeError
+		if !errors.As(err, &ece) {
+			t.Fatalf("error is not *exitCodeError: %T (%v)", err, err)
+		}
+		if ece.code != 1 {
+			t.Errorf("exit code: got %d, want 1", ece.code)
+		}
+		var decoded decodedDiff
+		if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+			t.Fatalf("unmarshal gate payload: %v\npayload: %s", err, out.String())
+		}
+		if decoded.Verdict != "REQUEST_CHANGES" {
+			t.Errorf("verdict: got %v, want REQUEST_CHANGES", decoded.Verdict)
+		}
+	})
+
+	t.Run("gate_approve_exits_zero", func(t *testing.T) {
+		t.Parallel()
+		base, pr := improvementFixtures()
+		basePath, prPath := writeGraphPair(t, base, pr)
+
+		cmd := rootCmd()
+		var out, errOut bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&errOut)
+		cmd.SetArgs([]string{"diff", "--gate", "--json", basePath, prPath})
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("expected exit 0 for --gate APPROVE, got: %v\nstderr: %s", err, errOut.String())
+		}
+		var decoded decodedDiff
+		if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+			t.Fatalf("unmarshal gate payload: %v", err)
+		}
+		if decoded.Verdict != "APPROVE" {
+			t.Errorf("verdict: got %v, want APPROVE", decoded.Verdict)
+		}
+	})
+}
+
 // --- Task 3.3/3.4: command-level exit codes ----------------------------------
 
 func TestDiffCommand_ExitCodes(t *testing.T) {
@@ -928,7 +1034,7 @@ func TestDiffCommand_Help(t *testing.T) {
 	}
 	output := out.String()
 	for _, want := range []string{
-		"diff", "--json", "--max-instability-delta", "--max-distance-delta", "--max-lcom-delta",
+		"diff", "--json", "--gate", "--max-instability-delta", "--max-distance-delta", "--max-lcom-delta",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("help output missing %q", want)

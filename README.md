@@ -141,6 +141,7 @@ design-quality metrics plus a verdict:
 vibe-check analyze --output base.json ./...   # on the base revision
 vibe-check analyze --output pr.json  ./...     # on the PR revision
 vibe-check diff base.json pr.json              # add --json for machine-readable output
+vibe-check diff --gate base.json pr.json       # exit 1 on REQUEST_CHANGES (CI regression gate)
 ```
 
 `diff` computes per-module deltas (Ca, Ce, instability, abstractness, distance, LCOM), new
@@ -154,10 +155,16 @@ When run with `--json`, `diff` also emits a top-level `provenance` object with `
 `"vibe-check"`), `version` (the tool version), and `generatedAt` (an RFC 3339 UTC timestamp); pass
 `--no-provenance` to omit it for byte-reproducible output.
 
-It exits `0` whenever both inputs are valid — the verdict is data in the payload, so a
+By default it exits `0` whenever both inputs are valid — the verdict is data in the payload, so a
 `REQUEST_CHANGES` verdict still exits `0` — and `2` when an input is missing, unreadable, or
 schema-invalid, or when a `--max-instability-delta`, `--max-distance-delta`, or
 `--max-lcom-delta` override is looser than the protected default (overrides may only tighten).
+With `--gate`, a `REQUEST_CHANGES` verdict instead exits `1` (an `APPROVE` or `COMMENT` verdict
+still exits `0`), so CI can block a PR on structural regression. The verdict and reasons are
+still written to the payload; only the exit code changes. See
+[`.github/workflows/structural-gate.yml`](.github/workflows/structural-gate.yml) for the
+pull-request regression gate that runs `analyze` on both the PR head and base and then
+`diff --gate`.
 
 ## Deploying agents and commands: `vibe-check init`
 

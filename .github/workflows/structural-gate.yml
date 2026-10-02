@@ -1,0 +1,49 @@
+# Structural gate for vibe-check: detects design-quality regression between a
+# PR and its base branch. Runs `vibe-check analyze` on both refs, then
+# `vibe-check diff --gate` to fail the build when coupling metrics regress
+# beyond tolerance (REQUEST_CHANGES verdict).
+name: Structural Gate — Design Quality Regression
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: structural-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  structural-gate:
+    # Skip forked PRs: `vibe-check analyze` drives the Go toolchain to compile
+    # the target module, which would execute untrusted build-time code (cgo,
+    # generated files, custom build steps) from the fork. See the divisor-entropy
+    # security constraint and design.md D7.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Checkout base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build -o bin/vibe-check ./cmd/vibe-check
+
+      - name: Analyze head
+        run: bin/vibe-check analyze --output head.json .
+
+      - name: Analyze base
+        run: bin/vibe-check analyze --output base.json ./base
+
+      - name: Gate
+        run: bin/vibe-check diff --gate base.json head.json

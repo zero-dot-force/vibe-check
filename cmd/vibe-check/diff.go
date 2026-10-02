@@ -420,10 +420,10 @@ by default so downstream consumers can attribute and audit the output. Use
 			}
 
 			if result.ExitCode != 0 {
-			// Gate failure — the verdict and reasons are already written to
-			// stdout. Return an exitCodeError with a descriptive message: cobra
-			// prints it to stderr (SilenceErrors is not set) and main() then
-			// sets the correct exit code (1) without re-printing it.
+				// Gate failure — the verdict and reasons are already written to
+				// stdout. Return an exitCodeError with a descriptive message: cobra
+				// prints it to stderr (SilenceErrors is not set) and main() then
+				// sets the correct exit code (1) without re-printing it.
 				return &exitCodeError{
 					code: result.ExitCode,
 					err:  fmt.Errorf("structural regression detected"),

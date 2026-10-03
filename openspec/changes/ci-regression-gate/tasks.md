@@ -33,6 +33,7 @@
 - [x] 5.2 Add a `CHANGELOG.md` `[Unreleased] → Added` entry with `Spec: openspec/changes/ci-regression-gate/`.
 - [x] 5.3 File a documentation issue against this repository for the user-facing `--gate` flag and new CI workflow (AGENTS.md Documentation gate).
 - [x] 5.4 File a website documentation-sync issue in `unbound-force/website` for the `--gate` flag (Constitution Website Documentation Sync).
+- [x] 5.5 Document that the gate is advisory: merges are only blocked once a repo admin enables branch protection and marks `structural-gate` required (design.md R3 follow-up; reflected in the README and the workflow header comment).
 
 <!-- spec-review: passed -->
 <!-- code-review: passed -->

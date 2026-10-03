@@ -1022,6 +1022,65 @@ func TestDiffCommand_ExitCodes(t *testing.T) {
 	})
 }
 
+// TestDiffCommand_GatePreservesExitTwo locks down design.md D3: under --gate,
+// tool failures and tighten-only rejections still exit 2 with no payload.
+func TestDiffCommand_GatePreservesExitTwo(t *testing.T) {
+	t.Parallel()
+
+	base, pr := improvementFixtures()
+	basePath, prPath := writeGraphPair(t, base, pr)
+
+	tests := []struct {
+		name       string
+		args       func() []string
+		wantSubstr string
+	}{
+		{
+			name: "bad_input_exits_two",
+			args: func() []string {
+				return []string{"diff", "--gate", filepath.Join(t.TempDir(), "nope.json"), prPath}
+			},
+			wantSubstr: "read base file",
+		},
+		{
+			name: "looser_override_exits_two",
+			args: func() []string {
+				return []string{"diff", "--gate", "--max-instability-delta", "0.30", basePath, prPath}
+			},
+			wantSubstr: "looser than the protected default",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := rootCmd()
+			var out, errOut bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			cmd.SetArgs(tt.args())
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("expected exit-2 error under --gate, got nil")
+			}
+			var ece *exitCodeError
+			if !errors.As(err, &ece) {
+				t.Fatalf("error is not *exitCodeError: %T (%v)", err, err)
+			}
+			if ece.code != 2 {
+				t.Errorf("exit code: got %d, want 2", ece.code)
+			}
+			if out.Len() != 0 {
+				t.Errorf("stdout must be empty under --gate, got %d bytes: %s", out.Len(), out.String())
+			}
+			if !strings.Contains(errOut.String(), tt.wantSubstr) {
+				t.Errorf("stderr missing %q: %s", tt.wantSubstr, errOut.String())
+			}
+		})
+	}
+}
+
 func TestDiffCommand_Help(t *testing.T) {
 	t.Parallel()
 	cmd := rootCmd()

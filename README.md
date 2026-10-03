@@ -166,6 +166,9 @@ still written to the payload; only the exit code changes. See
 pull-request regression gate that runs `analyze` on both the PR head and base and then
 `diff --gate`.
 
+This gate is advisory until a repository admin enables branch protection and marks
+`structural-gate` required — it fails the check but does not by itself block a merge.
+
 ## Deploying agents and commands: `vibe-check init`
 
 `init` deploys the embedded agent and command assets into a project's `.opencode/` directory:

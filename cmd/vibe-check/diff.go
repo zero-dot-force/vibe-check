@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -301,18 +302,27 @@ func normFloat(f float64) float64 {
 func tightenThresholds(def metrics.VerdictThresholds, instability, distance *float64, lcom *int) (metrics.VerdictThresholds, error) {
 	out := def
 	if instability != nil {
+		if math.IsNaN(*instability) || math.IsInf(*instability, 0) || *instability < 0 || *instability > 1 {
+			return def, fmt.Errorf("--max-instability-delta %v is invalid: must be a finite value in [0.0, 1.0]", *instability)
+		}
 		if *instability > def.MaxInstabilityDelta {
 			return def, fmt.Errorf("--max-instability-delta %.4f is looser than the protected default %.4f: overrides may only tighten (lower) the gate", *instability, def.MaxInstabilityDelta)
 		}
 		out.MaxInstabilityDelta = *instability
 	}
 	if distance != nil {
+		if math.IsNaN(*distance) || math.IsInf(*distance, 0) || *distance < 0 || *distance > 1 {
+			return def, fmt.Errorf("--max-distance-delta %v is invalid: must be a finite value in [0.0, 1.0]", *distance)
+		}
 		if *distance > def.MaxDistanceDelta {
 			return def, fmt.Errorf("--max-distance-delta %.4f is looser than the protected default %.4f: overrides may only tighten (lower) the gate", *distance, def.MaxDistanceDelta)
 		}
 		out.MaxDistanceDelta = *distance
 	}
 	if lcom != nil {
+		if *lcom < 0 {
+			return def, fmt.Errorf("--max-lcom-delta %d is invalid: must be a non-negative integer", *lcom)
+		}
 		if *lcom > def.MaxLCOMDelta {
 			return def, fmt.Errorf("--max-lcom-delta %d is looser than the protected default %d: overrides may only tighten (lower) the gate", *lcom, def.MaxLCOMDelta)
 		}

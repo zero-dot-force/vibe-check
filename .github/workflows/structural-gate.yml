@@ -1,6 +1,6 @@
 # Structural gate for vibe-check: detects design-quality regression between a
 # PR and its base branch. Runs `vibe-check analyze` on both refs, then
-# `vibe-check diff --gate` to fail the build when coupling metrics regress
+# `vibe-check diff --gate` to fail the check when coupling metrics regress
 # beyond tolerance (REQUEST_CHANGES verdict).
 name: Structural Gate — Design Quality Regression
 
@@ -23,6 +23,7 @@ jobs:
     # security constraint and design.md D7.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -40,10 +41,10 @@ jobs:
         run: go build -o bin/vibe-check ./cmd/vibe-check
 
       - name: Analyze head
-        run: bin/vibe-check analyze --output head.json .
+        run: bin/vibe-check analyze --timeout 5m --output head.json .
 
       - name: Analyze base
-        run: bin/vibe-check analyze --output base.json ./base
+        run: bin/vibe-check analyze --timeout 5m --output base.json ./base
 
       - name: Gate
         run: bin/vibe-check diff --gate base.json head.json

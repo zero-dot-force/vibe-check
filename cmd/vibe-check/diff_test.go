@@ -779,6 +779,13 @@ func TestTightenThresholds(t *testing.T) {
 		{name: "tighter_lcom", lcom: intPtr(1), want: metrics.VerdictThresholds{MaxInstabilityDelta: 0.15, MaxDistanceDelta: 0.20, MaxLCOMDelta: 1}},
 		{name: "equal_lcom_noop", lcom: intPtr(2), want: def},
 		{name: "looser_lcom", lcom: intPtr(3), wantErr: true},
+		{name: "nan_instability", instability: float64Ptr(math.NaN()), wantErr: true},
+		{name: "positive_inf_instability", instability: float64Ptr(math.Inf(1)), wantErr: true},
+		{name: "negative_inf_instability", instability: float64Ptr(math.Inf(-1)), wantErr: true},
+		{name: "negative_instability", instability: float64Ptr(-0.05), wantErr: true},
+		{name: "nan_distance", distance: float64Ptr(math.NaN()), wantErr: true},
+		{name: "negative_distance", distance: float64Ptr(-0.10), wantErr: true},
+		{name: "negative_lcom", lcom: intPtr(-1), wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -15,14 +15,14 @@ execute sequentially but remain eligible for future parallelization. -->
 ## 3. Release Workflow
 
 - [x] 3.1 Create `.github/workflows/release.yml` with a header comment block (CI-011), triggering on `workflow_dispatch` with a `tag` input (string, required). Top-level `permissions: {}`.
-- [x] 3.2 Add `preflight` job calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@main` with `tag: ${{ inputs.tag }}` and `secrets: inherit`.
-- [x] 3.3 Add `release` job (needs `preflight`) calling `complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@v1` with `tag: ${{ needs.preflight.outputs.tag }}` and `secrets: inherit`.
+- [x] 3.2 Add `preflight` job calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@<commit-sha>` with `tag: ${{ inputs.tag }}` and `secrets: inherit`.
+- [x] 3.3 Add `release` job (needs `preflight`) calling `complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@<commit-sha>` with `tag: ${{ needs.preflight.outputs.tag }}` and `secrets: inherit`.
 
 ## 4. Verification
 
 - [x] 4.1 Run `goreleaser check` locally to validate `.goreleaser.yaml` syntax
 - [x] 4.2 Verify `go build -ldflags "-X main.version=v0.2.0 -X main.commit=abc1234 -X main.date=2026-10-04T12:00:00Z" ./cmd/vibe-check && ./vibe-check --version` reports the injected values
-- [x] 4.3 Review `.github/workflows/release.yml`: confirm `workflow_dispatch` trigger with `tag` input, correct org-infra reusable workflow references (`@main` for preflight, `@v1` for goreleaser), header comment (CI-011), and top-level `permissions: {}`
+- [x] 4.3 Review `.github/workflows/release.yml`: confirm `workflow_dispatch` trigger with `tag` input, correct org-infra reusable workflow references (SHA-pinned per Constitution V), header comment (CI-011), and top-level `permissions: {}`
 - [x] 4.4 Run `goreleaser build --snapshot --clean` locally to verify cross-platform builds produce correctly named binaries, `checksums.txt`, and changelog output with correct commit grouping
 
 ## 5. Documentation

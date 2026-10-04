@@ -42,13 +42,13 @@ The release workflow delegates to `complytime/org-infra` reusable workflows (`re
 
 ### D4: Delegate to org-infra reusable workflows
 
-**Choice:** The release workflow has two jobs: `preflight` (calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@main`) and `release` (calling `complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@main`). Top-level `permissions: {}`; each reusable workflow declares its own permissions.
+**Choice:** The release workflow has two jobs: `preflight` (calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@<commit-sha>`) and `release` (calling `complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@<commit-sha>`). Top-level `permissions: {}`; each reusable workflow declares its own permissions.
 
 **Rationale:** This is the pattern used by other Unbound Force repos (`gaze`, etc.). The reusable workflows handle tag validation, CI check verification, GoReleaser execution, cosign signing, SBOM generation, and action pinning. vibe-check only provides the tag input and `.goreleaser.yaml` config.
 
 ### D5: SHA pinning handled by org-infra reusable workflows
 
-**Choice:** Action SHAs are centralized in the org-infra reusable workflows. vibe-check does not pin actions directly — it references the reusable workflows by branch (`@main` for preflight, `@v1` for release).
+**Choice:** Action SHAs are centralized in the org-infra reusable workflows. vibe-check does not pin the actions within the reusable workflows but does pin the reusable workflow references to a specific org-infra commit SHA (per Constitution V: "CI pipelines MUST pin actions and reusable workflows by commit SHA").
 
 **Rationale:** Centralized pinning reduces maintenance burden and ensures all Unbound Force repos stay in sync with security updates. The reusable workflows are maintained by the org-infra team.
 
@@ -60,14 +60,14 @@ The release workflow delegates to `complytime/org-infra` reusable workflows (`re
 
 **Alternatives considered:**
 - **Standard defaults** — GoReleaser defaults without CGO_ENABLED, stripping, or changelog groups produce larger binaries and less useful release notes.
-- **Org-infra reusable workflows** — `gaze` uses complytime/org-infra reusable workflows (`reusable_release_preflight.yml`, `reusable_release_goreleaser.yml`). These are not applicable to vibe-check (different GitHub org). vibe-check's release workflow is self-contained.
+- **Org-infra reusable workflows** — `gaze` uses complytime/org-infra reusable workflows (`reusable_release_preflight.yml`, `reusable_release_goreleaser.yml`). vibe-check adopted this pattern (D4) and delegates to the same org-infra reusable workflows.
 
 ## Risks / Trade-offs
 
 - **[workflow_dispatch requires manual trigger]** → A maintainer must go to the GitHub Actions UI or use `gh workflow run` to trigger a release. → Mitigation: This is intentional — the preflight workflow validates the tag and runs CI checks before creating the tag, which tag-push triggers cannot do before the push.
 - **[No notarization on macOS]** → macOS users see "unidentified developer" warnings. → Mitigation: Expected for open-source CLI tools. Binaries are cosign-signed by the reusable release workflow. Notarization can be added later.
 - **[GoReleaser version in reusable workflow]** → The reusable workflow defaults to `~> v2`. → Mitigation: vibe-check can override with a `goreleaser_version` input if needed. The reusable workflow also pins the `goreleaser/goreleaser-action` SHA.
-- **[org-infra dependency]** → A breaking change in the org-infra reusable workflows could break vibe-check releases. → Mitigation: The reusable workflows are versioned (`@main` for preflight, `@v1` for release). vibe-check can pin to specific SHAs if needed.
+- **[org-infra dependency]** → A breaking change in the org-infra reusable workflows would not affect vibe-check releases because the workflow refs are pinned to a specific commit SHA. → Mitigation: vibe-check maintainers should periodically bump the pinned SHA to pick up org-infra improvements.
 
 ## Coverage Strategy
 

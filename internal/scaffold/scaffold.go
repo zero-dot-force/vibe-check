@@ -13,25 +13,14 @@ import (
 )
 
 const (
-	// dirPerm is the mode applied to directories created during deployment.
-	dirPerm fs.FileMode = 0o755
-
-	// filePerm is the mode applied to asset files written during deployment.
+	dirPerm  fs.FileMode = 0o755
 	filePerm fs.FileMode = 0o644
 )
 
-// category describes one class of embedded assets (agents or commands) and the
-// directory structure used to embed and deploy them.
 type category struct {
-	// sourceDir is the directory within the embedded filesystem that holds the
-	// asset templates. The embed glob is sourceDir + "/*.md".
-	sourceDir string
-	// targetSubdir is the directory, relative to the target repository root,
-	// into which assets of this category are deployed.
+	sourceDir    string
 	targetSubdir string
-	// prefix is the short category name prepended to filenames in Result slices
-	// (e.g. "agents" or "commands") to disambiguate entries across categories.
-	prefix string
+	prefix       string
 }
 
 var categories = []category{
@@ -41,60 +30,28 @@ var categories = []category{
 
 // Options configures a scaffold Run.
 type Options struct {
-	// TargetDir is the root directory of the repository into which agent assets
-	// are deployed. It MUST be an existing directory; traversal components are
-	// rejected.
 	TargetDir string
-
-	// Force, when true, overwrites existing destination files. When false
-	// (the default), pre-existing files are left unchanged and reported as
-	// skipped.
-	Force bool
-
-	// WriteFile is an injectable seam for writing a destination file. When nil,
-	// os.WriteFile is used. It mirrors the os.WriteFile signature so tests can
-	// substitute a stub to exercise the I/O-failure path without special
-	// privileges.
+	Force     bool
 	WriteFile func(path string, data []byte, perm fs.FileMode) error
 }
 
-// Result reports the outcome of a scaffold Run. Each slice holds
-// category-prefixed relative paths (e.g. "agents/divisor-entropy.md",
-// "commands/vibe-check.md") in stable, ascending lexicographic order.
+// Result reports the outcome of a scaffold Run.
 type Result struct {
-	// Written lists assets that were newly created.
 	Written []string
-
-	// Skipped lists assets that already existed and were left unchanged because
-	// Force was false.
 	Skipped []string
-
-	// Forced lists assets that already existed and were overwritten because
-	// Force was true.
-	Forced []string
+	Forced  []string
 }
 
-// Run deploys the embedded agent and command assets into opts.TargetDir. It
-// validates the target directory, creates the .opencode/agents and
-// .opencode/commands trees if necessary, and writes each embedded asset,
-// skipping or overwriting existing files according to opts.Force. It returns a
-// Result describing which assets were written, skipped, or forced, with
-// category-prefixed paths (e.g. "agents/divisor-entropy.md").
+// Run deploys the embedded agent and command assets into opts.TargetDir.
 func Run(opts Options) (*Result, error) {
 	return run(agentAssetsFS, commandAssetsFS, opts)
 }
 
-// run is the core scaffold routine parameterized over the source filesystems so
-// tests can inject synthetic fs.FS values. Run calls it with the embedded asset
-// filesystems.
 func run(agentAssets, commandAssets fs.FS, opts Options) (*Result, error) {
 	if err := metrics.ValidateProjectPath(opts.TargetDir); err != nil {
 		return nil, fmt.Errorf("scaffold: validate target directory: %w", err)
 	}
 
-	// Canonicalize the validated root so containment checks compare against the
-	// resolved path. ValidateProjectPath already confirmed it exists and is a
-	// directory.
 	root, err := filepath.EvalSymlinks(opts.TargetDir)
 	if err != nil {
 		return nil, fmt.Errorf("scaffold: resolve target directory %q: %w", opts.TargetDir, err)
@@ -105,7 +62,6 @@ func run(agentAssets, commandAssets fs.FS, opts Options) (*Result, error) {
 		writeFile = os.WriteFile
 	}
 
-	// Deploy each asset category, collecting results into a single Result.
 	sources := []fs.FS{agentAssets, commandAssets}
 	result := &Result{}
 	for i, cat := range categories {
@@ -125,9 +81,6 @@ func run(agentAssets, commandAssets fs.FS, opts Options) (*Result, error) {
 	return result, nil
 }
 
-// deployCategory deploys all *.md assets from a single category (e.g. agents or
-// commands) into the appropriate target subdirectory under root. It returns
-// category-prefixed filenames for each outcome.
 func deployCategory(assets fs.FS, cat category, root string, writeFile func(string, []byte, fs.FileMode) error, force bool) (written, skipped, forced []string, err error) {
 	entries, err := fs.Glob(assets, cat.sourceDir+"/*.md")
 	if err != nil {
@@ -162,9 +115,6 @@ func deployCategory(assets fs.FS, cat category, root string, writeFile func(stri
 		if err := writeFile(destPath, data, filePerm); err != nil {
 			return nil, nil, nil, fmt.Errorf("scaffold: write asset %q: %w", destPath, err)
 		}
-		// os.WriteFile preserves an existing file's mode on overwrite and is
-		// subject to umask on create, so normalize the mode explicitly to keep
-		// deployment deterministic.
 		if err := os.Chmod(destPath, filePerm); err != nil {
 			return nil, nil, nil, fmt.Errorf("scaffold: set mode on %q: %w", destPath, err)
 		}
@@ -179,12 +129,39 @@ func deployCategory(assets fs.FS, cat category, root string, writeFile func(stri
 	return written, skipped, forced, nil
 }
 
-// ensureDir creates rel (a slash-separated path relative to root) one component
-// at a time, verifying after each step that the component is not a symlink and
-// still resolves inside root. This prevents a symlink planted at an
-// intermediate component (for example .opencode or .opencode/agents) from
-// redirecting writes outside the validated root. It returns the absolute path
-// of the deepest directory.
+func assetPaths() ([]string, error) {
+	var paths []string
+	for _, fsys := range []fs.FS{agentAssetsFS, commandAssetsFS} {
+		err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			rel := strings.TrimPrefix(p, "assets/")
+			paths = append(paths, rel)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("scaffold: walk embedded assets: %w", err)
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func assetContent(relPath string) ([]byte, error) {
+	fullPath := path.Join("assets", relPath)
+	for _, fsys := range []fs.FS{agentAssetsFS, commandAssetsFS} {
+		data, err := fs.ReadFile(fsys, fullPath)
+		if err == nil {
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("scaffold: asset %q not found in embedded assets", relPath)
+}
+
 func ensureDir(root, rel string) (string, error) {
 	current := root
 	for _, part := range strings.Split(rel, "/") {
@@ -206,7 +183,6 @@ func ensureDir(root, rel string) (string, error) {
 			if mkErr := os.Mkdir(current, dirPerm); mkErr != nil {
 				return "", fmt.Errorf("scaffold: create directory %q: %w", current, mkErr)
 			}
-			// Mkdir is subject to umask; normalize to the intended mode.
 			if chErr := os.Chmod(current, dirPerm); chErr != nil {
 				return "", fmt.Errorf("scaffold: set mode on directory %q: %w", current, chErr)
 			}
@@ -222,8 +198,6 @@ func ensureDir(root, rel string) (string, error) {
 	return current, nil
 }
 
-// verifyContained resolves target and confirms it lies within root. root MUST
-// already be a symlink-resolved absolute path.
 func verifyContained(root, target string) error {
 	resolved, err := filepath.EvalSymlinks(target)
 	if err != nil {
@@ -241,9 +215,6 @@ func verifyContained(root, target string) error {
 	return nil
 }
 
-// regularFileExists reports whether p exists as a regular file. It uses Lstat so
-// a symlink at the destination is detected rather than followed, and returns an
-// error if the destination is a symlink.
 func regularFileExists(p string) (bool, error) {
 	info, err := os.Lstat(p)
 	if err != nil {

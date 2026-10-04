@@ -9,14 +9,14 @@ The release workflow SHALL trigger via `workflow_dispatch` with a `tag` input st
 
 #### Scenario: Release is manually dispatched
 - **WHEN** a maintainer triggers the workflow via `workflow_dispatch` with a tag input (e.g., `v0.2.0`)
-- **THEN** the preflight job SHALL call `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@main` with the tag input
+- **THEN** the preflight job SHALL call `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@<commit-sha>` with the tag input
 
 #### Scenario: Push to main does not trigger
 - **WHEN** a commit is pushed to `main`
 - **THEN** the release workflow SHALL NOT execute
 
 ### Requirement: Preflight job
-The workflow SHALL include a `preflight` job calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@main` with `tag: ${{ inputs.tag }}`. The preflight workflow validates semver format, checks tag uniqueness, verifies CI checks on HEAD, validates semver ordering against the latest existing tag, verifies unreleased commits exist, and creates an annotated tag via the GitHub API. The job SHALL pass `secrets: inherit` to forward `GITHUB_TOKEN` and any other secrets to the reusable workflow.
+The workflow SHALL include a `preflight` job calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@<commit-sha>` with `tag: ${{ inputs.tag }}`. The preflight workflow validates semver format, checks tag uniqueness, verifies CI checks on HEAD, validates semver ordering against the latest existing tag, verifies unreleased commits exist, and creates an annotated tag via the GitHub API. The job SHALL pass `secrets: inherit` to forward `GITHUB_TOKEN` and any other secrets to the reusable workflow.
 
 #### Scenario: Preflight succeeds
 - **WHEN** the tag is a valid semver (`vX.Y.Z`) that is greater than the latest existing tag and unreleased commits exist
@@ -31,7 +31,7 @@ The workflow SHALL include a `preflight` job calling `complytime/org-infra/.gith
 - **THEN** the preflight job SHALL fail, and no tag SHALL be created
 
 ### Requirement: GoReleaser release job
-The workflow SHALL include a `release` job that depends on `preflight` and calls `complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@v1` with `tag: ${{ needs.preflight.outputs.tag }}`. The reusable workflow handles: checkout of the tag ref, Go setup from `go.mod`, cosign signing, syft SBOM generation, and GoReleaser execution with `release --clean --verbose`. The job SHALL pass `secrets: inherit` to forward `GITHUB_TOKEN` for release creation and artifact upload.
+The workflow SHALL include a `release` job that depends on `preflight` and calls `complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@<commit-sha>` with `tag: ${{ needs.preflight.outputs.tag }}`. The reusable workflow handles: checkout of the tag ref, Go setup from `go.mod`, cosign signing, syft SBOM generation, and GoReleaser execution with `release --clean --verbose`. The job SHALL pass `secrets: inherit` to forward `GITHUB_TOKEN` for release creation and artifact upload.
 
 #### Scenario: Release publishes successfully
 - **WHEN** the preflight job succeeds and the `release` job executes

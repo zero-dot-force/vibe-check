@@ -16,7 +16,7 @@ permissions: {}
 jobs:
   preflight:
     name: Preflight — Tag Validation & CI Checks
-    uses: complytime/org-infra/.github/workflows/reusable-release-preflight.yml@main
+    uses: complytime/org-infra/.github/workflows/reusable-release-preflight.yml@58194ad2d1b24803263cac6fd1b54422e3c208dd
     with:
       tag: ${{ inputs.tag }}
       go-version-file: go.mod
@@ -25,7 +25,7 @@ jobs:
   release:
     name: Release — GoReleaser
     needs: preflight
-    uses: complytime/org-infra/.github/workflows/reusable-release-goreleaser.yml@v1
+    uses: complytime/org-infra/.github/workflows/reusable-release-goreleaser.yml@58194ad2d1b24803263cac6fd1b54422e3c208dd
     with:
       tag: ${{ needs.preflight.outputs.tag }}
     secrets: inherit

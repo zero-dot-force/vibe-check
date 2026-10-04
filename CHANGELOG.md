@@ -50,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test assertion depth. Enforcement mapped to vibe-check, gaze, golangci-lint,
   and review agents. Includes `agent-design-custom.md` placeholder for
   project-level overrides.
+- `docs/agent-design-pack.md` — standalone human-readable reference for the
+  10 agent-design rules (AD-001–AD-010) covering rule reference table,
+  enforcement tool matrix, override mechanism, forward references, and LCOM4
+  semantics.
+  Spec: `openspec/changes/doc-agent-design-pack/specs/agent-design-reference/`
 - `vibe-check diff <base.json> <pr.json>` compares two ModuleGraph JSON
   snapshots and reports the structural-entropy delta (per-module Ca, Ce,
   instability, abstractness, distance, and LCOM deltas), new and resolved

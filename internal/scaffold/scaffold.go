@@ -129,6 +129,10 @@ func deployCategory(assets fs.FS, cat category, root string, writeFile func(stri
 	return written, skipped, forced, nil
 }
 
+// assetPaths returns a sorted list of relative paths for all embedded assets
+// across both agent and command filesystems. Each path is stripped of the
+// "assets/" prefix so it maps directly to a .opencode/-relative deployment
+// path (e.g. "agents/divisor-entropy.md").
 func assetPaths() ([]string, error) {
 	var paths []string
 	for _, fsys := range []fs.FS{agentAssetsFS, commandAssetsFS} {
@@ -151,6 +155,10 @@ func assetPaths() ([]string, error) {
 	return paths, nil
 }
 
+// assetContent reads and returns the bytes of an embedded asset identified by
+// its .opencode/-relative path (without the "assets/" prefix). It dispatches
+// to both agentAssetsFS and commandAssetsFS, returning the first successful
+// read or an error if the asset is not found in either filesystem.
 func assetContent(relPath string) ([]byte, error) {
 	fullPath := path.Join("assets", relPath)
 	for _, fsys := range []fs.FS{agentAssetsFS, commandAssetsFS} {

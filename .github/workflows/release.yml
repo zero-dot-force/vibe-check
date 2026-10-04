@@ -1,0 +1,31 @@
+# Release pipeline: triggered manually via workflow_dispatch with a tag
+# input. Delegates tag validation and CI checks to org-infra reusable
+# workflows, then runs GoReleaser to build and publish.
+name: Release — GoReleaser
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.2.0)'
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  preflight:
+    name: Preflight — Tag Validation & CI Checks
+    uses: complytime/org-infra/.github/workflows/reusable-release-preflight.yml@main
+    with:
+      tag: ${{ inputs.tag }}
+      go-version-file: go.mod
+    secrets: inherit
+
+  release:
+    name: Release — GoReleaser
+    needs: preflight
+    uses: complytime/org-infra/.github/workflows/reusable-release-goreleaser.yml@v1
+    with:
+      tag: ${{ needs.preflight.outputs.tag }}
+    secrets: inherit

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Release automation via GoReleaser: cross-platform pre-built binaries for
+  linux/darwin/windows × amd64/arm64 are published to GitHub Releases via a
+  `workflow_dispatch`-triggered pipeline using org-infra reusable workflows.
+  Ldflags embed `main.version` (`{{.Tag}}`), `main.commit`, and `main.date`
+  so `--version` reports the release version. Binaries are statically linked
+  (`CGO_ENABLED=0`) with stripped debug symbols (`-s -w`). Release notes are
+  auto-generated with commit groups (Features, Bug Fixes, Documentation,
+  Others).
+  Spec: `openspec/changes/goreleaser-release-automation/specs/goreleaser-config/`
+  Spec: `openspec/changes/goreleaser-release-automation/specs/release-workflow/`
+
 - `vibe-check diff --gate` adds a CI-regression gate: when `--gate` is set, a
   `REQUEST_CHANGES` verdict exits `1` (instead of `0`) so CI can block a PR on
   structural regression; `APPROVE` and `COMMENT` still exit `0`, and tool failures

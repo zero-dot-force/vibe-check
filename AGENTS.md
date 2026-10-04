@@ -268,6 +268,11 @@ golangci-lint run ./...
 ## Project Structure
 
 ```text
+.goreleaser.yaml    # GoReleaser configuration for cross-platform binary releases
+.github/workflows/  # CI and release workflows
+  ci.yml            # Build, test, vet, and lint on PR and push
+  release.yml       # Release pipeline (workflow_dispatch tag → GitHub Release)
+  structural-gate.yml # Entropy-regression gate on pull_request
 .opencode/          # OpenCode agent configuration, skills, packs
 .specify/           # Constitution and governance memory
 .uf/                # Unbound Force tooling configuration

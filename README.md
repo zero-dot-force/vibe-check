@@ -17,6 +17,21 @@ for module-version installs to work. When a binary is built this way (without re
 meaningful module version (commit and build date may show as `none`/`unknown` for
 module-cache installs).
 
+### Pre-built binaries
+
+Download the latest binary for your platform from
+[GitHub Releases](https://github.com/zero-dot-force/vibe-check/releases).
+
+Binaries are available for linux, darwin, and windows on amd64 and arm64.
+Each release includes a `checksums.txt` file for artifact verification.
+
+**macOS users**: downloaded binaries are not notarized. If Gatekeeper blocks
+the binary, right-click → Open in Finder, or run:
+
+```bash
+xattr -d com.apple.quarantine ./vibe-check
+```
+
 To build from a checkout instead:
 
 ```bash

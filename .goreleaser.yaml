@@ -1,0 +1,44 @@
+version: 2
+
+project_name: vibe-check
+
+builds:
+  - main: ./cmd/vibe-check
+    id: vibe-check
+    binary: vibe-check
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Tag}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.CommitDate}}
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
+
+snapshot:
+  version_template: "{{ .Version }}-dev"
+
+release:
+  prerelease: auto

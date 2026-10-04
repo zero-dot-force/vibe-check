@@ -22,10 +22,6 @@ const (
 	commandAssetName       = "commands/vibe-check.md"
 )
 
-// TestRun_DeploysEmbeddedAssets covers fresh deployment: both agent and command
-// assets land in .opencode/agents/ and .opencode/commands/ with a 0o755
-// directory tree and 0o644 files, and the deployed bytes match the embedded
-// source.
 func TestRun_DeploysEmbeddedAssets(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -35,7 +31,6 @@ func TestRun_DeploysEmbeddedAssets(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	// All assets should be written, none skipped or forced.
 	if len(res.Written) == 0 {
 		t.Fatalf("Written is empty, expected assets to be deployed")
 	}
@@ -46,7 +41,6 @@ func TestRun_DeploysEmbeddedAssets(t *testing.T) {
 		t.Errorf("Forced: got %v, want empty", res.Forced)
 	}
 
-	// Verify Written contains both agent and command entries with prefixes.
 	if !slices.Contains(res.Written, prefixedAgentAssetName) {
 		t.Errorf("Written missing %q; got %v", prefixedAgentAssetName, res.Written)
 	}
@@ -57,13 +51,11 @@ func TestRun_DeploysEmbeddedAssets(t *testing.T) {
 		t.Errorf("Written missing %q; got %v", prefixedCmdAssetName, res.Written)
 	}
 
-	// Verify .opencode directory structure.
 	openCodeDir := filepath.Join(dir, ".opencode")
 	if oi, err := os.Stat(openCodeDir); err != nil || !oi.IsDir() {
 		t.Fatalf(".opencode dir missing or not a directory: %v", err)
 	}
 
-	// Verify agents dir permissions and content.
 	agentsDir := filepath.Join(openCodeDir, "agents")
 	di, err := os.Stat(agentsDir)
 	if err != nil {
@@ -76,7 +68,6 @@ func TestRun_DeploysEmbeddedAssets(t *testing.T) {
 		t.Errorf("agents dir perm: got %o, want %o", got, 0o755)
 	}
 
-	// Verify commands dir permissions.
 	cmdsDir := filepath.Join(openCodeDir, "commands")
 	ci, err := os.Stat(cmdsDir)
 	if err != nil {
@@ -89,7 +80,6 @@ func TestRun_DeploysEmbeddedAssets(t *testing.T) {
 		t.Errorf("commands dir perm: got %o, want %o", got, 0o755)
 	}
 
-	// Verify agent asset file perm and byte-match.
 	agentPath := filepath.Join(agentsDir, deployedAgentAssetName)
 	fi, err := os.Stat(agentPath)
 	if err != nil {
@@ -110,7 +100,6 @@ func TestRun_DeploysEmbeddedAssets(t *testing.T) {
 		t.Errorf("deployed agent asset content does not match embedded source")
 	}
 
-	// Verify command asset file perm and byte-match.
 	cmdPath := filepath.Join(cmdsDir, "vibe-check.md")
 	cfi, err := os.Stat(cmdPath)
 	if err != nil {
@@ -132,8 +121,6 @@ func TestRun_DeploysEmbeddedAssets(t *testing.T) {
 	}
 }
 
-// TestRun_SkipsExistingByDefault covers a second run without Force: all
-// existing assets are reported as skipped with category-prefixed names.
 func TestRun_SkipsExistingByDefault(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -148,7 +135,6 @@ func TestRun_SkipsExistingByDefault(t *testing.T) {
 	if len(res.Written) != 0 || len(res.Forced) != 0 {
 		t.Errorf("expected only skips; got Written=%v Forced=%v", res.Written, res.Forced)
 	}
-	// All assets should be in Skipped.
 	if !slices.Contains(res.Skipped, prefixedAgentAssetName) {
 		t.Errorf("Skipped missing %q; got %v", prefixedAgentAssetName, res.Skipped)
 	}
@@ -157,8 +143,6 @@ func TestRun_SkipsExistingByDefault(t *testing.T) {
 	}
 }
 
-// TestRun_ForceOverwrites covers Force: existing assets are overwritten and
-// reported as forced with category-prefixed names.
 func TestRun_ForceOverwrites(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -181,8 +165,6 @@ func TestRun_ForceOverwrites(t *testing.T) {
 	}
 }
 
-// TestRun_ForceNormalizesPermissions covers permission normalization: a
-// pre-existing file with loose mode is normalized to 0o644 on forced overwrite.
 func TestRun_ForceNormalizesPermissions(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -194,7 +176,6 @@ func TestRun_ForceNormalizesPermissions(t *testing.T) {
 	if err := os.WriteFile(assetPath, []byte("stale"), 0o666); err != nil {
 		t.Fatalf("pre-create asset: %v", err)
 	}
-	// WriteFile is subject to umask; force the loose mode explicitly.
 	if err := os.Chmod(assetPath, 0o666); err != nil {
 		t.Fatalf("chmod pre-create asset: %v", err)
 	}
@@ -215,8 +196,6 @@ func TestRun_ForceNormalizesPermissions(t *testing.T) {
 	}
 }
 
-// TestRun_RejectsNonexistentRoot covers error handling: a nonexistent TargetDir
-// is rejected and nothing is written.
 func TestRun_RejectsNonexistentRoot(t *testing.T) {
 	t.Parallel()
 	parent := t.TempDir()
@@ -231,8 +210,6 @@ func TestRun_RejectsNonexistentRoot(t *testing.T) {
 	}
 }
 
-// TestRun_WriteFileError covers the injectable WriteFile seam: an I/O failure
-// surfaces as a wrapped error from Run.
 func TestRun_WriteFileError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -250,8 +227,139 @@ func TestRun_WriteFileError(t *testing.T) {
 	}
 }
 
-// orderedGlobFS wraps an fs.FS and returns a fixed, caller-controlled Glob
-// ordering so tests can prove run sorts its results independent of walk order.
+func Test_assetPaths(t *testing.T) {
+	t.Parallel()
+
+	paths, err := assetPaths()
+	if err != nil {
+		t.Fatalf("assetPaths: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("assetPaths returned empty slice")
+	}
+
+	got := append([]string{}, paths...)
+
+	if !slices.Contains(got, "agents/divisor-entropy.md") {
+		t.Errorf("assetPaths missing %q; got %v", "agents/divisor-entropy.md", got)
+	}
+	if !slices.Contains(got, "agents/vibe-check-reporter.md") {
+		t.Errorf("assetPaths missing %q; got %v", "agents/vibe-check-reporter.md", got)
+	}
+	if !slices.Contains(got, "commands/vibe-check.md") {
+		t.Errorf("assetPaths missing %q; got %v", "commands/vibe-check.md", got)
+	}
+
+	if !slices.IsSorted(got) {
+		t.Errorf("assetPaths result is not sorted: %v", got)
+	}
+
+	paths2, err := assetPaths()
+	if err != nil {
+		t.Fatalf("second assetPaths: %v", err)
+	}
+	if !slices.Equal(paths, paths2) {
+		t.Errorf("assetPaths not stable; got %v then %v", paths, paths2)
+	}
+}
+
+func Test_assetContent(t *testing.T) {
+	t.Parallel()
+
+	paths, err := assetPaths()
+	if err != nil {
+		t.Fatalf("assetPaths: %v", err)
+	}
+
+	for _, rel := range paths {
+		data, err := assetContent(rel)
+		if err != nil {
+			t.Errorf("assetContent(%q): %v", rel, err)
+			continue
+		}
+		if len(data) == 0 {
+			t.Errorf("assetContent(%q): returned empty bytes", rel)
+		}
+	}
+}
+
+func Test_assetContent_UnknownPath(t *testing.T) {
+	t.Parallel()
+
+	_, err := assetContent("nonexistent/bogus.md")
+	if err == nil {
+		t.Fatal("assetContent for unknown path: got nil error, want non-nil")
+	}
+}
+
+func findProjectRoot(t *testing.T) string {
+	t.Helper()
+
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Skipf("cannot get working directory: %v", err)
+	}
+
+	for {
+		gomod := filepath.Join(dir, "go.mod")
+		if _, err := os.Stat(gomod); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Skip("no go.mod found in ancestor directories; cannot locate project root")
+		}
+		dir = parent
+	}
+}
+
+func TestEmbeddedAssetsMatchSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test that reads real .opencode/ directory")
+	}
+
+	root := findProjectRoot(t)
+
+	paths, err := assetPaths()
+	if err != nil {
+		t.Fatalf("assetPaths: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("assetPaths returned no assets")
+	}
+
+	deployDir := filepath.Join(root, ".opencode")
+	if _, err := os.Stat(deployDir); os.IsNotExist(err) {
+		t.Fatalf(".opencode/ directory not found at %s\nremediation: run 'vibe-check init --force .' from the repo root", deployDir)
+	}
+	if err != nil {
+		t.Fatalf("stat .opencode/: %v", err)
+	}
+
+	for _, rel := range paths {
+		t.Run(rel, func(t *testing.T) {
+			want, err := assetContent(rel)
+			if err != nil {
+				t.Fatalf("assetContent(%q): %v", rel, err)
+			}
+
+			deployedPath := filepath.Join(deployDir, rel)
+			got, err := os.ReadFile(deployedPath)
+			if os.IsNotExist(err) {
+				t.Errorf("asset not deployed: %s\nremediation: run 'vibe-check init --force .' from the repo root", deployedPath)
+				return
+			}
+			if err != nil {
+				t.Fatalf("cannot read deployed asset %s: %v", deployedPath, err)
+			}
+
+			if !bytes.Equal(got, want) {
+				t.Errorf("content drift detected for %s\nremediation: run 'vibe-check init --force .' from the repo root", deployedPath)
+			}
+		})
+	}
+}
+
 type orderedGlobFS struct {
 	fs.FS
 	globResult []string
@@ -261,16 +369,11 @@ func (o orderedGlobFS) Glob(string) ([]string, error) {
 	return o.globResult, nil
 }
 
-// emptyFS is an fs.FS with no assets, used as a stub for the category that
-// should contribute nothing.
 var emptyFS = orderedGlobFS{
 	FS:         fstest.MapFS{},
 	globResult: nil,
 }
 
-// TestRun_ResultsAreSorted covers sorting: over a synthetic multi-entry fs.FS
-// presented in non-alphabetical order, run returns Written/Skipped/Forced in
-// stable ascending order with category prefixes.
 func TestRun_ResultsAreSorted(t *testing.T) {
 	t.Parallel()
 	base := fstest.MapFS{
@@ -314,9 +417,6 @@ func TestRun_ResultsAreSorted(t *testing.T) {
 	}
 }
 
-// TestRun_MixedAgentAndCommandResults verifies that a single Run() call
-// produces category-prefixed Result entries from both agent and command
-// asset categories, sorted together.
 func TestRun_MixedAgentAndCommandResults(t *testing.T) {
 	t.Parallel()
 	agents := orderedGlobFS{

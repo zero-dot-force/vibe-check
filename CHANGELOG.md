@@ -83,6 +83,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exits with code 2 and a stderr diagnostic without emitting partial
   stdout).
 
+- Drift detection test (`TestEmbeddedAssetsMatchSource`) in `internal/scaffold/`
+  verifies that every asset embedded via `//go:embed` matches its deployed copy
+  in `.opencode/`. Two new helpers, `assetPaths()` (enumerates embedded asset
+  paths) and `assetContent()` (retrieves embedded content by relative path),
+  support the test. The test is gated behind `testing.Short()` and provides a
+  remediation hint (`vibe-check init --force .`) on failure.
+
 ### Changed
 
 - `vibe-check analyze` now forces `GOTOOLCHAIN=local` for its

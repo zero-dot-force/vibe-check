@@ -138,8 +138,8 @@ func TestAdapter_Integration(t *testing.T) {
 	}
 
 	// Verify schema version.
-	if graph.SchemaVersion != "1.2" {
-		t.Errorf("SchemaVersion: got %q, want %q", graph.SchemaVersion, "1.2")
+	if graph.SchemaVersion != "1.3" {
+		t.Errorf("SchemaVersion: got %q, want %q", graph.SchemaVersion, "1.3")
 	}
 
 	// Verify provenance input is populated by the adapter (producer/version/
@@ -459,8 +459,8 @@ func TestAdapter_Capabilities(t *testing.T) {
 	}
 	caps := adapter.Capabilities()
 
-	if len(caps) != 7 {
-		t.Fatalf("Capabilities count: got %d, want 7", len(caps))
+	if len(caps) != 8 {
+		t.Fatalf("Capabilities count: got %d, want 8", len(caps))
 	}
 
 	expected := map[metrics.Capability]bool{
@@ -471,6 +471,7 @@ func TestAdapter_Capabilities(t *testing.T) {
 		metrics.CapDistance:         true,
 		metrics.CapLCOM:             true,
 		metrics.CapCircularDeps:     true,
+		metrics.CapDuplication:      true,
 	}
 
 	for _, cap := range caps {

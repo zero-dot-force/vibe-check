@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+
+	"golang.org/x/tools/go/packages"
 
 	"github.com/zero-dot-force/vibe-check/metrics"
 )
@@ -49,6 +53,7 @@ func (a *Adapter) Capabilities() []metrics.Capability {
 		metrics.CapDistance,
 		metrics.CapLCOM,
 		metrics.CapCircularDeps,
+		metrics.CapDuplication,
 	}
 }
 
@@ -66,7 +71,7 @@ func (a *Adapter) ExtensionCapabilities() []string {
 // type classification (exported/abstract), LCOM4 cohesion, derived metrics
 // (instability, abstractness, distance, zone), and detects circular dependencies.
 //
-// The returned [metrics.ModuleGraph] conforms to schema version "1.2".
+// The returned [metrics.ModuleGraph] conforms to schema version "1.3".
 // Status is [metrics.StatusComplete] when all packages load without errors,
 // or [metrics.StatusPartial] when some packages have errors but analysis
 // can still proceed.
@@ -141,6 +146,15 @@ func (a *Adapter) Analyze(ctx context.Context, projectPath string) (*metrics.Mod
 			extensions = computeExtensions(pkg)
 		}
 
+		// Duplication detection uses AST only (no type information required),
+		// so it can run even for packages with type-checking errors.
+		duplications := detectDuplications([]*packages.Package{pkg})
+
+		// Count total lines across all Go source files for duplication
+		// percentage computation. Uses the same file list the adapter
+		// already has from go/packages.
+		totalLines := countTotalLines(pkg.GoFiles)
+
 		// Derived metrics via metrics.Compute* functions.
 		instability := metrics.ComputeInstability(ca, ce)
 		abstractness := metrics.ComputeAbstractness(abstractTypes, exportedTypes)
@@ -161,6 +175,8 @@ func (a *Adapter) Analyze(ctx context.Context, projectPath string) (*metrics.Mod
 			Distance:     distance,
 			LCOM:         lcom,
 			Zone:         zone,
+			Duplications: duplications,
+			TotalLines:   totalLines,
 			Extensions:   extensions,
 		})
 	}
@@ -201,4 +217,31 @@ func (a *Adapter) Analyze(ctx context.Context, projectPath string) (*metrics.Mod
 			},
 		},
 	}, nil
+}
+
+// countTotalLines returns the total number of significant lines across
+// all non-excluded Go source files. Significant lines exclude blank lines
+// and single-brace lines, matching the counting logic in
+// countSignificantLines. Files matching isExcludedFile (*.gen.go, *.pb.go,
+// mock/, generated/, mocks/, testdata/) are skipped. Files that cannot be
+// read are silently skipped. Returns 0 for an empty file list.
+func countTotalLines(files []string) int {
+	total := 0
+	for _, f := range files {
+		if isExcludedFile(f) {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(src), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || trimmed == "{" || trimmed == "}" {
+				continue
+			}
+			total++
+		}
+	}
+	return total
 }

@@ -40,6 +40,9 @@ type AnalyzeOptions struct {
 	// MaxLCOM is the threshold for LCOM violations.
 	// nil means not set (no threshold check). Must be >= 1.
 	MaxLCOM *int
+	// MaxDuplication is the threshold for duplication percentage violations.
+	// nil means not set (no threshold check). Must be in [0.0, 100.0].
+	MaxDuplication *float64
 
 	// Timeout is the analysis timeout duration. Zero means no timeout.
 	Timeout time.Duration
@@ -183,6 +186,12 @@ func validateFlags(opts AnalyzeOptions) error {
 			return fmt.Errorf("invalid --max-lcom value %d: must be >= 1", v)
 		}
 	}
+	if opts.MaxDuplication != nil {
+		v := *opts.MaxDuplication
+		if v < 0.0 || v > 100.0 {
+			return fmt.Errorf("invalid --max-duplication value %.2f: must be in [0.0, 100.0]", v)
+		}
+	}
 	return nil
 }
 
@@ -218,6 +227,15 @@ func checkThresholds(graph *metrics.ModuleGraph, opts AnalyzeOptions) []string {
 				))
 			}
 		}
+		if opts.MaxDuplication != nil {
+			dupPct := duplicationPercent(m)
+			if dupPct > *opts.MaxDuplication {
+				violations = append(violations, fmt.Sprintf(
+					"VIOLATION: module %q duplication %.2f%% exceeds threshold %.2f%%",
+					m.Path, dupPct, *opts.MaxDuplication,
+				))
+			}
+		}
 	}
 
 	if opts.NoCircularDeps && len(graph.Cycles) > 0 {
@@ -232,6 +250,30 @@ func checkThresholds(graph *metrics.ModuleGraph, opts AnalyzeOptions) []string {
 	return violations
 }
 
+// duplicationPercent computes the percentage of duplicated lines within a
+// module. It sums the LineCount of each unique DuplicateBlock (deduplicated
+// by file + line range) across all Duplications, then divides by the module's
+// TotalLines. Returns 0.0 when there are no duplications or when TotalLines
+// is zero (to avoid division by zero).
+func duplicationPercent(m metrics.ModuleResult) float64 {
+	if len(m.Duplications) == 0 || m.TotalLines == 0 {
+		return 0.0
+	}
+	seen := make(map[string]bool)
+	dupLines := 0
+	for _, d := range m.Duplications {
+		for _, b := range d.Blocks {
+			key := fmt.Sprintf("%s:%d-%d", b.File, b.StartLine, b.EndLine)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			dupLines += b.LineCount
+		}
+	}
+	return float64(dupLines) / float64(m.TotalLines) * 100.0
+}
+
 // analyzeCmd creates the cobra command for the analyze subcommand.
 // It wires flag parsing and signal handling, then delegates to RunAnalyze
 // per AP-002 (no business logic in the command layer).
@@ -240,6 +282,7 @@ func analyzeCmd() *cobra.Command {
 		maxInstability float64
 		maxDistance    float64
 		maxLCOM        int
+		maxDuplication float64
 		noCircularDeps bool
 		noProvenance   bool
 		timeout        time.Duration
@@ -295,6 +338,9 @@ JSON output is always written to stdout, even when violations are detected.`,
 			if cmd.Flags().Changed("max-lcom") {
 				opts.MaxLCOM = &maxLCOM
 			}
+			if cmd.Flags().Changed("max-duplication") {
+				opts.MaxDuplication = &maxDuplication
+			}
 
 			result, err := RunAnalyze(ctx, opts)
 			if err != nil {
@@ -322,6 +368,7 @@ JSON output is always written to stdout, even when violations are detected.`,
 	cmd.Flags().Float64Var(&maxInstability, "max-instability", 0, "Maximum allowed instability [0.0, 1.0]")
 	cmd.Flags().Float64Var(&maxDistance, "max-distance", 0, "Maximum allowed distance from main sequence [0.0, 1.0]")
 	cmd.Flags().IntVar(&maxLCOM, "max-lcom", 0, "Maximum allowed LCOM value (>= 1)")
+	cmd.Flags().Float64VarP(&maxDuplication, "max-duplication", "", 5.0, "Maximum allowed duplication percentage [0.0, 100.0]")
 	cmd.Flags().BoolVar(&noCircularDeps, "no-circular-deps", false, "Treat circular dependencies as violations")
 	cmd.Flags().BoolVar(&noProvenance, "no-provenance", false, "Omit provenance metadata for byte-reproducible output")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Analysis timeout (e.g., 30s, 2m)")

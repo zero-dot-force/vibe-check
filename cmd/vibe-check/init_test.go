@@ -19,6 +19,7 @@ import (
 // InitResult slices and in the --json payload.
 var initAssetNames = []string{
 	"agents/divisor-entropy.md",
+	"agents/mx-f-architecture-trend.md",
 	"agents/vibe-check-reporter.md",
 	"commands/vibe-check.md",
 }
@@ -27,6 +28,12 @@ var initAssetNames = []string{
 // agent asset for a given project root.
 func deployedAgentAssetPath(root string) string {
 	return filepath.Join(root, ".opencode", "agents", "divisor-entropy.md")
+}
+
+// deployedTrendAgentAssetPath returns the on-disk location of the
+// mx-f-architecture-trend agent asset for a given project root.
+func deployedTrendAgentAssetPath(root string) string {
+	return filepath.Join(root, ".opencode", "agents", "mx-f-architecture-trend.md")
 }
 
 // deployedCommandAssetPath returns the on-disk location of the vibe-check
@@ -70,11 +77,17 @@ func TestRunInit_HumanSummaryLifecycle(t *testing.T) {
 	if !strings.Contains(out, "agents/divisor-entropy.md") {
 		t.Errorf("summary missing agent asset name; got:\n%s", out)
 	}
+	if !strings.Contains(out, "agents/mx-f-architecture-trend.md") {
+		t.Errorf("summary missing trend agent asset name; got:\n%s", out)
+	}
 	if !strings.Contains(out, "commands/vibe-check.md") {
 		t.Errorf("summary missing command asset name; got:\n%s", out)
 	}
 	if _, statErr := os.Stat(deployedAgentAssetPath(dir)); statErr != nil {
 		t.Errorf("expected deployed agent asset on disk: %v", statErr)
+	}
+	if _, statErr := os.Stat(deployedTrendAgentAssetPath(dir)); statErr != nil {
+		t.Errorf("expected deployed trend agent asset on disk: %v", statErr)
 	}
 	if _, statErr := os.Stat(deployedCommandAssetPath(dir)); statErr != nil {
 		t.Errorf("expected deployed command asset on disk: %v", statErr)
@@ -337,11 +350,17 @@ func TestInitCmd_Execute(t *testing.T) {
 	if !strings.Contains(stdout.String(), "agents/divisor-entropy.md") {
 		t.Errorf("expected agent asset name in output; got:\n%s", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "agents/mx-f-architecture-trend.md") {
+		t.Errorf("expected trend agent asset name in output; got:\n%s", stdout.String())
+	}
 	if !strings.Contains(stdout.String(), "commands/vibe-check.md") {
 		t.Errorf("expected command asset name in output; got:\n%s", stdout.String())
 	}
 	if _, statErr := os.Stat(deployedAgentAssetPath(dir)); statErr != nil {
 		t.Errorf("expected deployed agent asset on disk: %v", statErr)
+	}
+	if _, statErr := os.Stat(deployedTrendAgentAssetPath(dir)); statErr != nil {
+		t.Errorf("expected deployed trend agent asset on disk: %v", statErr)
 	}
 	if _, statErr := os.Stat(deployedCommandAssetPath(dir)); statErr != nil {
 		t.Errorf("expected deployed command asset on disk: %v", statErr)
@@ -369,6 +388,9 @@ func TestInitCmd_JSONFlag(t *testing.T) {
 	}
 	if !slices.Contains(p.Written, "agents/divisor-entropy.md") {
 		t.Errorf("expected agents/divisor-entropy.md in written; got %v", p.Written)
+	}
+	if !slices.Contains(p.Written, "agents/mx-f-architecture-trend.md") {
+		t.Errorf("expected agents/mx-f-architecture-trend.md in written; got %v", p.Written)
 	}
 	if !slices.Contains(p.Written, "commands/vibe-check.md") {
 		t.Errorf("expected commands/vibe-check.md in written; got %v", p.Written)

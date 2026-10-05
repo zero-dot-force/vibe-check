@@ -161,8 +161,12 @@ If `vibe-check analyze` exits with code 2 (analysis error):
 
 ## Trending Mode
 
-Trending mode compares current metrics against the most recent
-historical snapshot stored in Dewey.
+Trending mode compares current metrics against historical snapshots
+stored in Dewey. When multiple snapshots exist (≥2), it delegates
+time-series analysis to the `mx-f-architecture-trend` agent for
+multi-window trend classification, sparkline rendering, and drift
+alerting. When only a single baseline snapshot exists, it performs
+the existing point-in-time comparison.
 
 ### Steps
 
@@ -178,20 +182,51 @@ historical snapshot stored in Dewey.
 2. **Run analysis**: Same as summary mode -- run `vibe-check analyze`,
    read JSON, clean up tempfile.
 
-3. **Retrieve previous snapshot**: Call `dewey_semantic_search` with
+3. **Retrieve all snapshots**: Call `dewey_semantic_search` with
    query `vibe-check-snapshot <module-path>` (where `<module-path>` is
    from `go.mod`). Filter results to those whose content contains the
    current module path. Parse ISO 8601 timestamps from each result's
-   content and select the most recent snapshot.
+   content. Order chronologically (oldest first).
 
    If no previous snapshot exists:
    > "No historical data found. This analysis will be stored as the
    > baseline for future trending comparisons."
-   Store the current snapshot (step 5) and present current metrics
+   Store the current snapshot (step 7) and present current metrics
    as a standalone report (use detailed mode output).
 
-4. **Compare metrics**: For each package present in both the current
-   and previous snapshots, compute the delta and classify:
+   If a result from `dewey_semantic_search` contains a different
+   module path than the current project, skip it and search for the
+   next match. If a retrieved snapshot has missing or corrupted metric
+   fields, skip it with a warning and use the next available snapshot.
+
+4. **Determine snapshot count and branch**:
+
+   **If ≥2 snapshots exist** (multi-snapshot time-series path):
+   Delegate time-series analysis to the `mx-f-architecture-trend`
+   agent. Invoke it with mode `trend-report` and the module path.
+   The trend agent will:
+   - Retrieve all historical snapshots for the module
+   - Compute linear regression trends over 7-day, 30-day, and 90-day
+     windows per package per metric
+   - Classify each trend as Improving, Degrading, Stable, or
+     Insufficient data
+   - Generate drift alerts for sustained degradation and projected
+     threshold crossings
+   - Render ASCII sparklines for visual trend display
+   - Produce a comprehensive Architectural Health Report
+
+   Capture the trend agent's output. Incorporate its **Per-Package
+   Trends** table, **Drift Alerts** section, and **Projected Threshold
+   Crossings** section into your trending output (see Output Format
+   below). The trend agent's output is authoritative for time-series
+   analysis — do not recompute trends in-prompt.
+
+   **If exactly 1 snapshot exists** (single-baseline path):
+   Proceed to step 5 for the existing point-in-time comparison.
+
+5. **Compare metrics** (single-baseline path only): For each package
+   present in both the current and previous snapshots, compute the
+   delta and classify:
 
    - **Improving**: instability/distance delta < -0.01, or LCOM4
      delta <= -1
@@ -203,12 +238,14 @@ historical snapshot stored in Dewey.
    Note: Abstractness direction is zone-dependent. Show abstractness
    deltas as raw values without improving/degrading classification.
 
-   If a result from `dewey_semantic_search` contains a different
-   module path than the current project, skip it and search for the
-   next match. If a retrieved snapshot has missing or corrupted metric
-   fields, skip it with a warning and use the next available snapshot.
+6. **Render sparklines** (multi-snapshot path only): When the trend
+   agent provides per-package sparklines, include them in the output
+   table. Sparklines use Unicode block characters (▁▂▃▄▅▆▇█)
+   normalized to the metric's observed range, max 30 characters wide.
+   If the trend agent did not produce sparklines (e.g., insufficient
+   data), omit the sparkline column.
 
-5. **Store new snapshot**: Call `dewey_store_learning` with:
+7. **Store new snapshot**: Call `dewey_store_learning` with:
    - `tag`: `vibe-check-snapshot`
    - `information`: A compact summary containing:
      - Module path (from `go.mod`)
@@ -224,6 +261,8 @@ historical snapshot stored in Dewey.
 
 ### Output Format
 
+**Single-baseline output** (1 snapshot — existing behavior, unchanged):
+
 ```
 ## Architectural Trends
 
@@ -236,6 +275,51 @@ historical snapshot stored in Dewey.
 
 **Overall direction**: [Improving|Stable|Degrading]
 [Summary interpretation]
+```
+
+**Multi-snapshot output** (≥2 snapshots — new time-series behavior):
+
+```
+## Architectural Trends
+
+**Comparing**: <current-sha> vs <baseline-sha> (<date>)
+**Snapshots analyzed**: <count> over <date-range>
+
+### Single-Baseline Comparison
+
+| Package | Instability | Distance | LCOM4 | Direction |
+|---------|-------------|----------|-------|-----------|
+| pkg/foo | 0.63 -> 0.55 (-0.08) | 0.17 -> 0.10 (-0.07) | 2 -> 2 | Improving |
+| pkg/bar | 1.00 -> 1.00 (0.00)  | 1.00 -> 1.00 (0.00)  | 5 -> 5 | Stable |
+
+### Time-Series Trends
+
+[Incorporate the trend agent's Per-Package Trends table here.
+ The table includes sparklines and 7/30/90-day window classifications.]
+
+| Package | Metric | Current | 7-Day | 30-Day | 90-Day | Sparkline |
+|---------|--------|---------|-------|--------|--------|-----------|
+| pkg/foo | Instability | 0.55 | Improving ↓ | Stable — | Insufficient data | ▂▃▅▆█ |
+| pkg/foo | Distance | 0.10 | Improving ↓ | Improving ↓ | Stable — | ▇▅▃▂▁ |
+| pkg/bar | LCOM4 | 5 | Stable — | Degrading ↑ | Degrading ↑ | ▄▄▅▆█ |
+
+**Trend legend**: ↑ = degrading, ↓ = improving, — = stable, ? = insufficient data
+
+### Drift Alerts
+
+[Incorporate the trend agent's Drift Alerts section here.
+ If the trend agent reports no alerts, display:]
+No drift alerts detected.
+
+### Projected Threshold Crossings
+
+[Incorporate the trend agent's Projected Threshold Crossings section here.
+ If the trend agent reports no crossings, display:]
+No projected threshold crossings within 30 days.
+
+**Overall direction**: [Improving|Stable|Degrading]
+[Summary interpretation incorporating both single-baseline delta and
+ time-series trend context]
 ```
 
 ---

@@ -9,7 +9,7 @@
 
 **Provenance**: vibe-check v1.0.0 | 2026-01-15T10:30:00Z | 8 packages | 4,200 lines
 
-📖 **Legend**: Instability = ratio of outgoing to total dependencies (0.0=max stable, 1.0=max unstable) | Abstractness = ratio of abstracts to total types (0.0=fully concrete, 1.0=pure interfaces) | Distance = how far from ideal balance (0.0=perfect, 1.0=worst) | LCOM4 = cohesion (1=best, ≥4 suggests split) | Ca = packages depending on this one | Ce = packages this one depends on | Full guide: https://github.com/zero-dot-force/vibe-check/blob/main/docs/metrics-guide.md
+📖 Instability = ratio of outgoing to total dependencies (0.0=max stable, 1.0=max unstable) | Abstractness = ratio of abstracts to total types (0.0=fully concrete, 1.0=pure interfaces) | Distance = how far from ideal balance (0.0=perfect, 1.0=worst) | LCOM4 = cohesion (1=best, ≥4 suggests split) | Ca = packages depending on this one | Ce = packages this one depends on | Full guide: https://github.com/zero-dot-force/vibe-check/blob/main/docs/metrics-guide.md
 
 ---
 
@@ -33,7 +33,7 @@
 - **Max Ca**: `example.com/project/core` (15 dependents) — heavily depended on; changes ripple widely
 - **Max Ce**: `example.com/project/handler` (20 dependencies) — depends on too many packages; fragile
 - **Leaves (Ca=0)**: `example.com/project/cli`, `example.com/project/gateway`
-- **Stable (Ca > 10)**: `example.com/project/core`, `example.com/project/database`
+- **Heavily depended-on (Ca > 10)**: `example.com/project/core`, `example.com/project/database`
 
 ---
 
@@ -76,7 +76,7 @@ example.com/project/core → example.com/project/database → example.com/projec
 | Max LCOM4 | 7 | F | 🔴 |
 | Cycle Count | 1 | F | 🔴 |
 | Duplication % | 8.4% | C+ | 🟡 |
-| Instability Spread | 2 extremes | C | 🟡 |
+| Instability Spread | 2 extremes | C+ | 🟡 |
 
 **Overall**: 🔴 Needs Attention — 3 critical dimensions require action.
 
@@ -88,7 +88,7 @@ example.com/project/core → example.com/project/database → example.com/projec
 
 2. 🔴 **Split `example.com/project/utils`** — LCOM4 of 7 across 7 responsibilities. Extract `format` (string manipulation), `output` (rendering), and `validation` (input checking) into separate packages.
 
-3. 🔴 **Reduce `example.com/project/core`'s abstractness** — Distance of 1.00 places it in the Zone of Pain. With 15 dependents and 0 abstract types, every change breaks consumers. Add interfaces to insulate downstream packages.
+3. 🔴 **Add interfaces to `example.com/project/core`** — Distance of 1.00 places it in the Zone of Pain. With 15 dependents and 0 abstract types, every change breaks consumers. Add interfaces to insulate downstream packages.
 
 4. 🔴 **Split `example.com/project/database`** — LCOM4 of 6 and extreme stability (Ca=12, I=0.00) makes this a change bottleneck. Consider separating the connection pool, query builder, and migration runner.
 

@@ -18,6 +18,8 @@ const (
 	prefixedCmdAssetName   = "commands/vibe-check.md"
 	reporterAgentAssetPath = "assets/agents/vibe-check-reporter.md"
 	reporterAgentAssetName = "agents/vibe-check-reporter.md"
+	trendAgentAssetPath    = "assets/agents/mx-f-architecture-trend.md"
+	trendAgentAssetName    = "agents/mx-f-architecture-trend.md"
 	commandAssetPath       = "assets/commands/vibe-check.md"
 	commandAssetName       = "commands/vibe-check.md"
 )
@@ -46,6 +48,9 @@ func TestRun_DeploysEmbeddedAssets(t *testing.T) {
 	}
 	if !slices.Contains(res.Written, reporterAgentAssetName) {
 		t.Errorf("Written missing %q; got %v", reporterAgentAssetName, res.Written)
+	}
+	if !slices.Contains(res.Written, trendAgentAssetName) {
+		t.Errorf("Written missing %q; got %v", trendAgentAssetName, res.Written)
 	}
 	if !slices.Contains(res.Written, prefixedCmdAssetName) {
 		t.Errorf("Written missing %q; got %v", prefixedCmdAssetName, res.Written)
@@ -138,6 +143,9 @@ func TestRun_SkipsExistingByDefault(t *testing.T) {
 	if !slices.Contains(res.Skipped, prefixedAgentAssetName) {
 		t.Errorf("Skipped missing %q; got %v", prefixedAgentAssetName, res.Skipped)
 	}
+	if !slices.Contains(res.Skipped, trendAgentAssetName) {
+		t.Errorf("Skipped missing %q; got %v", trendAgentAssetName, res.Skipped)
+	}
 	if !slices.Contains(res.Skipped, prefixedCmdAssetName) {
 		t.Errorf("Skipped missing %q; got %v", prefixedCmdAssetName, res.Skipped)
 	}
@@ -159,6 +167,9 @@ func TestRun_ForceOverwrites(t *testing.T) {
 	}
 	if !slices.Contains(res.Forced, prefixedAgentAssetName) {
 		t.Errorf("Forced missing %q; got %v", prefixedAgentAssetName, res.Forced)
+	}
+	if !slices.Contains(res.Forced, trendAgentAssetName) {
+		t.Errorf("Forced missing %q; got %v", trendAgentAssetName, res.Forced)
 	}
 	if !slices.Contains(res.Forced, prefixedCmdAssetName) {
 		t.Errorf("Forced missing %q; got %v", prefixedCmdAssetName, res.Forced)
@@ -245,6 +256,9 @@ func Test_assetPaths(t *testing.T) {
 	}
 	if !slices.Contains(got, "agents/vibe-check-reporter.md") {
 		t.Errorf("assetPaths missing %q; got %v", "agents/vibe-check-reporter.md", got)
+	}
+	if !slices.Contains(got, "agents/mx-f-architecture-trend.md") {
+		t.Errorf("assetPaths missing %q; got %v", "agents/mx-f-architecture-trend.md", got)
 	}
 	if !slices.Contains(got, "commands/vibe-check.md") {
 		t.Errorf("assetPaths missing %q; got %v", "commands/vibe-check.md", got)

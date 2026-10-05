@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1431,4 +1432,258 @@ func TestDuplicationFlag_Validation(t *testing.T) {
 			t.Errorf("error %q does not contain '--max-duplication'", err.Error())
 		}
 	})
+}
+
+// --- Phase 1: --store flag tests ---
+
+func TestResolveGitMetadata_InGitRepo(t *testing.T) {
+	t.Parallel()
+
+	// The test runs inside the vibe-check git repo, so resolveGitMetadata(".")
+	// should return a valid commit SHA and a branch name.
+	commitSHA, branch := resolveGitMetadata(".")
+
+	// commitSHA must be 40 hex characters.
+	if len(commitSHA) != 40 {
+		t.Errorf("commitSHA length: got %d, want 40 (got %q)", len(commitSHA), commitSHA)
+	}
+	for _, c := range commitSHA {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			t.Errorf("commitSHA contains non-hex character: %q in %q", c, commitSHA)
+			break
+		}
+	}
+
+	// branch must be non-empty (we're on a named branch in the test repo).
+	if branch == "" {
+		t.Error("branch is empty, want non-empty (running in a git repo)")
+	}
+}
+
+func TestResolveGitMetadata_OutsideGitRepo(t *testing.T) {
+	t.Parallel()
+
+	// A temp directory is not a git repo.
+	dir := t.TempDir()
+	commitSHA, branch := resolveGitMetadata(dir)
+
+	if commitSHA != "" {
+		t.Errorf("commitSHA: got %q, want empty (not in a git repo)", commitSHA)
+	}
+	if branch != "" {
+		t.Errorf("branch: got %q, want empty (not in a git repo)", branch)
+	}
+}
+
+func TestResolveGitMetadata_DetachedHead(t *testing.T) {
+	// Cannot run in parallel — creates a git repo with git commands.
+	dir := t.TempDir()
+
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	run("init")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	// Create a file so we can commit.
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "README.md")
+	run("commit", "-m", "initial")
+	// Detach HEAD by checking out the commit directly.
+	run("checkout", "--detach")
+
+	commitSHA, branch := resolveGitMetadata(dir)
+
+	if len(commitSHA) != 40 {
+		t.Errorf("commitSHA length: got %d, want 40 (got %q)", len(commitSHA), commitSHA)
+	}
+	// On detached HEAD, git rev-parse --abbrev-ref HEAD returns "HEAD".
+	if branch != "HEAD" {
+		t.Errorf("branch: got %q, want %q (detached HEAD)", branch, "HEAD")
+	}
+}
+
+func TestRunAnalyze_StoreEnrichesProvenance(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Path:   couplingFixtureDir(t),
+		Store:  true,
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunAnalyze returned error: %v", err)
+	}
+	if result.Graph == nil {
+		t.Fatal("Graph is nil")
+	}
+
+	p := result.Graph.Provenance
+	if p == nil {
+		t.Fatal("Provenance is nil, want non-nil with --store")
+	}
+
+	// Verify snapshot fields are populated.
+	// commitSHA: the coupling fixture is inside the vibe-check git repo,
+	// so it should resolve to a valid SHA.
+	if len(p.Input.CommitSHA) != 40 {
+		t.Errorf("Provenance.Input.CommitSHA length: got %d, want 40 (got %q)", len(p.Input.CommitSHA), p.Input.CommitSHA)
+	}
+	for _, c := range p.Input.CommitSHA {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			t.Errorf("Provenance.Input.CommitSHA contains non-hex character: %q in %q", c, p.Input.CommitSHA)
+			break
+		}
+	}
+
+	// branch should be non-empty (we're on a named branch).
+	if p.Input.Branch == "" {
+		t.Error("Provenance.Input.Branch is empty, want non-empty with --store")
+	}
+
+	// modulePath should be resolved by the adapter.
+	if p.Input.ModulePath != "example.com/coupling" {
+		t.Errorf("Provenance.Input.ModulePath: got %q, want %q", p.Input.ModulePath, "example.com/coupling")
+	}
+
+	// Standard provenance fields should still be present.
+	if p.Producer != "vibe-check" {
+		t.Errorf("Provenance.Producer: got %q, want %q", p.Producer, "vibe-check")
+	}
+	if p.Version == "" {
+		t.Error("Provenance.Version is empty")
+	}
+	if _, err := time.Parse(time.RFC3339, p.GeneratedAt); err != nil {
+		t.Errorf("Provenance.GeneratedAt is not RFC3339: %v", err)
+	}
+}
+
+func TestRunAnalyze_NoProvenanceTakesPrecedenceOverStore(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout:       &stdout,
+		Stderr:       &stderr,
+		Path:         couplingFixtureDir(t),
+		NoProvenance: true,
+		Store:        true,
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunAnalyze returned error: %v", err)
+	}
+	if result.Graph == nil {
+		t.Fatal("Graph is nil")
+	}
+
+	// --no-provenance takes precedence: provenance must be nil.
+	if result.Graph.Provenance != nil {
+		t.Errorf("Provenance: got %+v, want nil (--no-provenance takes precedence over --store)", result.Graph.Provenance)
+	}
+	if strings.Contains(stdout.String(), `"provenance"`) {
+		t.Error("output contains provenance key, want omitted")
+	}
+}
+
+func TestRunAnalyze_StoreWithoutGitRepo(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	// Create a temp directory with a valid go.mod but NOT a git repo.
+	dir := t.TempDir()
+	goMod := filepath.Join(dir, "go.mod")
+	if err := os.WriteFile(goMod, []byte("module example.com/nogit\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Create a minimal Go file so the adapter can analyze something.
+	mainGo := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(mainGo, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Path:   dir,
+		Store:  true,
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunAnalyze returned error: %v", err)
+	}
+	if result.Graph == nil {
+		t.Fatal("Graph is nil")
+	}
+
+	p := result.Graph.Provenance
+	if p == nil {
+		t.Fatal("Provenance is nil, want non-nil with --store")
+	}
+
+	// Not in a git repo: commitSHA and branch must be empty.
+	if p.Input.CommitSHA != "" {
+		t.Errorf("Provenance.Input.CommitSHA: got %q, want empty (not in a git repo)", p.Input.CommitSHA)
+	}
+	if p.Input.Branch != "" {
+		t.Errorf("Provenance.Input.Branch: got %q, want empty (not in a git repo)", p.Input.Branch)
+	}
+
+	// modulePath should still be resolved from go.mod by the adapter.
+	if p.Input.ModulePath != "example.com/nogit" {
+		t.Errorf("Provenance.Input.ModulePath: got %q, want %q", p.Input.ModulePath, "example.com/nogit")
+	}
+}
+
+func TestRunAnalyze_MissingGoMod(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	// A directory without go.mod — the adapter should fail.
+	dir := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Path:   dir,
+		Store:  true,
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected error for missing go.mod, got nil")
+	}
+	if result.ExitCode != 2 {
+		t.Errorf("ExitCode: got %d, want 2", result.ExitCode)
+	}
+	// The error should mention the module path issue.
+	if !strings.Contains(err.Error(), "module") && !strings.Contains(err.Error(), "go.mod") {
+		t.Errorf("error should mention module/go.mod: %v", err)
+	}
 }

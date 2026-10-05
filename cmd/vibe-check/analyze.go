@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,6 +53,12 @@ type AnalyzeOptions struct {
 	// yielding byte-reproducible output across runs. Provenance is emitted by
 	// default.
 	NoProvenance bool
+
+	// Store when true enriches the provenance object with snapshot metadata:
+	// commitSHA, branch, and modulePath. These fields enable architectural
+	// drift tracking when snapshots are archived in Dewey. --no-provenance
+	// takes precedence: when both are set, no provenance is emitted.
+	Store bool
 }
 
 // AnalyzeResult contains the analysis outcome.
@@ -104,6 +112,8 @@ func RunAnalyze(ctx context.Context, opts AnalyzeOptions) (*AnalyzeResult, error
 	// (analyzed path + resolved module path); the CLI fills in the remaining
 	// producer/version/generatedAt fields. With --no-provenance, provenance is
 	// dropped entirely so output is byte-reproducible across runs.
+	// With --store, snapshot metadata (commitSHA, branch) is resolved from git
+	// and added to the provenance input for architectural drift tracking.
 	if opts.NoProvenance {
 		graph.Provenance = nil
 	} else {
@@ -114,6 +124,12 @@ func RunAnalyze(ctx context.Context, opts AnalyzeOptions) (*AnalyzeResult, error
 		graph.Provenance.Producer = env.Producer
 		graph.Provenance.Version = env.Version
 		graph.Provenance.GeneratedAt = env.GeneratedAt
+
+		if opts.Store {
+			commitSHA, branch := resolveGitMetadata(opts.Path)
+			graph.Provenance.Input.CommitSHA = commitSHA
+			graph.Provenance.Input.Branch = branch
+		}
 	}
 
 	// Step 4: Check context before writing output.
@@ -285,6 +301,7 @@ func analyzeCmd() *cobra.Command {
 		maxDuplication float64
 		noCircularDeps bool
 		noProvenance   bool
+		store          bool
 		timeout        time.Duration
 		output         string
 	)
@@ -325,6 +342,7 @@ JSON output is always written to stdout, even when violations are detected.`,
 				OutputPath:     output,
 				NoCircularDeps: noCircularDeps,
 				NoProvenance:   noProvenance,
+				Store:          store,
 				Timeout:        timeout,
 			}
 
@@ -371,8 +389,39 @@ JSON output is always written to stdout, even when violations are detected.`,
 	cmd.Flags().Float64VarP(&maxDuplication, "max-duplication", "", 5.0, "Maximum allowed duplication percentage [0.0, 100.0]")
 	cmd.Flags().BoolVar(&noCircularDeps, "no-circular-deps", false, "Treat circular dependencies as violations")
 	cmd.Flags().BoolVar(&noProvenance, "no-provenance", false, "Omit provenance metadata for byte-reproducible output")
+	cmd.Flags().BoolVar(&store, "store", false, "Enrich provenance with snapshot metadata (commitSHA, branch) for drift tracking")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Analysis timeout (e.g., 30s, 2m)")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Write ModuleGraph JSON to file instead of stdout")
 
 	return cmd
+}
+
+// resolveGitMetadata resolves git commit SHA and branch name for the given
+// project path. It runs `git rev-parse HEAD` and `git rev-parse --abbrev-ref HEAD`
+// with the working directory set to projectPath. If either command fails (e.g.,
+// not in a git repository, git not installed), the corresponding field is
+// returned as an empty string. On a detached HEAD, branch is returned as "HEAD".
+//
+// This function is designed to be testable: it shells out to git, so callers
+// in tests should ensure the working directory is a git repository or use a
+// temporary directory that is not a git repo to test the empty-string fallback.
+func resolveGitMetadata(projectPath string) (commitSHA, branch string) {
+	commitSHA = runGitCmd(projectPath, "rev-parse", "HEAD")
+	branch = runGitCmd(projectPath, "rev-parse", "--abbrev-ref", "HEAD")
+	return commitSHA, branch
+}
+
+// runGitCmd executes a git command with the given args in the specified
+// directory. It returns the trimmed stdout on success, or an empty string
+// if the command fails for any reason (git not installed, not a repo, etc.).
+func runGitCmd(dir string, args ...string) string {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	// Discard stderr to avoid noise from git when not in a repo.
+	cmd.Stderr = io.Discard
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }

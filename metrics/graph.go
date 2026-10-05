@@ -54,11 +54,21 @@ type Provenance struct {
 // ProvenanceInput identifies the source that was analyzed to produce a graph.
 // The language adapter populates it because it is the layer that resolves the
 // input identity (the analyzed path and the resolved module path).
+//
+// CommitSHA and Branch are snapshot metadata populated by the CLI when the
+// --store flag is set. They are empty when not in a git repository or when
+// --store is not used.
 type ProvenanceInput struct {
 	// Path is the path to the analyzed project directory.
 	Path string `json:"path"`
 	// ModulePath is the resolved module import path (e.g., "github.com/foo/bar").
 	ModulePath string `json:"modulePath"`
+	// CommitSHA is the full git commit SHA (40 hex characters) at the time of
+	// analysis. Empty when not in a git repository or when --store is not set.
+	CommitSHA string `json:"commitSHA,omitempty"`
+	// Branch is the git branch name at the time of analysis. Empty when not in
+	// a git repository, on a detached HEAD, or when --store is not set.
+	Branch string `json:"branch,omitempty"`
 }
 
 // ModuleResult combines Module identity data with computed metrics and zone

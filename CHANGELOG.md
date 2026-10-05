@@ -116,6 +116,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paths) and `assetContent()` (retrieves embedded content by relative path),
   support the test. The test is gated behind `testing.Short()` and provides a
   remediation hint (`vibe-check init --force .`) on failure.
+- Architectural drift tracking: `vibe-check analyze --store` enriches
+  provenance with git metadata (`commitSHA`, `branch`, `modulePath`) for
+  CI-driven snapshot archival. A new `mx-f-architecture-trend` agent
+  stores/retrieves snapshots via Dewey MCP, computes windowed linear
+  regression trends (7/30/90-day) with R² confidence gating, renders
+  Unicode block-character sparklines, and generates drift alerts for
+  sustained degradation and projected threshold crossings. Retention
+  policies prune daily snapshots > 90 days and weekly-Sunday snapshots
+  > 1 year. The `/vibe-check trending` mode is extended from single-
+  baseline to multi-snapshot time-series when ≥2 snapshots exist.
+  Spec: `openspec/changes/architectural-drift-tracking/`
 
 ### Changed
 

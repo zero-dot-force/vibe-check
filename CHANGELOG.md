@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Revamped `vibe-check-reporter` agent output format: emoji-structured reports
+  with closed vocabulary (🏗️📊🔗🧩🔄📋📖🏥🟢🟡🔴⚠️), full metric names
+  (Instability, Abstractness, Distance, LCOM4), legend block with metrics guide
+  link, health scorecard with letter grades (A–F), prioritized recommendations,
+  and duplication analysis section. Summary mode uses traffic-light indicators.
+  Trending mode updated with emoji and legend support.
+- New `docs/metrics-guide.md` — plain-language ELI5 reference for all
+  architectural metrics with emoji severity ranges and further reading links.
+- New `.opencode/references/vibe-check-example-report.md` — formatting
+  reference for the agent output contract.
+
 ### Added
 
 - `vibe-check analyze --max-duplication <pct>` flag: fails the build (exit code 1)

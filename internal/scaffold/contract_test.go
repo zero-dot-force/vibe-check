@@ -134,7 +134,7 @@ func TestEmbeddedAsset_ReporterAgentContract(t *testing.T) {
 		"## Summary Mode",
 		"## Detailed Mode",
 		"## Trending Mode",
-		"## Natural Language Interpretation",
+		"## Tone Rules",
 		"## Graceful Degradation",
 		"## Security / Operating Constraints",
 	} {

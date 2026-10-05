@@ -45,3 +45,4 @@
 - [x] 6.4 Validate AGENTS.md project structure reflects `docs/metrics-guide.md` and `.opencode/references/vibe-check-example-report.md` — new files are in `docs/` and `.opencode/references/`, both documented in project structure
 
 <!-- spec-review: passed -->
+<!-- code-review: passed -->

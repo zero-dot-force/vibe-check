@@ -712,8 +712,8 @@ func TestRunAnalyze_JSONOutputPrettyPrinted(t *testing.T) {
 	}
 
 	// Verify expected fields are present.
-	if graph.SchemaVersion != "1.2" {
-		t.Errorf("SchemaVersion: got %q, want %q", graph.SchemaVersion, "1.2")
+	if graph.SchemaVersion != "1.3" {
+		t.Errorf("SchemaVersion: got %q, want %q", graph.SchemaVersion, "1.3")
 	}
 	if graph.Language != "go" {
 		t.Errorf("Language: got %q, want %q", graph.Language, "go")
@@ -1277,4 +1277,158 @@ func TestAnalyzeCommand_OutputFlagWiring(t *testing.T) {
 	if err := metrics.Validate(data); err != nil {
 		t.Errorf("output file failed schema validation: %v", err)
 	}
+}
+
+// --- Duplication threshold tests ---
+
+// duplicationModule creates a temp directory with a Go module containing
+// structurally duplicate functions for integration testing.
+func duplicationModule(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	// go.mod
+	goMod := "module test\n\ngo 1.25\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	// main.go with two structurally identical functions.
+	src := `package test
+
+func ProcessItems(items []string) []string {
+	var result []string
+	for _, item := range items {
+		if len(item) > 0 {
+			result = append(result, item)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func FilterValues(values []string) []string {
+	var output []string
+	for _, val := range values {
+		if len(val) > 0 {
+			output = append(output, val)
+		}
+	}
+	if len(output) == 0 {
+		return nil
+	}
+	return output
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	return dir
+}
+
+func TestDuplicationThreshold_Violation(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	dir := duplicationModule(t)
+
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout:         &stdout,
+		Stderr:         &stderr,
+		Path:           dir,
+		MaxDuplication: float64Ptr(0.0),
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunAnalyze returned error: %v", err)
+	}
+	if result.ExitCode != 1 {
+		t.Errorf("ExitCode: got %d, want 1\nstderr: %s", result.ExitCode, stderr.String())
+	}
+
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "duplication") {
+		t.Errorf("stderr does not contain 'duplication': %s", stderrStr)
+	}
+	if !strings.Contains(stderrStr, "VIOLATION") {
+		t.Errorf("stderr does not contain 'VIOLATION': %s", stderrStr)
+	}
+}
+
+func TestDuplicationThreshold_Pass(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	dir := duplicationModule(t)
+
+	var stdout, stderr bytes.Buffer
+	opts := AnalyzeOptions{
+		Stdout:         &stdout,
+		Stderr:         &stderr,
+		Path:           dir,
+		MaxDuplication: float64Ptr(100.0),
+	}
+
+	result, err := RunAnalyze(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunAnalyze returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode: got %d, want 0\nstderr: %s", result.ExitCode, stderr.String())
+	}
+}
+
+func TestDuplicationFlag_Validation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("negative", func(t *testing.T) {
+		t.Parallel()
+		var stdout, stderr bytes.Buffer
+		opts := AnalyzeOptions{
+			Stdout:         &stdout,
+			Stderr:         &stderr,
+			Path:           "/nonexistent",
+			MaxDuplication: float64Ptr(-1.0),
+		}
+		result, err := RunAnalyze(context.Background(), opts)
+		if err == nil {
+			t.Fatal("expected error for negative --max-duplication, got nil")
+		}
+		if result.ExitCode != 2 {
+			t.Errorf("ExitCode: got %d, want 2", result.ExitCode)
+		}
+		if !strings.Contains(err.Error(), "--max-duplication") {
+			t.Errorf("error %q does not contain '--max-duplication'", err.Error())
+		}
+	})
+
+	t.Run("above_100", func(t *testing.T) {
+		t.Parallel()
+		var stdout, stderr bytes.Buffer
+		opts := AnalyzeOptions{
+			Stdout:         &stdout,
+			Stderr:         &stderr,
+			Path:           "/nonexistent",
+			MaxDuplication: float64Ptr(101.0),
+		}
+		result, err := RunAnalyze(context.Background(), opts)
+		if err == nil {
+			t.Fatal("expected error for --max-duplication > 100, got nil")
+		}
+		if result.ExitCode != 2 {
+			t.Errorf("ExitCode: got %d, want 2", result.ExitCode)
+		}
+		if !strings.Contains(err.Error(), "--max-duplication") {
+			t.Errorf("error %q does not contain '--max-duplication'", err.Error())
+		}
+	})
 }

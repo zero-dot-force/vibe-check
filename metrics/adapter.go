@@ -34,4 +34,8 @@ const (
 	CapLCOM Capability = "lcom"
 	// CapCircularDeps indicates the adapter can detect circular dependencies.
 	CapCircularDeps Capability = "circular"
+	// CapDuplication indicates the adapter can detect structurally similar
+	// code blocks via AST normalization and report them as Duplication
+	// results in ModuleResult.Duplications.
+	CapDuplication Capability = "duplication"
 )

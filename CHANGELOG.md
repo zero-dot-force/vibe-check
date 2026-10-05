@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `vibe-check analyze --max-duplication <pct>` flag: fails the build (exit code 1)
+  when any module's duplicated-line percentage exceeds the given threshold.
+  Duplication detection identifies structurally similar code blocks within a
+  module after identifier and literal normalization. Results are reported in the
+  new `duplications` array on each `ModuleResult`, with each entry carrying a
+  `modulePath`, `blocks` (file, startLine, endLine, lineCount), and `similarity`
+  score in [0, 1]. A new `totalLines` field on `ModuleResult` records the total
+  source lines per module for percentage computation. The ModuleGraph schema is
+  bumped to `1.3` (additive; `1.0`, `1.1`, and `1.2` remain valid).
+  Spec: `openspec/changes/add-code-duplication-detection/`
+
 - Release automation via GoReleaser: cross-platform pre-built binaries for
   linux/darwin/windows × amd64/arm64 are published to GitHub Releases via a
   `workflow_dispatch`-triggered pipeline using org-infra reusable workflows.

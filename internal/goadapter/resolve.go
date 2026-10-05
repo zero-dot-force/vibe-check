@@ -17,12 +17,14 @@ import (
 // NeedSyntax: AST for LCOM4 field-access analysis.
 // NeedTypesInfo: resolved type info for identifier resolution.
 // NeedModule: module metadata for stdlib detection and module path.
+// NeedFiles: GoFiles for total-line counting (duplication percentage).
 const loadFlags = packages.NeedName |
 	packages.NeedImports |
 	packages.NeedTypes |
 	packages.NeedSyntax |
 	packages.NeedTypesInfo |
-	packages.NeedModule
+	packages.NeedModule |
+	packages.NeedFiles
 
 // packageEnvAllowlist enumerates the environment variables passed through to
 // go/packages (and any subprocess it spawns) via metrics.SanitizeEnvironment.

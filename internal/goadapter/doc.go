@@ -4,7 +4,7 @@
 // main sequence, LCOM4 cohesion, and circular dependency detection.
 //
 // The adapter implements the [metrics.Adapter] interface and produces a
-// [metrics.ModuleGraph] that conforms to schema version "1.2". Each Go package
+// [metrics.ModuleGraph] that conforms to schema version "1.3". Each Go package
 // within the target module is treated as one [metrics.Module].
 //
 // # Type Classification

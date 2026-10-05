@@ -49,14 +49,14 @@ func validateTopLevel(raw map[string]interface{}) error {
 	}
 
 	// Validate schemaVersion is a supported value.
-	// Accept "1.0" (no extensions), "1.1" (with extensions), and "1.2" (with
-	// provenance) for backward compatibility.
+	// Accept "1.0" (no extensions), "1.1" (with extensions), "1.2" (with
+	// provenance), and "1.3" (with duplications) for backward compatibility.
 	version, ok := raw["schemaVersion"].(string)
 	if !ok {
 		return fmt.Errorf("validate: field \"schemaVersion\" must be a string")
 	}
-	if version != "1.0" && version != "1.1" && version != "1.2" {
-		return fmt.Errorf("validate: unsupported schema version %q (supported: \"1.0\", \"1.1\", \"1.2\")", version)
+	if version != "1.0" && version != "1.1" && version != "1.2" && version != "1.3" {
+		return fmt.Errorf("validate: unsupported schema version %q (supported: \"1.0\", \"1.1\", \"1.2\", \"1.3\")", version)
 	}
 
 	// Validate language is a non-empty string.
@@ -193,6 +193,24 @@ func validateModule(v interface{}, index int) error {
 		}
 	}
 
+	// Validate totalLines if present: must be a non-negative integer.
+	if _, exists := m["totalLines"]; exists {
+		val, err := moduleNumber(m, "totalLines", index)
+		if err != nil {
+			return err
+		}
+		if val < 0 {
+			return fmt.Errorf("modules[%d]: field \"totalLines\" value %g must be >= 0", index, val)
+		}
+	}
+
+	// Validate duplications field if present: must be an array of valid duplication objects.
+	if _, exists := m["duplications"]; exists {
+		if err := validateDuplications(m, index); err != nil {
+			return fmt.Errorf("modules[%d]: %w", index, err)
+		}
+	}
+
 	return nil
 }
 
@@ -210,6 +228,80 @@ func moduleNumber(m map[string]interface{}, field string, index int) (float64, e
 		return 0, fmt.Errorf("modules[%d]: field %q must be a number", index, field)
 	}
 	return num, nil
+}
+
+// validateDuplications checks that the duplications field is an array of valid
+// duplication objects. Each duplication must have modulePath (string), blocks
+// (array of objects with file, startLine, endLine, lineCount), and similarity
+// (number in [0, 1]).
+func validateDuplications(m map[string]interface{}, moduleIndex int) error {
+	dupsRaw, ok := m["duplications"]
+	if !ok {
+		return nil // duplications is optional
+	}
+	// Accept null as equivalent to an empty array (nil slices serialize as null in Go).
+	if dupsRaw == nil {
+		return nil
+	}
+	dups, ok := dupsRaw.([]interface{})
+	if !ok {
+		return fmt.Errorf("field \"duplications\" must be an array")
+	}
+	for i, d := range dups {
+		dup, ok := d.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("duplications[%d]: must be an object", i)
+		}
+		// Validate required fields.
+		for _, field := range []string{"modulePath", "blocks", "similarity"} {
+			if _, ok := dup[field]; !ok {
+				return fmt.Errorf("duplications[%d]: missing required field %q", i, field)
+			}
+		}
+		// Validate modulePath is a string.
+		if _, ok := dup["modulePath"].(string); !ok {
+			return fmt.Errorf("duplications[%d]: field \"modulePath\" must be a string", i)
+		}
+		// Validate similarity is a number in [0, 1].
+		sim, ok := dup["similarity"].(float64)
+		if !ok {
+			return fmt.Errorf("duplications[%d]: field \"similarity\" must be a number", i)
+		}
+		if sim < 0.0 || sim > 1.0 {
+			return fmt.Errorf("duplications[%d]: field \"similarity\" value %g out of range [0, 1]", i, sim)
+		}
+		// Validate blocks is an array of valid block objects.
+		blocksRaw, ok := dup["blocks"].([]interface{})
+		if !ok {
+			return fmt.Errorf("duplications[%d]: field \"blocks\" must be an array", i)
+		}
+		for j, b := range blocksRaw {
+			block, ok := b.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("duplications[%d].blocks[%d]: must be an object", i, j)
+			}
+			for _, field := range []string{"file", "startLine", "endLine", "lineCount"} {
+				if _, ok := block[field]; !ok {
+					return fmt.Errorf("duplications[%d].blocks[%d]: missing required field %q", i, j, field)
+				}
+			}
+			// Validate file is a string.
+			if _, ok := block["file"].(string); !ok {
+				return fmt.Errorf("duplications[%d].blocks[%d]: field \"file\" must be a string", i, j)
+			}
+			// Validate startLine, endLine, lineCount are numbers.
+			for _, field := range []string{"startLine", "endLine", "lineCount"} {
+				val, ok := block[field].(float64)
+				if !ok {
+					return fmt.Errorf("duplications[%d].blocks[%d]: field %q must be a number", i, j, field)
+				}
+				if val < 0 {
+					return fmt.Errorf("duplications[%d].blocks[%d]: field %q value %g must be >= 0", i, j, field, val)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // validateWarning checks that a warning element has the required code and message fields.

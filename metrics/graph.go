@@ -4,13 +4,13 @@ package metrics
 // Consumers should check this value before processing to detect incompatible changes.
 // Version changes follow semantic versioning: minor versions are backward-compatible,
 // major versions may contain breaking changes.
-const SchemaVersionCurrent = "1.2"
+const SchemaVersionCurrent = "1.3"
 
 // ModuleGraph represents the complete analysis result for a project.
 // It contains all modules with their computed metrics, detected circular
 // dependencies, and any warnings produced during analysis.
 type ModuleGraph struct {
-	// SchemaVersion is the version of the output schema (e.g., "1.2").
+	// SchemaVersion is the version of the output schema (e.g., "1.3").
 	// Consumers use this to detect breaking changes in the JSON structure.
 	SchemaVersion string `json:"schemaVersion"`
 	// Language is the lowercase language identifier (e.g., "go", "python").
@@ -75,6 +75,17 @@ type ModuleResult struct {
 	LCOM LCOM `json:"lcom"`
 	// Zone is the classification of the module's position relative to the main sequence.
 	Zone Zone `json:"zone"`
+	// Duplications contains detected structurally similar code blocks within
+	// this module. Each Duplication groups two or more blocks that are
+	// structurally identical after identifier and literal normalization.
+	// An empty slice (not nil) indicates no duplications were detected.
+	Duplications []Duplication `json:"duplications"`
+
+	// TotalLines is the total number of lines across all source files in
+	// this module. Used to compute duplication percentage for threshold
+	// enforcement. Zero indicates the line count could not be determined.
+	TotalLines int `json:"totalLines"`
+
 	// Extensions contains language-specific metric extensions namespaced by language.
 	// Keys use the format "language.metricName" (e.g., "go.interfaceWidth").
 	// Extensions are not schema-enforced beyond being a valid JSON object.

@@ -7,7 +7,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "enum": ["1.0", "1.1", "1.2"],
+      "enum": ["1.0", "1.1", "1.2", "1.3"],
       "description": "Version of the output schema. Consumers check this to detect breaking changes in the JSON structure."
     },
     "language": {
@@ -77,6 +77,62 @@
             "type": "string",
             "enum": ["main-sequence", "zone-of-pain", "zone-of-uselessness", "normal"],
             "description": "Classification of the module's position relative to the main sequence."
+          },
+          "totalLines": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Total number of lines across all source files in this module. Zero indicates the line count could not be determined."
+          },
+          "duplications": {
+            "type": "array",
+            "description": "Detected structurally similar code blocks within this module. An empty array indicates no duplications were detected.",
+            "items": {
+              "type": "object",
+              "required": ["modulePath", "blocks", "similarity"],
+              "properties": {
+                "modulePath": {
+                  "type": "string",
+                  "description": "Unique identifier for the module containing the duplicate blocks."
+                },
+                "blocks": {
+                  "type": "array",
+                  "description": "Locations of the duplicate code blocks. At least two blocks per duplication.",
+                  "items": {
+                    "type": "object",
+                    "required": ["file", "startLine", "endLine", "lineCount"],
+                    "properties": {
+                      "file": {
+                        "type": "string",
+                        "description": "Path to the source file containing this block, relative to the project root."
+                      },
+                      "startLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "1-indexed line number where the duplicate block begins."
+                      },
+                      "endLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "1-indexed line number where the duplicate block ends (inclusive)."
+                      },
+                      "lineCount": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Number of significant lines in this block, excluding blank lines and single-token lines."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "similarity": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Structural similarity score between the blocks, in [0, 1]. 1.0 means structurally identical after normalization."
+                }
+              },
+              "additionalProperties": false
+            }
           },
           "extensions": {
             "type": "object",

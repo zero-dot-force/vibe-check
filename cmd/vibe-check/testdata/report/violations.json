@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "1.3",
+  "language": "go",
+  "modules": [
+    {
+      "path": "pkg/monolith",
+      "name": "pkg/monolith",
+      "ca": 2,
+      "ce": 2,
+      "exportedTypes": 1,
+      "abstractTypes": 0,
+      "instability": 0.5,
+      "abstractness": 0,
+      "distance": 0.25,
+      "lcom": 5,
+      "zone": "normal",
+      "duplications": [],
+      "totalLines": 700
+    },
+    {
+      "path": "pkg/hub",
+      "name": "pkg/hub",
+      "ca": 1,
+      "ce": 21,
+      "exportedTypes": 1,
+      "abstractTypes": 0,
+      "instability": 0.8,
+      "abstractness": 0,
+      "distance": 0.25,
+      "lcom": 1,
+      "zone": "normal",
+      "duplications": [],
+      "totalLines": 500
+    }
+  ],
+  "cycles": [],
+  "warnings": [],
+  "status": "complete",
+  "provenance": {
+    "producer": "vibe-check",
+    "version": "1.2.3",
+    "generatedAt": "2026-01-15T10:30:00Z",
+    "input": {
+      "path": ".",
+      "modulePath": "example.com/project"
+    }
+  }
+}

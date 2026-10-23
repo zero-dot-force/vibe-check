@@ -127,12 +127,17 @@ func TestEmbeddedAsset_ReporterAgentContract(t *testing.T) {
 		t.Errorf("missing AP-006 provenance marker prefix")
 	}
 
-	// Required sections.
+	// Required sections. Report Flow and Violation Explanations cover the
+	// deterministic-report flow: the CLI-rendered skeleton consumed
+	// verbatim (analyze --output then report --mode) and the per-violation
+	// explanation layer appended when report exits 1.
 	for _, section := range []string{
 		"## Source Documents",
 		"## Mode Parsing",
+		"## Report Flow",
 		"## Summary Mode",
 		"## Detailed Mode",
+		"## Violation Explanations",
 		"## Trending Mode",
 		"## Tone Rules",
 		"## Graceful Degradation",
@@ -143,13 +148,17 @@ func TestEmbeddedAsset_ReporterAgentContract(t *testing.T) {
 		}
 	}
 
-	// Bash allowlist: exactly 2 entries + catch-all deny.
+	// Bash allowlist: exactly 3 entries + catch-all deny. The reporter
+	// runs vibe-check analyze (directory-only) and vibe-check report
+	// (skeleton rendering); git rev-parse supplies the commit SHA for
+	// trending snapshot storage.
 	allow, denyCatchAll := bashPermissions(content)
 	if !denyCatchAll {
 		t.Errorf(`bash catch-all "*" must map to "deny"`)
 	}
 	wantAllow := []string{
 		"vibe-check analyze *",
+		"vibe-check report *",
 		"git rev-parse *",
 	}
 	if len(allow) != len(wantAllow) {

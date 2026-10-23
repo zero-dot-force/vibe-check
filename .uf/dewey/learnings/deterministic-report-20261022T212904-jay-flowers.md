@@ -1,0 +1,10 @@
+---
+tag: deterministic-report
+author: jay-flowers
+category: decision
+created_at: 2026-10-22T21:29:04Z
+identity: deterministic-report-20261022T212904-jay-flowers
+tier: draft
+---
+
+vibe-check deterministic-report task 1.3 (metrics/report.go): aggregates are exposed as ONE struct + ONE function — Aggregates{AverageInstability Instability, AverageDistance Distance, MaxLCOM4 LCOM, CycleCount int, InstabilitySpread int, DuplicationPercent float64} with JSON tags (camelCase, "maxLCOM4" follows the commitSHA all-caps-initialism precedent) and ComputeAggregates(g *ModuleGraph) Aggregates. Key contracts for 1.4/2.x/3.4 to consume: (1) field types feed the 1.2 classifiers directly with no conversion; (2) nil graph and empty module set both return the zero Aggregates (no divide-by-zero; CycleCount still mirrors len(g.Cycles)); (3) spread bounds are named constants SpreadStableMax=0.001 / SpreadUnstableMin=0.999 (inclusive, untyped); (4) duplication dedup key is dupBlockKey{file, startLine, endLine} — ModulePath deliberately EXCLUDED (project-root-relative file paths make file+range globally unique) and LineCount excluded with max-wins on conflicting counts to keep input-order independence; (5) DuplicationPercent = Σ LineCount over unique block identities ÷ Σ TotalLines × 100, spec scenario 16/3797×100 = 0.42133...% which renders 0.4% via %.1f; (6) CRITICAL for byte-stability: means are summed in ASCENDING sorted order (sortedMean helper) because float addition is not associative — naive slice-order summation could differ at ulp level when the modules array is reordered (spec input-order-independence scenario), and --json (D12) emits raw floats where a 1-ulp difference breaks byte-identity; TestComputeAggregates_ModuleOrderIndependence pins this. Tests reuse mod()/mustGraph() from delta_test.go (cross-file helper reuse precedent: verdict_test.go) plus new dupMod/dupBlock helpers in report_test.go; full-struct == comparison (Aggregates is comparable) catches cross-field contamination.

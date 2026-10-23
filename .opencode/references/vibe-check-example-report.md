@@ -5,101 +5,70 @@
 
 ---
 
-🏗️ **Architectural Health Report** — `example-overdrive`
+# 🏗️ Architectural Health Report
 
-**Provenance**: vibe-check v1.0.0 | 2026-01-15T10:30:00Z | 8 packages | 4,200 lines
+**Provenance**: vibe-check 1.2.3 | 2 packages | 800 lines
 
 📖 Instability = ratio of outgoing to total dependencies (0.0=max stable, 1.0=max unstable) | Abstractness = ratio of abstracts to total types (0.0=fully concrete, 1.0=pure interfaces) | Distance = how far from ideal balance (0.0=perfect, 1.0=worst) | LCOM4 = cohesion (1=best, ≥4 suggests split) | Ca = packages depending on this one | Ce = packages this one depends on | Full guide: https://github.com/zero-dot-force/vibe-check/blob/main/docs/metrics-guide.md
 
----
+Needs Attention | 2 packages | Avg Instability: 0.50 | Avg Distance: 0.32 | Max LCOM4: 2 | Cycles: 1
 
-📊 **Package Metrics**
+## Prioritized Recommendations
+
+1. 🔴 Break cycle between `pkg/alpha`, `pkg/omega` — circular dependencies prevent independent testing
+2. 🔴 Break cycle between `pkg/alpha`, `pkg/omega` — circular dependencies prevent independent testing
+3. 🟢 Watch duplication in `x/a.go`, `x/b.go` — `2` blocks at `90`% similarity
+
+## 📊 Package Metrics
 
 | Package | Instability | Abstractness | Distance | LCOM4 | Ca | Ce | Zone |
-|---------|-------------|-------------|----------|-------|----|----|------|
-| `example.com/project/core` | 0.00 | 0.00 | 1.00 | 3 | 15 | 0 | 🔴 Zone of Pain |
-| `example.com/project/handler` | 0.95 | 0.00 | 0.05 | 5 | 1 | 20 | 🟢 Main Sequence |
-| `example.com/project/models` | 0.60 | 0.90 | 0.50 | 1 | 3 | 2 | 🟡 Balanced |
-| `example.com/project/utils` | 0.30 | 0.00 | 0.70 | 7 | 8 | 5 | 🔴 Zone of Pain |
-| `example.com/project/cli` | 1.00 | 0.00 | 0.00 | 1 | 0 | 12 | 🟢 Main Sequence |
-| `example.com/project/middleware` | 0.20 | 0.10 | 0.70 | 2 | 5 | 15 | 🔴 Zone of Pain |
-| `example.com/project/database` | 0.00 | 0.40 | 0.60 | 6 | 12 | 0 | 🟡 Balanced |
-| `example.com/project/gateway` | 1.00 | 0.80 | 0.80 | 2 | 0 | 8 | 🔴 Zone of Uselessness |
+|---------|-------------|--------------|----------|-------|----|----|------|
+| `pkg/alpha` | 0.06 | 0.50 | 0.44 | 1 | 12 | 0 | 🟢 Main Sequence |
+| `pkg/omega` | 0.94 | 0.90 | 0.20 | 2 | 0 | 3 | 🔴 Zone of Uselessness |
 
----
+## 🔗 Coupling Summary
 
-🔗 **Coupling Summary**
+- **Max Ca**: `pkg/alpha` (12 dependents)
+- **Max Ce**: `pkg/omega` (3 dependencies)
+- **Leaves (Ce=0)**: `pkg/alpha`
+- **Heavily depended-on (Ca > 10)**: `pkg/alpha`
 
-- **Max Ca**: `example.com/project/core` (15 dependents) — heavily depended on; changes ripple widely
-- **Max Ce**: `example.com/project/handler` (20 dependencies) — depends on too many packages; fragile
-- **Leaves (Ca=0)**: `example.com/project/cli`, `example.com/project/gateway`
-- **Heavily depended-on (Ca > 10)**: `example.com/project/core`, `example.com/project/database`
+## 🧩 Cohesion Summary
 
----
+- **Best**: `pkg/alpha` (LCOM4=1)
+- **Worst**: `pkg/omega` (LCOM4=2)
+- **Packages needing review (LCOM4 ≥ 4)**: none
 
-🧩 **Cohesion Summary**
-
-- **Best**: `example.com/project/models` (LCOM4=1) — single responsibility
-- **Worst**: `example.com/project/utils` (LCOM4=7) — 7 disconnected method groups; split into focused packages
-- **Packages needing review (LCOM4 ≥ 4)**: `handler` (5), `utils` (7), `database` (6)
-
----
-
-🔄 **Circular Dependencies**
+## 🔄 Circular Dependencies
 
 🔴 **1 cycle detected:**
 
 ```
-example.com/project/core → example.com/project/database → example.com/project/middleware → example.com/project/core
+pkg/alpha → pkg/omega → pkg/alpha
 ```
 
-**Impact**: These 3 packages cannot be tested in isolation. Changes to any one package may silently break the others.
+## 📋 Code Duplication
 
----
+**2 duplicated blocks detected (overall 4.0%):**
 
-📋 **Code Duplication**
-
-**2 duplication blocks detected (overall 8.4%):**
-
-| File | Lines | Similarity | Duplicate of |
+| File | Lines | Similarity | Occurrences |
 |------|-------|------------|-------------|
-| `example.com/project/handler/auth.go:45-62` | 18 lines | 96% | `example.com/project/handler/admin.go:72-89` |
-| `example.com/project/utils/format.go:12-28` | 17 lines | 88% | `example.com/project/utils/output.go:34-50` |
+| `x/a.go:10-25` | 16 lines | 90% | 1 |
+| `x/b.go:40-55` | 16 lines | 90% | 1 |
 
----
-
-🏥 **Health Scorecard**
+## 🏥 Health Scorecard
 
 | Dimension | Value | Grade | Status |
 |-----------|-------|-------|--------|
-| Avg Distance from Main Sequence | 0.54 | C | 🔴 |
-| Max LCOM4 | 7 | F | 🔴 |
+| Avg Distance from Main Sequence | 0.32 | C+ | 🟡 |
+| Max LCOM4 | 2 | B+ | 🟢 |
 | Cycle Count | 1 | F | 🔴 |
-| Duplication % | 8.4% | C+ | 🟡 |
-| Instability Spread | 2 extremes | C+ | 🟡 |
+| Duplication % | 4.0% | B | 🟡 |
+| Instability Spread | 0 extremes | A | 🟢 |
 
-**Overall**: 🔴 Needs Attention — 3 critical dimensions require action.
+**Overall**: 🔴 Needs Attention
 
----
+## ⚠️ Warnings
 
-## Prioritized Recommendations
-
-1. 🔴 **Break the `core → database → middleware → core` cycle** — 3 packages in a circular dependency. Extract interfaces at the boundary points so packages depend on contracts, not implementations.
-
-2. 🔴 **Split `example.com/project/utils`** — LCOM4 of 7 across 7 responsibilities. Extract `format` (string manipulation), `output` (rendering), and `validation` (input checking) into separate packages.
-
-3. 🔴 **Add interfaces to `example.com/project/core`** — Distance of 1.00 places it in the Zone of Pain. With 15 dependents and 0 abstract types, every change breaks consumers. Add interfaces to insulate downstream packages.
-
-4. 🔴 **Split `example.com/project/database`** — LCOM4 of 6 and extreme stability (Ca=12, I=0.00) makes this a change bottleneck. Consider separating the connection pool, query builder, and migration runner.
-
-5. 🟡 **Decouple `example.com/project/handler`** — 20 efferent couplings and LCOM4 of 5 means this package is fragile and overloaded. Consider splitting by domain (auth handler, admin handler, etc.).
-
----
-
-⚠️ **Warnings**
-
-- `example.com/project/gateway` is in the **Zone of Uselessness** — high abstractness (0.80) with high instability (1.00). It depends on everyone but no one depends on it. Ensure it isn't dead code or unnecessary abstraction.
-
----
-
-*Report generated by vibe-check. Re-run with `/vibe-check detailed` for the full analysis.*
+- `pkg/gone`: package pkg/gone: type information unavailable
+- `pkg/omega` is in the Zone of Uselessness

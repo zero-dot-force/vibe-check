@@ -1100,10 +1100,528 @@ func TestDiffCommand_Help(t *testing.T) {
 	}
 	output := out.String()
 	for _, want := range []string{
-		"diff", "--json", "--gate", "--max-instability-delta", "--max-distance-delta", "--max-lcom-delta",
+		"diff", "--json", "--markdown", "--gate", "--max-instability-delta", "--max-distance-delta", "--max-lcom-delta",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("help output missing %q", want)
 		}
+	}
+}
+
+// --- Task 4.1/4.2: --markdown output mode --------------------------------------
+
+// diffFixtureDir holds the committed base/PR ModuleGraph fixture pairs and
+// their golden files for the diff command's markdown and default-table
+// outputs (tasks 4.1 and 4.2 of the deterministic-report change).
+const diffFixtureDir = "testdata/diff"
+
+// diffGoldenFixtures lists every committed base/PR fixture pair with the
+// verdict behavior the pair drives:
+//
+//   - improved: ex/a improves on every gated metric and the base cycle is
+//     resolved — APPROVE, direction improving, no reasons, one resolved
+//     cycle (the spec's approve-verdict scenario).
+//   - declined: ex/a crosses all three metric gates (ΔInstability +0.30,
+//     ΔDistance +0.25, ΔLCOM +2) and a new ex/b→ex/c cycle appears, plus
+//     one added and one removed package — REQUEST_CHANGES, direction
+//     degrading, four reasons, one new cycle (the spec's
+//     request-changes-verdict scenario).
+//   - mixed: ex/a instability rises by 0.05, below every gate — COMMENT,
+//     direction stable, the single materiality reason.
+//
+// The pairs mirror the in-code fixture builders above (improvementFixtures,
+// degradeCycleFixtures, commentBandFixtures), so the committed goldens and
+// the in-code scenario tests pin the same graphs through both surfaces.
+var diffGoldenFixtures = []struct {
+	name      string // fixture base name: testdata/diff/<name>-{base,pr}.json
+	verdict   metrics.Verdict
+	direction metrics.EntropyDirection
+}{
+	{name: "improved", verdict: metrics.VerdictApprove, direction: metrics.EntropyImproving},
+	{name: "declined", verdict: metrics.VerdictRequestChanges, direction: metrics.EntropyDegrading},
+	{name: "mixed", verdict: metrics.VerdictComment, direction: metrics.EntropyStable},
+}
+
+// diffFixturePair returns the committed base/PR fixture paths for name.
+func diffFixturePair(name string) (basePath, prPath string) {
+	return filepath.Join(diffFixtureDir, name+"-base.json"), filepath.Join(diffFixtureDir, name+"-pr.json")
+}
+
+// diffGoldenPath returns the committed markdown golden for a fixture pair:
+// testdata/diff/<name>.golden.md.
+func diffGoldenPath(name string) string {
+	return filepath.Join(diffFixtureDir, name+".golden.md")
+}
+
+// diffTableGoldenPath returns the committed default-table golden for a
+// fixture pair: testdata/diff/<name>.golden.table.txt. The table golden
+// pins the pre-markdown default output byte-for-byte, so the spec's
+// default-output-unchanged requirement is machine-checked.
+func diffTableGoldenPath(name string) string {
+	return filepath.Join(diffFixtureDir, name+".golden.table.txt")
+}
+
+// TestRunDiff_MarkdownJSONExclusion covers the --json/--markdown mutual
+// exclusion at the RunDiff level: both flags together are a usage error —
+// exit code 2, an error naming both flags, nothing on stdout — rejected
+// before any file is read (the rejected cases point at a nonexistent base
+// path, so a "read base file" error would prove the flag check did not run
+// first). Either flag alone succeeds.
+func TestRunDiff_MarkdownJSONExclusion(t *testing.T) {
+	t.Parallel()
+
+	basePath, prPath := diffFixturePair("improved")
+	missingBase := filepath.Join(t.TempDir(), "missing-base.json")
+
+	tests := []struct {
+		name     string
+		json     bool
+		markdown bool
+		basePath string
+		prPath   string
+		wantErr  string // empty means expect success
+	}{
+		{
+			name: "both_flags_rejected", json: true, markdown: true,
+			basePath: missingBase, prPath: prPath,
+			wantErr: "--json and --markdown are mutually exclusive",
+		},
+		{
+			name: "markdown_alone_succeeds", json: false, markdown: true,
+			basePath: basePath, prPath: prPath,
+		},
+		{
+			name: "json_alone_still_succeeds", json: true, markdown: false,
+			basePath: basePath, prPath: prPath,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			result, err := RunDiff(context.Background(), DiffOptions{
+				Stdout:     &stdout,
+				Stderr:     &stderr,
+				BasePath:   tt.basePath,
+				PRPath:     tt.prPath,
+				Thresholds: metrics.DefaultVerdictThresholds(),
+				JSON:       tt.json,
+				Markdown:   tt.markdown,
+			})
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("RunDiff returned error: %v", err)
+				}
+				if result.ExitCode != 0 {
+					t.Errorf("ExitCode: got %d, want 0", result.ExitCode)
+				}
+				if stdout.Len() == 0 {
+					t.Error("stdout must carry the diff report")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected usage error for conflicting flags, got nil")
+			}
+			if result.ExitCode != 2 {
+				t.Errorf("ExitCode: got %d, want 2", result.ExitCode)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q missing %q", err.Error(), tt.wantErr)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("stdout must be empty on conflicting flags, got %d bytes: %s", stdout.Len(), stdout.String())
+			}
+			if strings.Contains(err.Error(), "read base file") {
+				t.Errorf("flag validation must precede reading the inputs: %v", err)
+			}
+		})
+	}
+}
+
+// TestDiffCommand_MarkdownFlags covers the cobra wiring of --markdown: the
+// spec's both-flags scenario (exit 2 via exitCodeError with the usage error
+// on stderr and nothing on stdout — with nonexistent inputs, proving the
+// check precedes reading) and the markdown invocation on a REQUEST_CHANGES
+// pair without --gate (markdown on stdout, exit 0 — the verdict travels in
+// the payload, not the exit code).
+func TestDiffCommand_MarkdownFlags(t *testing.T) {
+	t.Parallel()
+
+	declinedBase, declinedPR := diffFixturePair("declined")
+	missingBase := filepath.Join(t.TempDir(), "missing-base.json")
+	missingPR := filepath.Join(t.TempDir(), "missing-pr.json")
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantExit   int
+		wantStderr string
+	}{
+		{
+			name:       "json_and_markdown_rejected",
+			args:       []string{"diff", "--json", "--markdown", missingBase, missingPR},
+			wantExit:   2,
+			wantStderr: "--json and --markdown are mutually exclusive",
+		},
+		{
+			name:     "markdown_request_changes_exits_zero",
+			args:     []string{"diff", "--markdown", declinedBase, declinedPR},
+			wantExit: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := rootCmd()
+			var out, errOut bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+			if tt.wantExit == 0 {
+				if err != nil {
+					t.Fatalf("Execute: unexpected error: %v\nstderr: %s", err, errOut.String())
+				}
+			} else {
+				var ece *exitCodeError
+				if !errors.As(err, &ece) {
+					t.Fatalf("error is not *exitCodeError: %T (%v)", err, err)
+				}
+				if ece.code != tt.wantExit {
+					t.Errorf("exit code: got %d, want %d", ece.code, tt.wantExit)
+				}
+			}
+			if tt.wantStderr != "" && !strings.Contains(errOut.String(), tt.wantStderr) {
+				t.Errorf("stderr missing %q: %s", tt.wantStderr, errOut.String())
+			}
+			if tt.wantStderr != "" && strings.Contains(errOut.String(), "read base file") {
+				t.Errorf("flag validation must precede reading the inputs: %s", errOut.String())
+			}
+			if tt.wantExit == 0 {
+				if !strings.HasPrefix(out.String(), "# 🏗️ Structural Entropy Diff") {
+					t.Errorf("stdout must carry the markdown report, got: %s", out.String())
+				}
+				if !strings.Contains(out.String(), "REQUEST_CHANGES") {
+					t.Errorf("markdown report must carry the verdict, got: %s", out.String())
+				}
+			} else if out.Len() != 0 {
+				t.Errorf("stdout must be empty on conflicting flags, got %d bytes: %s", out.Len(), out.String())
+			}
+		})
+	}
+}
+
+// TestRunDiff_MarkdownSpecScenarios pins the diff-command spec's two markdown
+// scenarios at the content level: a REQUEST_CHANGES diff lists the verdict,
+// every triggering reason, the per-module deltas, and the new cycles; an
+// APPROVE diff lists the verdict and entropy direction with no triggering
+// reasons and no new cycles.
+func TestRunDiff_MarkdownSpecScenarios(t *testing.T) {
+	t.Parallel()
+
+	runMarkdown := func(t *testing.T, name string) string {
+		t.Helper()
+		basePath, prPath := diffFixturePair(name)
+		var stdout, stderr bytes.Buffer
+		result, err := RunDiff(context.Background(), DiffOptions{
+			Stdout:     &stdout,
+			Stderr:     &stderr,
+			BasePath:   basePath,
+			PRPath:     prPath,
+			Thresholds: metrics.DefaultVerdictThresholds(),
+			Markdown:   true,
+		})
+		if err != nil {
+			t.Fatalf("RunDiff returned error: %v", err)
+		}
+		if result.ExitCode != 0 {
+			t.Errorf("ExitCode: got %d, want 0 (no --gate)", result.ExitCode)
+		}
+		return stdout.String()
+	}
+
+	t.Run("request_changes_lists_reasons_deltas_cycles", func(t *testing.T) {
+		t.Parallel()
+		out := runMarkdown(t, "declined")
+		for _, want := range []string{
+			"REQUEST_CHANGES", "degrading",
+			"new-cycle: ex/b ex/c",
+			`instability: module "ex/a"`,
+			`distance: module "ex/a"`,
+			`lcom: module "ex/a"`,
+			"`ex/a`", "`ex/b`", "`ex/c`",
+			"ex/b → ex/c → ex/b",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("markdown missing %q:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("approve_lists_no_reasons_or_new_cycles", func(t *testing.T) {
+		t.Parallel()
+		out := runMarkdown(t, "improved")
+		for _, want := range []string{"APPROVE", "improving", "No new circular dependencies."} {
+			if !strings.Contains(out, want) {
+				t.Errorf("markdown missing %q:\n%s", want, out)
+			}
+		}
+		for _, banned := range []string{"new-cycle:", "materiality:", "instability:", "distance:", "lcom:"} {
+			if strings.Contains(out, banned) {
+				t.Errorf("approve markdown must not list triggering reasons, found %q:\n%s", banned, out)
+			}
+		}
+	})
+}
+
+// TestRunDiff_MarkdownGoldenFiles pins the --markdown output contract on the
+// committed fixture pairs: for every pair, RunDiff with Markdown writes
+// stdout byte-identical to the committed golden and returns the fixture's
+// verdict and direction. Like the report goldens, every run doubles as a
+// repeated-runs byte-stability check across machines and time — the golden
+// was rendered once, and each later run must reproduce it exactly. This test
+// is the single writer of the markdown goldens under -update.
+func TestRunDiff_MarkdownGoldenFiles(t *testing.T) {
+	t.Parallel()
+
+	for _, fx := range diffGoldenFixtures {
+		t.Run(fx.name, func(t *testing.T) {
+			t.Parallel()
+			basePath, prPath := diffFixturePair(fx.name)
+
+			var stdout, stderr bytes.Buffer
+			result, err := RunDiff(context.Background(), DiffOptions{
+				Stdout:     &stdout,
+				Stderr:     &stderr,
+				BasePath:   basePath,
+				PRPath:     prPath,
+				Thresholds: metrics.DefaultVerdictThresholds(),
+				Markdown:   true,
+			})
+			if err != nil {
+				t.Fatalf("RunDiff returned error: %v", err)
+			}
+			if result.ExitCode != 0 {
+				t.Errorf("ExitCode: got %d, want 0 (no --gate)", result.ExitCode)
+			}
+			if result.Verdict != fx.verdict {
+				t.Errorf("verdict: got %v, want %v", result.Verdict, fx.verdict)
+			}
+			if result.Delta.Direction != fx.direction {
+				t.Errorf("direction: got %v, want %v", result.Delta.Direction, fx.direction)
+			}
+			got := stdout.String()
+
+			golden := diffGoldenPath(fx.name)
+			if *updateGoldens {
+				if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+					t.Fatalf("update golden %s: %v", golden, err)
+				}
+				return
+			}
+			want, err := os.ReadFile(golden)
+			if err != nil {
+				t.Fatalf("read golden %s: %v (regenerate with: go test ./cmd/vibe-check/ -update)", golden, err)
+			}
+			if got != string(want) {
+				t.Errorf("markdown output for %s does not match the committed golden %s:\ngot:\n%s\nwant:\n%s\nIf the change is intentional, regenerate with: go test ./cmd/vibe-check/ -update",
+					fx.name, golden, got, want)
+			}
+		})
+	}
+}
+
+// TestRunDiff_DefaultTableGolden pins the spec's default-output-unchanged
+// requirement: with neither --markdown nor --json, the declined fixture —
+// the richest fixture, exercising per-module rows, the new-cycle list, the
+// added/removed sections, the direction, the verdict, and the reasons —
+// renders the pre-existing tabwriter table byte-for-byte. The golden was
+// generated by the unchanged writeDiffTable renderer, so any byte drift in
+// the default output fails here. This test is the single writer of the
+// table golden under -update (a different file than the markdown goldens,
+// so the single-writer-per-file discipline holds).
+func TestRunDiff_DefaultTableGolden(t *testing.T) {
+	t.Parallel()
+
+	basePath, prPath := diffFixturePair("declined")
+
+	var stdout, stderr bytes.Buffer
+	result, err := RunDiff(context.Background(), DiffOptions{
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		BasePath:   basePath,
+		PRPath:     prPath,
+		Thresholds: metrics.DefaultVerdictThresholds(),
+	})
+	if err != nil {
+		t.Fatalf("RunDiff returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode: got %d, want 0", result.ExitCode)
+	}
+	if result.Verdict != metrics.VerdictRequestChanges {
+		t.Errorf("verdict: got %v, want %v", result.Verdict, metrics.VerdictRequestChanges)
+	}
+	got := stdout.String()
+
+	golden := diffTableGoldenPath("declined")
+	if *updateGoldens {
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatalf("update golden %s: %v", golden, err)
+		}
+		return
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read golden %s: %v (regenerate with: go test ./cmd/vibe-check/ -update)", golden, err)
+	}
+	if got != string(want) {
+		t.Errorf("default table output does not match the committed golden %s:\ngot:\n%s\nwant:\n%s\nThe default table output must be unchanged by --markdown. If the change is intentional, regenerate with: go test ./cmd/vibe-check/ -update",
+			golden, got, want)
+	}
+}
+
+// TestRunDiff_MarkdownByteStable pins the spec's repeat-run scenario: two
+// --markdown renders of the same fixture pair are byte-identical. Reads and
+// writes no golden files, so it is safe under -update.
+func TestRunDiff_MarkdownByteStable(t *testing.T) {
+	t.Parallel()
+
+	basePath, prPath := diffFixturePair("declined")
+	render := func() string {
+		var stdout, stderr bytes.Buffer
+		if _, err := RunDiff(context.Background(), DiffOptions{
+			Stdout:     &stdout,
+			Stderr:     &stderr,
+			BasePath:   basePath,
+			PRPath:     prPath,
+			Thresholds: metrics.DefaultVerdictThresholds(),
+			Markdown:   true,
+		}); err != nil {
+			t.Fatalf("RunDiff returned error: %v", err)
+		}
+		return stdout.String()
+	}
+
+	first, second := render(), render()
+	if first != second {
+		t.Errorf("two --markdown renders of the same diff differ:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+// TestRunDiff_MarkdownGateExitCodes covers the gate semantics under
+// --markdown at the RunDiff level: --gate still maps REQUEST_CHANGES to
+// exit 1 (the markdown report written to stdout first) and APPROVE to exit
+// 0, and without --gate a REQUEST_CHANGES verdict exits 0. Markdown never
+// touches the exit computation.
+func TestRunDiff_MarkdownGateExitCodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		fixture  string
+		gate     bool
+		wantExit int
+	}{
+		{name: "gate_request_changes_exits_one", fixture: "declined", gate: true, wantExit: 1},
+		{name: "gate_approve_exits_zero", fixture: "improved", gate: true, wantExit: 0},
+		{name: "no_gate_request_changes_exits_zero", fixture: "declined", gate: false, wantExit: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			basePath, prPath := diffFixturePair(tt.fixture)
+
+			var stdout, stderr bytes.Buffer
+			result, err := RunDiff(context.Background(), DiffOptions{
+				Stdout:     &stdout,
+				Stderr:     &stderr,
+				BasePath:   basePath,
+				PRPath:     prPath,
+				Thresholds: metrics.DefaultVerdictThresholds(),
+				Markdown:   true,
+				Gate:       tt.gate,
+			})
+			if err != nil {
+				t.Fatalf("RunDiff returned error: %v", err)
+			}
+			if result.ExitCode != tt.wantExit {
+				t.Errorf("ExitCode: got %d, want %d", result.ExitCode, tt.wantExit)
+			}
+			if !strings.HasPrefix(stdout.String(), "# 🏗️ Structural Entropy Diff") {
+				t.Errorf("stdout must carry the markdown report even on a gate failure, got: %s", stdout.String())
+			}
+		})
+	}
+}
+
+// TestDiffCommand_MarkdownGateExitsOne pins the spec's gated-markdown
+// scenario through the full command surface: `diff --markdown --gate` on the
+// REQUEST_CHANGES fixture writes the markdown report to stdout —
+// byte-identical to the committed golden — and exits 1 via exitCodeError.
+// Markdown never changes the gate semantics.
+func TestDiffCommand_MarkdownGateExitsOne(t *testing.T) {
+	t.Parallel()
+
+	// Under -update this test would race TestRunDiff_MarkdownGoldenFiles
+	// writing the same golden; regeneration is that test's job (the single
+	// writer), so this comparison-only test stands down.
+	if *updateGoldens {
+		t.Skip("golden regeneration is handled by TestRunDiff_MarkdownGoldenFiles")
+	}
+
+	basePath, prPath := diffFixturePair("declined")
+
+	cmd := rootCmd()
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"diff", "--markdown", "--gate", basePath, prPath})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected exit-1 error for --gate REQUEST_CHANGES, got nil")
+	}
+	var ece *exitCodeError
+	if !errors.As(err, &ece) {
+		t.Fatalf("error is not *exitCodeError: %T (%v)", err, err)
+	}
+	if ece.code != 1 {
+		t.Errorf("exit code: got %d, want 1", ece.code)
+	}
+	want, err := os.ReadFile(diffGoldenPath("declined"))
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if got := out.String(); got != string(want) {
+		t.Errorf("command stdout does not match the committed golden:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	if !strings.Contains(errOut.String(), "structural regression detected") {
+		t.Errorf("stderr missing gate diagnostic: %s", errOut.String())
+	}
+}
+
+// TestDiffGoldenFixtures_Contract pins the committed diff fixtures
+// themselves: every base and PR document passes metrics.Validate — the same
+// schema gate RunDiff enforces — so the goldens rest on schema-valid input.
+func TestDiffGoldenFixtures_Contract(t *testing.T) {
+	t.Parallel()
+
+	for _, fx := range diffGoldenFixtures {
+		t.Run(fx.name, func(t *testing.T) {
+			t.Parallel()
+			basePath, prPath := diffFixturePair(fx.name)
+			for _, path := range []string{basePath, prPath} {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read fixture %s: %v", path, err)
+				}
+				if err := metrics.Validate(data); err != nil {
+					t.Fatalf("fixture %s is not schema-valid: %v", path, err)
+				}
+			}
+		})
 	}
 }

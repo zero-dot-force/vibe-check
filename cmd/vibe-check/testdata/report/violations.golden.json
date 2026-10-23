@@ -1,0 +1,32 @@
+{
+  "aggregates": {
+    "averageInstability": 0.65,
+    "averageDistance": 0.25,
+    "maxLCOM4": 5,
+    "cycleCount": 0,
+    "instabilitySpread": 0,
+    "duplicationPercent": 0
+  },
+  "grades": {
+    "averageDistance": "B",
+    "maxLCOM4": "C",
+    "cycleCount": "A",
+    "duplicationPercent": "A",
+    "instabilitySpread": "A"
+  },
+  "status": "Needs Attention",
+  "recommendations": [
+    {
+      "severity": "red",
+      "rule": "lcom4-split",
+      "modulePath": "pkg/monolith",
+      "message": "Split `pkg/monolith` — LCOM4 of `5` suggests multiple unrelated responsibilities"
+    },
+    {
+      "severity": "yellow",
+      "rule": "ce-decouple",
+      "modulePath": "pkg/hub",
+      "message": "Decouple `pkg/hub` — `21` efferent couplings; consider interface extraction"
+    }
+  ]
+}

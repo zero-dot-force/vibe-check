@@ -1,0 +1,38 @@
+{
+  "aggregates": {
+    "averageInstability": 0.5,
+    "averageDistance": 0.32,
+    "maxLCOM4": 2,
+    "cycleCount": 1,
+    "instabilitySpread": 0,
+    "duplicationPercent": 4
+  },
+  "grades": {
+    "averageDistance": "C+",
+    "maxLCOM4": "B+",
+    "cycleCount": "F",
+    "duplicationPercent": "B",
+    "instabilitySpread": "A"
+  },
+  "status": "Needs Attention",
+  "recommendations": [
+    {
+      "severity": "red",
+      "rule": "cycle-break",
+      "modulePath": "pkg/alpha",
+      "message": "Break cycle between `pkg/alpha`, `pkg/omega` — circular dependencies prevent independent testing"
+    },
+    {
+      "severity": "red",
+      "rule": "cycle-break",
+      "modulePath": "pkg/omega",
+      "message": "Break cycle between `pkg/alpha`, `pkg/omega` — circular dependencies prevent independent testing"
+    },
+    {
+      "severity": "green",
+      "rule": "duplication-watch",
+      "modulePath": "",
+      "message": "Watch duplication in `x/a.go`, `x/b.go` — `2` blocks at `90`% similarity"
+    }
+  ]
+}

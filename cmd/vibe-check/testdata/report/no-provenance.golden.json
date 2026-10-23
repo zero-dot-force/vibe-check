@@ -1,0 +1,26 @@
+{
+  "aggregates": {
+    "averageInstability": 0.35,
+    "averageDistance": 0.25,
+    "maxLCOM4": 2,
+    "cycleCount": 0,
+    "instabilitySpread": 0,
+    "duplicationPercent": 0
+  },
+  "grades": {
+    "averageDistance": "B",
+    "maxLCOM4": "B+",
+    "cycleCount": "A",
+    "duplicationPercent": "A",
+    "instabilitySpread": "A"
+  },
+  "status": "All Clear",
+  "recommendations": [
+    {
+      "severity": "green",
+      "rule": "all-clear",
+      "modulePath": "",
+      "message": "Architecture is healthy — no significant issues detected; keep monitoring"
+    }
+  ]
+}

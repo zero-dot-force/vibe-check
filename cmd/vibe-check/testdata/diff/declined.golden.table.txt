@@ -1,0 +1,21 @@
+Per-module deltas (PR minus base):
+PATH  Ca  Ce  Instability  Abstractness  Distance  LCOM
+ex/a  0   0   0.3000       0.0000        0.2500    2
+ex/b  0   0   0.0000       0.0000        0.0000    0
+ex/c  0   0   0.0000       0.0000        0.0000    0
+New cycles:
+  - ex/b ex/c
+Resolved cycles:
+  (none)
+Added packages:
+  - ex/e
+Removed packages:
+  - ex/d
+
+Entropy direction: degrading
+Verdict: REQUEST_CHANGES
+Reasons:
+  - new-cycle: ex/b ex/c
+  - instability: module "ex/a" delta 0.3000 >= threshold 0.1500
+  - distance: module "ex/a" delta 0.2500 >= threshold 0.2000
+  - lcom: module "ex/a" delta 2 >= threshold 2

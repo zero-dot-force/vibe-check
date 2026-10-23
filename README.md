@@ -147,16 +147,63 @@ analysis a `module`. Throughout vibe-check's output — every `modules[]` entry 
 and each `VIOLATION: module ...` line on stderr — one `module` corresponds to one Go
 package.
 
+## Rendering a health report: `vibe-check report`
+
+`report` renders a deterministic architectural health report from a ModuleGraph JSON
+snapshot previously emitted by `analyze`. It never analyzes code — reading, validating,
+and rendering are pure — so identical input files always render byte-identical reports
+(no timestamps, modules in path order).
+
+```bash
+# Snapshot first — report renders an existing ModuleGraph, it never analyzes
+vibe-check analyze --output graph.json .
+
+# Summary report (default): header, metric legend, status line, recommendations
+vibe-check report graph.json
+
+# Detailed report: adds the package metrics table, coupling and cohesion
+# summaries, cycle chains, duplication table, health scorecard, and warnings
+vibe-check report --mode detailed graph.json
+
+# Machine-readable report model (mutually exclusive with --mode)
+vibe-check report --json graph.json
+```
+
+`--mode` selects the detail level. `summary` (the default) renders the report header,
+the metric legend, a status summary line ("All Clear" or "Needs Attention"), and
+prioritized recommendations. `detailed` additionally renders the package metrics table,
+coupling and cohesion summaries, circular-dependency chains, the duplication table, a
+health scorecard that grades five dimensions (average distance, max LCOM4, cycle count,
+duplication, instability spread) on an A–F scale, and warnings.
+
+`--json` emits the computed report model — aggregates, per-dimension grades, overall
+status, and fired recommendations — as a single JSON object, for consumers that should
+not parse markdown. It is mutually exclusive with `--mode`: passing both exits `2` with
+no output.
+
+Exit codes: `0` when no 🔴 or 🟡 recommendation fires, `1` when any fires (the full
+report is still written to stdout), and `2` on tool failure — an unknown `--mode` value,
+`--json` together with `--mode`, or an unreadable or schema-invalid input (error on
+stderr, nothing on stdout).
+
+Recommendations come from a fixed rule table — LCOM4 ≥ 4, distance ≥ 0.5, any circular
+dependency, or duplication ≥ 5% produce 🔴 entries; instability ≥ 0.95 or ≤ 0.05, more
+than 20 efferent couplings, or fully concrete packages with more than ten exported types
+produce 🟡 entries — ordered by severity, then metric extremity, then package path, and
+capped at five. Health grades are advisory: vibe-check's enforcement gates are the
+`diff` verdict thresholds, not the report.
+
 ## Comparing snapshots: `vibe-check diff`
 
 `diff` compares two `analyze` JSON snapshots — a base and a PR — and reports the change in
 design-quality metrics plus a verdict:
 
 ```bash
-vibe-check analyze --output base.json ./...   # on the base revision
-vibe-check analyze --output pr.json  ./...     # on the PR revision
+vibe-check analyze --output base.json .        # on the base revision
+vibe-check analyze --output pr.json .          # on the PR revision
 vibe-check diff base.json pr.json              # add --json for machine-readable output
 vibe-check diff --gate base.json pr.json       # exit 1 on REQUEST_CHANGES (CI regression gate)
+vibe-check diff --markdown base.json pr.json   # byte-stable markdown report (display-only)
 ```
 
 `diff` computes per-module deltas (Ca, Ce, instability, abstractness, distance, LCOM), new
@@ -170,6 +217,13 @@ When run with `--json`, `diff` also emits a top-level `provenance` object with `
 `"vibe-check"`), `version` (the tool version), and `generatedAt` (an RFC 3339 UTC timestamp); pass
 `--no-provenance` to omit it for byte-reproducible output.
 
+Pass `--markdown` to render the comparison as a byte-stable markdown report — the
+verdict, its triggering reasons, the entropy direction, the per-module deltas, and the
+new and resolved cycles — instead of the default table. It is mutually exclusive with
+`--json` (passing both exits `2`) and is display-only: it never affects the verdict, the
+protected thresholds, or the exit code, so it is never a gate input. Under `--gate`, a
+`REQUEST_CHANGES` verdict still exits `1` with the markdown report written to stdout.
+
 By default it exits `0` whenever both inputs are valid — the verdict is data in the payload, so a
 `REQUEST_CHANGES` verdict still exits `0` — and `2` when an input is missing, unreadable, or
 schema-invalid, or when a `--max-instability-delta`, `--max-distance-delta`, or
@@ -179,7 +233,8 @@ still exits `0`), so CI can block a PR on structural regression. The verdict and
 still written to the payload; only the exit code changes. See
 [`.github/workflows/structural-gate.yml`](.github/workflows/structural-gate.yml) for the
 pull-request regression gate that runs `analyze` on both the PR head and base and then
-`diff --gate`.
+`diff --gate`; its Report step appends the `diff --markdown` report to the PR step
+summary, so the report appears in the Checks UI even when the gate fails.
 
 This gate is advisory until a repository admin enables branch protection and marks
 `structural-gate` required — it fails the check but does not by itself block a merge.

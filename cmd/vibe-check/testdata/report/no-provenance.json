@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "1.3",
+  "language": "go",
+  "modules": [
+    {
+      "path": "pkg/alpha",
+      "name": "pkg/alpha",
+      "ca": 1,
+      "ce": 1,
+      "exportedTypes": 1,
+      "abstractTypes": 0,
+      "instability": 0.25,
+      "abstractness": 0,
+      "distance": 0.125,
+      "lcom": 1,
+      "zone": "normal",
+      "duplications": [],
+      "totalLines": 120
+    },
+    {
+      "path": "pkg/beta",
+      "name": "pkg/beta",
+      "ca": 2,
+      "ce": 2,
+      "exportedTypes": 1,
+      "abstractTypes": 0,
+      "instability": 0.45,
+      "abstractness": 0,
+      "distance": 0.375,
+      "lcom": 2,
+      "zone": "normal",
+      "duplications": [],
+      "totalLines": 180
+    }
+  ],
+  "cycles": [],
+  "warnings": [],
+  "status": "complete"
+}

@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- One byte-stable architectural health report now shared across the CLI, the CI
+  step summary, and the `vibe-check-reporter` agent: report formatting, A–F
+  health grades, and prioritized recommendations moved out of agent prompt text
+  into pure, table-tested Go functions in the `metrics/report/` package — a
+  grade engine with fixed threshold tables, aggregate computations, and a
+  deterministic recommendation rule engine (ordered by severity, metric
+  extremity, then package path; capped at 5). Identical input renders
+  byte-identical output: no timestamps, modules in path order.
+- New `vibe-check report <graph.json>` subcommand renders the markdown report
+  from a previously emitted ModuleGraph snapshot: `--mode summary|detailed`
+  (default summary) and `--json` (mutually exclusive with `--mode`) emitting
+  the computed report model — aggregates, per-dimension grades, overall
+  status, fired recommendations — as a single JSON object. Exit codes: 0
+  clean, 1 any red/yellow recommendation (the full report is still written to
+  stdout), 2 unreadable or schema-invalid input. `vibe-check diff --markdown`
+  renders the verdict, triggering reasons, entropy direction, per-module
+  deltas, and new/resolved cycles as a byte-stable markdown report instead of
+  the default table — mutually exclusive with `--json` and display-only, never
+  a gate input. The structural-gate workflow's new Report step appends the
+  `diff --markdown` report to the PR step summary (`if: always()`,
+  `continue-on-error`, inside the existing fork-guarded job; the gate step is
+  untouched).
+- The `vibe-check-reporter` agent asset is rewritten to `vibe-check analyze
+  --output <tmp.json>` → `vibe-check report --mode <mode>` → emit the
+  Go-rendered markdown verbatim, appending per-violation explanations and
+  remediation suggestions only on exit 1; its bash allowlist grows from 2 to
+  3 entries (`vibe-check report *`), and the package-pattern invocation bug
+  is fixed (`analyze` takes a directory, not package patterns).
+  `.opencode/references/vibe-check-example-report.md` is regenerated from the
+  committed fictional fixture with the new renderer.
+  Spec: `openspec/changes/deterministic-report/`
 - Revamped `vibe-check-reporter` agent output format: emoji-structured reports
   with closed vocabulary (🏗️📊🔗🧩🔄📋📖🏥🟢🟡🔴⚠️), full metric names
   (Instability, Abstractness, Distance, LCOM4), legend block with metrics guide

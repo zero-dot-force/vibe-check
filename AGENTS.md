@@ -245,10 +245,13 @@ go build ./cmd/vibe-check
 go run ./cmd/vibe-check init .            # --force to overwrite, --json for machine output
 
 # Analyze a module and write ModuleGraph JSON to a file (default: stdout)
-go run ./cmd/vibe-check analyze -o graph.json ./...   # --output is the long form
+go run ./cmd/vibe-check analyze -o graph.json .            # --output is the long form
+
+# Render the architectural health report from a ModuleGraph snapshot
+go run ./cmd/vibe-check report --mode detailed graph.json  # --json for the report model
 
 # Compare two ModuleGraph snapshots (base vs PR): entropy delta + verdict
-go run ./cmd/vibe-check diff base.json pr.json        # --json for machine output
+go run ./cmd/vibe-check diff base.json pr.json             # --json for machine output
 
 # Note: `vibe-check analyze` forces GOTOOLCHAIN=local for its go/packages
 # subprocess, so analysis never downloads a toolchain named by a target
@@ -280,9 +283,13 @@ cmd/vibe-check/     # CLI entry point (Layer 3)
   main.go           # Binary entry point with ldflags version embedding
   root.go           # Cobra root command with --version flag
   analyze.go        # analyze subcommand with threshold flags (incl --output/-o)
-  diff.go           # diff subcommand (base vs PR entropy delta + verdict)
+  diff.go           # diff subcommand (base vs PR entropy delta + verdict; --markdown report)
   init.go           # init subcommand (deploys embedded agent and command assets)
+  report.go         # report subcommand (markdown/JSON report from a ModuleGraph snapshot)
   provenance.go     # shared provenance envelope (producer/version/generatedAt)
+  testdata/         # Golden-file fixtures for the report and diff subcommands
+    report/         # ModuleGraph snapshots with summary/detailed/JSON goldens
+    diff/           # Base/PR snapshot pairs with markdown and table goldens
 internal/goadapter/ # Go language adapter (Layer 2)
   adapter.go        # Adapter struct implementing metrics.Adapter
   resolve.go        # Package loading via go/packages
@@ -322,6 +329,12 @@ metrics/            # Universal coupling metrics model (Layer 1)
   warning.go        # Warning type for analysis caveats
   zone.go           # Zone and Status types
   testdata/entropy/ # ModuleGraph diff fixtures + validation README (entropy divisor)
+metrics/report/     # Deterministic report engine (Layer 1 subpackage of metrics)
+  doc.go            # Package-level GoDoc
+  render.go         # Byte-stable markdown report renderers (summary/detailed)
+  render_diff.go    # Markdown renderer for diff reports (verdict, deltas, cycles); NormFloat
+  report.go         # Grade engine: A–F thresholds, aggregates, recommendation rules
+  reportmodel.go    # Report model for --json output (aggregates, grades, recommendations)
 openspec/           # OpenSpec change artifacts (proposals, specs, tasks)
   changes/          # Individual change directories
   schemas/          # Spec validation schemas
@@ -339,7 +352,10 @@ The architecture follows a three-layer design per the RFC phasing:
   `ProvenanceInput` types, schema `1.2`), and the base↔PR entropy delta engine
   (`ComputeDelta`) plus verdict engine (`DecideVerdict`) with protected
   gate thresholds (ΔInstability ≥ 0.15, ΔDistance ≥ 0.20, ΔLCOM ≥ 2, or a
-  new circular dependency).
+  new circular dependency). The deterministic report engine (grades,
+  aggregates, recommendations, markdown rendering, `--json` report model)
+  lives in the Layer-1 subpackage `metrics/report/`, which imports the
+  universal model types but adds no adapter or CLI dependencies.
 - **Layer 2** (`internal/goadapter/`): Go language adapter implementing
   `metrics.Adapter`. Uses `golang.org/x/tools/go/packages` for
   type-aware dependency resolution, AST-based type classification,

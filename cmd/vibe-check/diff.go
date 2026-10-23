@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/zero-dot-force/vibe-check/metrics"
+	"github.com/zero-dot-force/vibe-check/metrics/report"
 )
 
 // DiffOptions contains the configuration for the diff command.
@@ -33,9 +34,16 @@ type DiffOptions struct {
 	// this from metrics.DefaultVerdictThresholds, optionally tightened by the
 	// command layer's tighten-only override flags.
 	Thresholds metrics.VerdictThresholds
-	// JSON selects machine-readable JSON output when true; otherwise a
-	// human-readable table is written.
+	// JSON selects machine-readable JSON output when true; otherwise the
+	// human-readable table or the markdown report (see Markdown) is written.
 	JSON bool
+	// Markdown selects the byte-stable markdown report — the verdict,
+	// triggering reasons, entropy direction, per-module deltas, and
+	// new/resolved cycles — instead of the human-readable table. Mutually
+	// exclusive with JSON: both set is rejected with exit code 2 before
+	// any file is read. Markdown is display-only; it never affects the
+	// verdict, the gate, or the exit code.
+	Markdown bool
 	// NoProvenance when true omits the provenance envelope from the JSON
 	// payload, yielding byte-reproducible output across runs. Provenance is
 	// emitted by default.
@@ -86,11 +94,13 @@ type diffJSON struct {
 }
 
 // RunDiff reads two ModuleGraph JSON documents, computes their structural delta,
-// renders an entropy verdict, and writes a report to opts.Stdout. It returns a
-// non-nil *DiffResult and nil error on success. On any failure it returns a
-// non-nil *DiffResult with ExitCode 2 and a wrapped error; nothing is written to
-// opts.Stdout on error paths. This is the testable entry point per AP-002/AP-003:
-// all business logic lives here, not in the cobra command layer.
+// renders an entropy verdict, and writes a report to opts.Stdout — the default
+// human-readable table, the byte-stable markdown report for opts.Markdown, or
+// the JSON payload for opts.JSON. It returns a non-nil *DiffResult and nil
+// error on success. On any failure it returns a non-nil *DiffResult with
+// ExitCode 2 and a wrapped error; nothing is written to opts.Stdout on error
+// paths. This is the testable entry point per AP-002/AP-003: all business
+// logic lives here, not in the cobra command layer.
 //
 // Exit code semantics (also mirrored in the returned DiffResult.ExitCode):
 //   - 0: both inputs were read and validated, the delta and verdict were
@@ -98,14 +108,27 @@ type diffJSON struct {
 //     REQUEST_CHANGES verdict still returns 0 — diff conveys the verdict in its
 //     payload, not in the process exit code.
 //   - 1: only when opts.Gate is set and the verdict is REQUEST_CHANGES (a gate
-//     failure). The report is still written to opts.Stdout; the non-zero exit
-//     code signals CI to block the PR. An APPROVE or COMMENT verdict exits 0.
-//   - 2: either input is missing/unreadable or fails ModuleGraph schema
+//     failure). The report — table, markdown, or JSON — is still written to
+//     opts.Stdout; the non-zero exit code signals CI to block the PR. An
+//     APPROVE or COMMENT verdict exits 0.
+//   - 2: the output flags conflict (--json together with --markdown), or
+//     either input is missing/unreadable or fails ModuleGraph schema
 //     validation. In that case nothing is written to opts.Stdout and the
 //     returned error describes the failure for the command layer to report.
 //
 // RunDiff never writes a partial payload to opts.Stdout on any error path.
 func RunDiff(ctx context.Context, opts DiffOptions) (*DiffResult, error) {
+	// Step 0: Validate the output flags. Flag validation runs BEFORE any file
+	// is read so a conflicting combination is rejected with no filesystem
+	// access, mirroring how RunReport validates --json/--mode before reading
+	// the snapshot. --json and --markdown are mutually exclusive per the
+	// diff-command spec's flag mutual exclusion requirement: --json emits the
+	// machine-readable payload, --markdown the CI-publishable report.
+	if opts.JSON && opts.Markdown {
+		return &DiffResult{ExitCode: 2}, fmt.Errorf(
+			"--json and --markdown are mutually exclusive: pass --json for the machine-readable payload or --markdown for the markdown report, not both")
+	}
+
 	// Step 1: Read both inputs. A missing or unreadable file is a tool failure
 	// (exit 2) with no stdout output.
 	baseData, err := os.ReadFile(opts.BasePath)
@@ -142,13 +165,18 @@ func RunDiff(ctx context.Context, opts DiffOptions) (*DiffResult, error) {
 
 	// Step 5: Render the report into a buffer so a single write reaches Stdout.
 	// Buffering keeps the output atomic (no partial payload on a write error) and
-	// deterministic.
+	// deterministic. The markdown render delegates to the pure, byte-stable
+	// metrics renderer; it is display-only and cannot affect the verdict or the
+	// exit code computed below.
 	var buf bytes.Buffer
-	if opts.JSON {
+	switch {
+	case opts.JSON:
 		if err := writeDiffJSON(&buf, delta, verdict, reasons, opts.NoProvenance); err != nil {
 			return &DiffResult{ExitCode: 2}, fmt.Errorf("encode diff json: %w", err)
 		}
-	} else {
+	case opts.Markdown:
+		buf.WriteString(report.RenderDiffMarkdown(delta, verdict, reasons))
+	default:
 		writeDiffTable(&buf, delta, verdict, reasons)
 	}
 
@@ -231,7 +259,7 @@ func writeDiffTable(w io.Writer, delta metrics.GraphDelta, verdict metrics.Verdi
 	for _, m := range delta.Modules {
 		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%.4f\t%.4f\t%.4f\t%d\n",
 			m.Path, m.Ca, m.Ce,
-			normFloat(m.Instability), normFloat(m.Abstractness), normFloat(m.Distance),
+			report.NormFloat(m.Instability), report.NormFloat(m.Abstractness), report.NormFloat(m.Distance),
 			m.LCOM)
 	}
 	_ = tw.Flush()
@@ -282,16 +310,6 @@ func writeListSection(w io.Writer, title string, items []string) {
 	}
 }
 
-// normFloat maps negative zero to positive zero so a delta of exactly zero
-// always renders as "0.0000" rather than "-0.0000", keeping the table output
-// stable. Returns the input unchanged for all other values.
-func normFloat(f float64) float64 {
-	if f == 0 {
-		return 0
-	}
-	return f
-}
-
 // tightenThresholds applies tighten-only overrides to the protected default
 // gates. Each override argument is nil when its flag was not set. An override is
 // accepted only when it does not exceed the default: a smaller value tightens
@@ -337,6 +355,7 @@ func tightenThresholds(def metrics.VerdictThresholds, instability, distance *flo
 func diffCmd() *cobra.Command {
 	var (
 		jsonOut             bool
+		markdownOut         bool
 		maxInstabilityDelta float64
 		maxDistanceDelta    float64
 		maxLCOMDelta        int
@@ -356,8 +375,14 @@ dependencies, and renders a deterministic entropy verdict (APPROVE, COMMENT, or
 REQUEST_CHANGES).
 
 Both inputs must be JSON documents conforming to the ModuleGraph schema, as
-produced by 'vibe-check analyze'. Output is a human-readable table by default or
-a JSON object with --json.
+produced by 'vibe-check analyze'. Output is a human-readable table by default,
+a byte-stable markdown report with --markdown, or a JSON object with --json;
+--markdown and --json are mutually exclusive (passing both exits 2).
+
+The --markdown report renders the verdict, the triggering reasons, the entropy
+direction, the per-module deltas, and the new and resolved cycles. It is
+byte-identical for identical input files (no timestamps) and is display-only:
+it never affects the verdict, the protected thresholds, or the exit codes.
 
 The verdict is reported in the output payload. By default diff exits 0 whenever
 both inputs are valid (even for a REQUEST_CHANGES verdict) and exits 2 only when
@@ -413,6 +438,7 @@ by default so downstream consumers can attribute and audit the output. Use
 				PRPath:       args[1],
 				Thresholds:   thresholds,
 				JSON:         jsonOut,
+				Markdown:     markdownOut,
 				NoProvenance: noProvenance,
 				Gate:         gate,
 			}
@@ -445,6 +471,7 @@ by default so downstream consumers can attribute and audit the output. Use
 	}
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit a machine-readable JSON payload instead of a table")
+	cmd.Flags().BoolVar(&markdownOut, "markdown", false, "Render a byte-stable markdown report (verdict, reasons, deltas, cycles) instead of a table; mutually exclusive with --json")
 	cmd.Flags().Float64Var(&maxInstabilityDelta, "max-instability-delta", defaults.MaxInstabilityDelta, "Tighten-only instability-increase gate (must be <= 0.15)")
 	cmd.Flags().Float64Var(&maxDistanceDelta, "max-distance-delta", defaults.MaxDistanceDelta, "Tighten-only distance-increase gate (must be <= 0.20)")
 	cmd.Flags().IntVar(&maxLCOMDelta, "max-lcom-delta", defaults.MaxLCOMDelta, "Tighten-only LCOM-increase gate (must be <= 2)")

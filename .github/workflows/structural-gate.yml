@@ -50,3 +50,14 @@ jobs:
 
       - name: Gate
         run: bin/vibe-check diff --gate base.json head.json
+
+      - name: Report
+        # Publish the entropy-diff report as a PR step summary. `if: always()`
+        # keeps the report rendering even when the gate step fails;
+        # `continue-on-error` keeps a render failure non-blocking so the gate
+        # step remains the authoritative conclusion. When analysis failed and
+        # a snapshot is missing, diff exits 2 with no stdout, so nothing is
+        # appended.
+        if: ${{ always() }}
+        continue-on-error: true
+        run: bin/vibe-check diff --markdown base.json head.json >> "$GITHUB_STEP_SUMMARY"

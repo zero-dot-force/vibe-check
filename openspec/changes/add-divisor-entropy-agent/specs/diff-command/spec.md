@@ -130,7 +130,7 @@ When either input graph has `Status != "complete"` or carries load-error `Warnin
 
 The command SHALL emit a deterministic machine-readable JSON payload under `--json` and a human-readable table by default, both reporting the per-package delta, the new and resolved cycles, the entropy direction, the verdict, and the verdict reasons.
 
-Under `--json`, the command writes a single JSON object to standard output containing the per-package delta rows, the new-cycle and resolved-cycle lists, the overall entropy direction (improving, stable, or degrading), the verdict, the reasons, and the unreliable-measurement flag. Without `--json`, the command writes an equivalent human-readable table. All collections MUST be emitted in a stable, sorted order so that output is byte-stable across runs and platforms.
+Under `--json`, the command writes a single JSON object to standard output containing the per-package delta rows, the new-cycle and resolved-cycle lists, the overall entropy direction (improving, stable, or degrading), the verdict, the reasons, and the unreliable-measurement flag. Without `--markdown` or `--json`, the command writes an equivalent human-readable table. All collections MUST be emitted in a stable, sorted order so that output is byte-stable across runs and platforms.
 
 Note: Like the underlying `analyze` command, the `diff --json` payload does not include provenance metadata (producer, version, timestamp, compared SHAs) in this change. This is a known gap tracked as a follow-up; the compared SHAs are reported in the human-readable output and the agent's narrative, not in the machine payload.
 
@@ -141,7 +141,7 @@ Note: Like the underlying `analyze` command, the `diff --json` payload does not 
 
 #### Scenario: Human-readable table is the default
 
-- **WHEN** `vibe-check diff base.json pr.json` runs without `--json`
+- **WHEN** `vibe-check diff base.json pr.json` runs without `--json` or `--markdown`
 - **THEN** a readable per-package delta table containing per-package rows and the verdict are written to standard output
 
 ### Requirement: Input Validation and Exit Codes

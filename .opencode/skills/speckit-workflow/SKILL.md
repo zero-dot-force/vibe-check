@@ -136,7 +136,7 @@ When spawning workers via `forge_spawn_subtask()`:
 
 1. Include the task description and file path in the
    worker's prompt
-2. Workers MUST call `swarmmail_reserve()` on the target
+2. Workers MUST call `comms_reserve()` on the target
    file(s) before editing
 3. Workers MUST mark the task `[x]` in `tasks.md` after
    completing it

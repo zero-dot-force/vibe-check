@@ -33,3 +33,4 @@ replicator.log
 # unanchored `vibe-check` also matches the cmd/vibe-check/ source directory
 # and silently ignores every new file inside it.
 /vibe-check
+opencode.json

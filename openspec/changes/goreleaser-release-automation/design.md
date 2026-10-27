@@ -44,6 +44,8 @@ The release workflow delegates to `complytime/org-infra` reusable workflows (`re
 
 **Choice:** The release workflow has two jobs: `preflight` (calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@<commit-sha>`) and `release` (calling `complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@<commit-sha>`). Top-level `permissions: {}` (default-deny); each reusable-workflow job grants job-level permissions mirroring the callee's declared scopes at the pinned SHA — preflight: `contents: write` + `checks: read`, release: `contents: write` + `id-token: write` (cosign/syft).
 
+**Audited callee scopes** (read via the GitHub API at pinned SHA `58194ad2d1b24803263cac6fd1b54422e3c208dd`): `reusable_release_preflight.yml` declares `permissions: { contents: write, checks: read }`; `reusable_release_goreleaser.yml` declares `permissions: { contents: write, id-token: write }`. The caller's job-level grants mirror these exactly — no broader. GitHub validates reusable-workflow permission sufficiency only at dispatch time, so this record is the offline audit anchor for the "exactly mirroring, no broader" requirement.
+
 **Rationale:** This is the pattern used by other Unbound Force repos (`gaze`, etc.). The reusable workflows handle tag validation, CI check verification, GoReleaser execution, cosign signing, SBOM generation, and action pinning. vibe-check only provides the tag input and `.goreleaser.yaml` config.
 
 ### D5: SHA pinning handled by org-infra reusable workflows

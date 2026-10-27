@@ -6,15 +6,15 @@ The `.goreleaser.yaml` SHALL use GoReleaser schema `version: 2`.
 ### Requirement: Cross-platform binary builds
 The `.goreleaser.yaml` config SHALL build `cmd/vibe-check` binaries for linux (amd64, arm64), darwin (amd64, arm64), and windows (amd64, arm64). Builds SHALL use `CGO_ENABLED=0` for static linking.
 
-#### Scenario: Build on tag push
-- **WHEN** a tag matching `v*` is pushed
+#### Scenario: Build on release dispatch
+- **WHEN** a release is dispatched via `workflow_dispatch` for a tag matching `v*`
 - **THEN** GoReleaser SHALL produce statically linked binaries for all platform/arch combinations in the build matrix
 
 ### Requirement: Ldflags version embedding
 The `.goreleaser.yaml` config SHALL inject ldflags for `main.version={{.Tag}}`, `main.commit={{.Commit}}`, and `main.date={{.CommitDate}}`. Additionally, the build SHALL strip debug symbols with ldflags `-s -w`.
 
 #### Scenario: Version is tag-derived
-- **WHEN** a tag `v0.2.0` is pushed
+- **WHEN** a release is dispatched for tag `v0.2.0`
 - **THEN** the built binary SHALL report `v0.2.0` via `--version` using GoReleaser's `{{.Tag}}` template (which preserves the `v` prefix)
 
 #### Scenario: Commit is the git SHA
@@ -29,7 +29,7 @@ The `.goreleaser.yaml` config SHALL inject ldflags for `main.version={{.Tag}}`, 
 The `.goreleaser.yaml` config SHALL generate a `checksums.txt` containing SHA-256 hashes of all release artifacts.
 
 #### Scenario: Checksums included in release
-- **WHEN** a tag push triggers a release
+- **WHEN** a release is dispatched
 - **THEN** a `checksums.txt` file SHALL be uploaded alongside the binaries
 
 ### Requirement: Archive format
@@ -39,7 +39,7 @@ Release artifacts SHALL be packaged as `.tar.gz` archives on linux and darwin, a
 The `.goreleaser.yaml` config SHALL include a `changelog` section with commit groups (Features, Bug Fixes, Documentation, Others) and `prerelease: auto` for automatic pre-release detection.
 
 #### Scenario: Release notes are generated with commit groups
-- **WHEN** a tag push triggers a release
+- **WHEN** a release is dispatched
 - **THEN** GoReleaser SHALL group release notes by commit type (Features, Bug Fixes, Documentation, Others)
 
 ### Requirement: Archive naming convention
@@ -68,4 +68,4 @@ A user SHALL be able to download a pre-built `vibe-check` binary for their platf
 - **WHEN** a release is published
 - **THEN** the GitHub Release page SHALL list downloadable archives for all supported platform/arch combinations with checksums
 
-> **Verification**: See design.md § Coverage Strategy and tasks 4.1–4.5.
+> **Verification**: See design.md § Coverage Strategy and tasks 4.1–4.4.

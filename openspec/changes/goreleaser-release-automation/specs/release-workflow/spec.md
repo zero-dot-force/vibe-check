@@ -16,7 +16,7 @@ The release workflow SHALL trigger via `workflow_dispatch` with a `tag` input st
 - **THEN** the release workflow SHALL NOT execute
 
 ### Requirement: Preflight job
-The workflow SHALL include a `preflight` job calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@<commit-sha>` with `tag: ${{ inputs.tag }}`. The preflight workflow validates semver format, checks tag uniqueness, verifies CI checks on HEAD, validates semver ordering against the latest existing tag, verifies unreleased commits exist, and creates an annotated tag via the GitHub API. The job SHALL pass `secrets: inherit` to forward `GITHUB_TOKEN` and any other secrets to the reusable workflow.
+The workflow SHALL include a `preflight` job calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@<commit-sha>` with `tag: ${{ inputs.tag }}` and `ci_checks` explicitly naming the CI job check-runs to verify (org-infra auto-discovery only recognizes its own workflow conventions; names SHALL exactly match the check-run names on the HEAD commit). The preflight workflow validates semver format, checks tag uniqueness, verifies CI checks on HEAD, validates semver ordering against the latest existing tag, verifies unreleased commits exist, and creates an annotated tag via the GitHub API. The job SHALL pass `secrets: inherit` to forward `GITHUB_TOKEN` and any other secrets to the reusable workflow.
 
 #### Scenario: Preflight succeeds
 - **WHEN** the tag is a valid semver (`vX.Y.Z`) that is greater than the latest existing tag and unreleased commits exist

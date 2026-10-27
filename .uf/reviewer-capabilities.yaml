@@ -19,6 +19,10 @@ reviewers:
     capability: review
     scopes:
       - documentation
+  - agent: divisor-entropy
+    capability: review
+    scopes:
+      - standard
   - agent: divisor-guard
     capability: review
     scopes:

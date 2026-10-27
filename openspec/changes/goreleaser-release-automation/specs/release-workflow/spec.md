@@ -5,7 +5,7 @@
 ## ADDED Requirements
 
 ### Requirement: Release workflow trigger
-The release workflow SHALL trigger via `workflow_dispatch` with a `tag` input string. The workflow file SHALL include a header comment block describing its purpose (CI-011). Top-level `permissions` SHALL be `{}` (permissions are scoped within each reusable workflow).
+The release workflow SHALL trigger via `workflow_dispatch` with a `tag` input string. The workflow file SHALL include a header comment block describing its purpose (CI-011). Top-level `permissions` SHALL be `{}` (default-deny), and each job calling a reusable workflow SHALL grant job-level permissions exactly mirroring the scopes the callee declares at its pinned SHA — no broader (least privilege per CI-020; a called workflow cannot elevate beyond the caller's grant, and with only the top-level empty map, dispatched runs fail at startup).
 
 #### Scenario: Release is manually dispatched
 - **WHEN** a maintainer triggers the workflow via `workflow_dispatch` with a tag input (e.g., `v0.2.0`)

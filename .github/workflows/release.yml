@@ -20,6 +20,9 @@ jobs:
     with:
       tag: ${{ inputs.tag }}
     permissions:
+      # Mirrors the scopes reusable_release_preflight.yml declares at the pinned
+      # SHA (contents: write for tag creation, checks: read for CI verification).
+      # A called workflow cannot elevate beyond the caller's grant.
       contents: write
       checks: read
     secrets: inherit
@@ -31,6 +34,9 @@ jobs:
     with:
       tag: ${{ needs.preflight.outputs.tag }}
     permissions:
+      # Mirrors the scopes reusable_release_goreleaser.yml declares at the pinned
+      # SHA (contents: write for the GitHub Release, id-token: write for
+      # cosign/syft). A called workflow cannot elevate beyond the caller's grant.
       contents: write
       id-token: write
     secrets: inherit

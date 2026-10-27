@@ -17,6 +17,7 @@ execute sequentially but remain eligible for future parallelization. -->
 - [x] 3.1 Create `.github/workflows/release.yml` with a header comment block (CI-011), triggering on `workflow_dispatch` with a `tag` input (string, required). Top-level `permissions: {}`.
 - [x] 3.2 Add `preflight` job calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@<commit-sha>` with `tag: ${{ inputs.tag }}` and `secrets: inherit`.
 - [x] 3.3 Add `release` job (needs `preflight`) calling `complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@<commit-sha>` with `tag: ${{ needs.preflight.outputs.tag }}` and `secrets: inherit`.
+- [x] 3.4 Grant each reusable-workflow job the job-level permissions its callee declares at the pinned SHA — preflight: `contents: write` + `checks: read`; release: `contents: write` + `id-token: write` (a called workflow cannot elevate beyond the caller's grant; the workflow-level `permissions: {}` alone causes a startup failure before any job runs).
 
 ## 4. Verification
 

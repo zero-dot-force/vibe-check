@@ -2,7 +2,7 @@
 
 vibe-check is a Go CLI tool (`github.com/zero-dot-force/vibe-check`). `v0.1.0` was tagged but binaries were not published to GitHub Releases. The `cmd/vibe-check/main.go` declares three ldflags variables (`version`, `commit`, `date`) that default to `"dev"`, `"none"`, `"unknown"`. The `root.go:versionString()` function already handles ldflags → `runtime/debug.ReadBuildInfo()` fallback. GoReleaser fills the gap by injecting ldflags and publishing cross-platform artifacts on tag push.
 
-The release workflow delegates to `complytime/org-infra` reusable workflows (`reusable_release_preflight.yml` and `reusable_release_goreleaser.yml`), which handle tag validation, CI check verification, GoReleaser execution, cosign signing, and SBOM generation. Action pinning and permissions are centralized in the reusable workflows. `ci.yml` is a prerequisite for CI check validation in preflight.
+The release workflow delegates to `complytime/org-infra` reusable workflows (`reusable_release_preflight.yml` and `reusable_release_goreleaser.yml`), which handle tag validation, CI check verification, GoReleaser execution, cosign signing, and SBOM generation. Action pinning is centralized in the reusable workflows; permissions flow from the caller — each reusable-workflow job must grant the job-level scopes the callee declares at the pinned SHA (a called workflow cannot elevate beyond the caller's grant). `ci.yml` is a prerequisite for CI check validation in preflight.
 
 ## Goals / Non-Goals
 
@@ -42,7 +42,7 @@ The release workflow delegates to `complytime/org-infra` reusable workflows (`re
 
 ### D4: Delegate to org-infra reusable workflows
 
-**Choice:** The release workflow has two jobs: `preflight` (calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@<commit-sha>`) and `release` (calling `complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@<commit-sha>`). Top-level `permissions: {}`; each reusable workflow declares its own permissions.
+**Choice:** The release workflow has two jobs: `preflight` (calling `complytime/org-infra/.github/workflows/reusable_release_preflight.yml@<commit-sha>`) and `release` (calling `complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@<commit-sha>`). Top-level `permissions: {}` (default-deny); each reusable-workflow job grants job-level permissions mirroring the callee's declared scopes at the pinned SHA — preflight: `contents: write` + `checks: read`, release: `contents: write` + `id-token: write` (cosign/syft).
 
 **Rationale:** This is the pattern used by other Unbound Force repos (`gaze`, etc.). The reusable workflows handle tag validation, CI check verification, GoReleaser execution, cosign signing, SBOM generation, and action pinning. vibe-check only provides the tag input and `.goreleaser.yaml` config.
 
@@ -72,10 +72,10 @@ The release workflow delegates to `complytime/org-infra` reusable workflows (`re
 ## Coverage Strategy
 
 This change introduces no new Go source code. Configuration validation is covered by:
-- `goreleaser check` — YAML syntax validation (task 3.1)
-- `go build -ldflags ...` — ldflags injection smoke test (task 3.2)
-- `goreleaser build --snapshot --clean` — cross-platform build + artifact verification (task 3.4)
-- Manual workflow pattern review (task 3.3)
+- `goreleaser check` — YAML syntax validation (task 4.1)
+- `go build -ldflags ...` — ldflags injection smoke test (task 4.2)
+- `goreleaser build --snapshot --clean` — cross-platform build + artifact verification (task 4.4)
+- Manual workflow pattern review (task 4.3)
 - The release workflow itself serves as the integration test on first tag push.
 
 ## Documentation Impact

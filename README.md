@@ -8,10 +8,10 @@ circular-dependency detection, and emits the results as JSON.
 ## Install
 
 ```bash
-go install github.com/zero-dot-force/vibe-check/cmd/vibe-check@v0.1.0
+go install github.com/zero-dot-force/vibe-check/cmd/vibe-check@v0.2.0
 ```
 
-This resolves against the `v0.1.0` release tag, which must be published in the repository
+This resolves against the `v0.2.0` release tag, which must be published in the repository
 for module-version installs to work. When a binary is built this way (without release
 `ldflags`), `--version` falls back to the toolchain's build info so it still reports a
 meaningful module version (commit and build date may show as `none`/`unknown` for

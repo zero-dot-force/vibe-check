@@ -1,13 +1,13 @@
 ## Context
 
-vibe-check is a Go CLI tool (`github.com/zero-dot-force/vibe-check`). `v0.1.0` was tagged but binaries were not published to GitHub Releases. The `cmd/vibe-check/main.go` declares three ldflags variables (`version`, `commit`, `date`) that default to `"dev"`, `"none"`, `"unknown"`. The `root.go:versionString()` function already handles ldflags → `runtime/debug.ReadBuildInfo()` fallback. GoReleaser fills the gap by injecting ldflags and publishing cross-platform artifacts on tag push.
+vibe-check is a Go CLI tool (`github.com/zero-dot-force/vibe-check`). `v0.1.0` was tagged but binaries were not published to GitHub Releases. The `cmd/vibe-check/main.go` declares three ldflags variables (`version`, `commit`, `date`) that default to `"dev"`, `"none"`, `"unknown"`. The `root.go:versionString()` function already handles ldflags → `runtime/debug.ReadBuildInfo()` fallback. GoReleaser fills the gap by injecting ldflags and publishing cross-platform artifacts when a release is dispatched.
 
 The release workflow delegates to `complytime/org-infra` reusable workflows (`reusable_release_preflight.yml` and `reusable_release_goreleaser.yml`), which handle tag validation, CI check verification, GoReleaser execution, cosign signing, and SBOM generation. Action pinning is centralized in the reusable workflows; permissions flow from the caller — each reusable-workflow job must grant the job-level scopes the callee declares at the pinned SHA (a called workflow cannot elevate beyond the caller's grant). `ci.yml` is a prerequisite for CI check validation in preflight.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Build cross-platform binaries for `cmd/vibe-check` (linux/darwin/windows × amd64/arm64) on tag push
+- Build cross-platform binaries for `cmd/vibe-check` (linux/darwin/windows × amd64/arm64) when a release is dispatched via `workflow_dispatch`
 - Inject `main.version`, `main.commit`, `main.date` via ldflags so `--version` reports real values
 - Publish GitHub Release with generated release notes and `checksums.txt`
 - SHA-pinned actions and least-privilege `permissions` throughout
@@ -67,7 +67,7 @@ The release workflow delegates to `complytime/org-infra` reusable workflows (`re
 - **[workflow_dispatch requires manual trigger]** → A maintainer must go to the GitHub Actions UI or use `gh workflow run` to trigger a release. → Mitigation: This is intentional — the preflight workflow validates the tag and runs CI checks before creating the tag, which tag-push triggers cannot do before the push.
 - **[No notarization on macOS]** → macOS users see "unidentified developer" warnings. → Mitigation: Expected for open-source CLI tools. Binaries are cosign-signed by the reusable release workflow. Notarization can be added later.
 - **[GoReleaser version in reusable workflow]** → The reusable workflow defaults to `~> v2`. → Mitigation: vibe-check can override with a `goreleaser_version` input if needed. The reusable workflow also pins the `goreleaser/goreleaser-action` SHA.
-- **[org-infra dependency]** → A breaking change in the org-infra reusable workflows would not affect vibe-check releases because the workflow refs are pinned to a specific commit SHA. → Mitigation: vibe-check maintainers should periodically bump the pinned SHA to pick up org-infra improvements.
+- **[org-infra dependency]** → A breaking change in the org-infra reusable workflows would not affect vibe-check releases because the workflow refs are pinned to a specific commit SHA. → Mitigation: vibe-check maintainers should periodically bump the pinned SHA to pick up org-infra improvements. On every pin bump, re-audit the job-level permission grants: diff each callee reusable workflow's declared `permissions` scopes at the new SHA and update the caller's job-level grants to mirror them exactly before merging the bump — GitHub validates permission sufficiency only at dispatch time, so scope drift is otherwise invisible until a release attempt fails (a called workflow cannot elevate beyond the caller's grant).
 
 ## Coverage Strategy
 
@@ -76,7 +76,7 @@ This change introduces no new Go source code. Configuration validation is covere
 - `go build -ldflags ...` — ldflags injection smoke test (task 4.2)
 - `goreleaser build --snapshot --clean` — cross-platform build + artifact verification (task 4.4)
 - Manual workflow pattern review (task 4.3)
-- The release workflow itself serves as the integration test on first tag push.
+- The release workflow itself serves as the integration test on the first release dispatch.
 
 ## Documentation Impact
 

@@ -12,7 +12,7 @@ v0.1.0 was tagged and released manually. There is no `.goreleaser.yaml` and no G
 ### New Capabilities
 
 - `goreleaser-config`: GoReleaser configuration building cross-platform binaries with ldflags version embedding
-- `release-workflow`: CI workflow that triggers on tag push, runs GoReleaser, and publishes a GitHub Release with checksums
+- `release-workflow`: CI workflow triggered via `workflow_dispatch` with a `tag` input, runs GoReleaser, and publishes a GitHub Release with checksums
 
 ### Modified Capabilities
 
@@ -35,7 +35,7 @@ v0.1.0 was tagged and released manually. There is no `.goreleaser.yaml` and no G
 | **I. Autonomous Collaboration** | N/A — No new agent artifacts or inter-agent communication. |
 | **II. Composability First** | N/A — No new installable agent components. |
 | **III. Observable Quality** | PASS — `checksums.txt` provides artifact provenance; `--version` ldflags provide build provenance via `main.version`, `main.commit`, `main.date`. |
-| **IV. Testability** | PASS — Configuration-only change. `goreleaser check` validates YAML syntax; `goreleaser build --snapshot --clean` verifies cross-platform builds; ldflags smoke test verifies version embedding. Release workflow serves as integration test on first tag push. |
+| **IV. Testability** | PASS — Configuration-only change. `goreleaser check` validates YAML syntax; `goreleaser build --snapshot --clean` verifies cross-platform builds; ldflags smoke test verifies version embedding. Release workflow serves as integration test on first release dispatch. |
 | **V. Security by Default** | PASS — SHA-pinned actions (CI-001/CI-002/CI-003); least-privilege `permissions` (workflow-level `permissions: {}` default-deny; job-level grants exactly mirroring the callee-declared scopes at the pinned SHA per CI-020/CI-021); automatic `secrets.GITHUB_TOKEN` (no PAT); no new dependencies. |
 | **VI. Metric Fidelity** | N/A — No metric computation changes. |
 | **VII. Language Agnosticism** | N/A — No adapter, parser, or language-specific component. CI configuration only. |

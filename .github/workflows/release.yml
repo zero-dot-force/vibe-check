@@ -19,6 +19,13 @@ jobs:
     uses: complytime/org-infra/.github/workflows/reusable_release_preflight.yml@58194ad2d1b24803263cac6fd1b54422e3c208dd # main
     with:
       tag: ${{ inputs.tag }}
+      # Org-infra auto-discovery only recognizes its own conventions
+      # (ci_checks.yml, ci_local.yml, ci_security.yml); this repo's CI is
+      # ci.yml. Pass the job names explicitly — they must exactly match the
+      # check-run names on the HEAD commit (bare job names, no workflow
+      # prefix). Keep in sync with .github/workflows/ci.yml if job names
+      # change.
+      ci_checks: '["lint", "test"]'
     permissions:
       # Mirrors the scopes reusable_release_preflight.yml declares at the pinned
       # SHA (contents: write for tag creation, checks: read for CI verification).

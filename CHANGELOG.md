@@ -200,12 +200,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   undeclared `go-version-file` input was passed to the preflight workflow.
   Both jobs now call the underscore filenames verified at the pinned
   org-infra SHA (`reusable_release_preflight.yml`,
-  `reusable_release_goreleaser.yml`) with only the declared `tag` input,
-  and each job grants the permissions its org-infra counterpart requires
-  (`contents: write` + `checks: read` for preflight, `contents: write` +
-  `id-token: write` for the cosign/syft release job) — with only the
-  workflow-level `permissions: {}`, dispatched runs failed at startup
-  before any job began. Restores the ability to cut releases.
+  `reusable_release_goreleaser.yml`) with only the declared `tag` and
+  `ci_checks` inputs, and each job grants the permissions its org-infra
+  counterpart requires (`contents: write` + `checks: read` for preflight,
+  `contents: write` + `id-token: write` for the cosign/syft release job) —
+  with only the workflow-level `permissions: {}`, dispatched runs failed at
+  startup before any job began. The preflight call also passes the CI job
+  check-runs (`lint`, `test`) explicitly: org-infra auto-discovery only
+  recognizes its own workflow conventions, and with none present it verified
+  an empty check name and aborted the release before creating the tag.
+  Restores the ability to cut releases.
   Spec: `openspec/changes/goreleaser-release-automation/specs/release-workflow/`
 
 ## [0.1.0] - 2026-08-31

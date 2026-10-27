@@ -12,7 +12,7 @@
 ### Release Workflow
 - [x] Header comment block (CI-011)
 - [x] Trigger: `workflow_dispatch` with `tag` input only (no branch or tag-push trigger)
-- [x] Reusable workflow refs SHA-pinned to complytime/org-infra (`reusable_release_preflight.yml`, `reusable_release_goreleaser.yml`) with only the declared inputs
+- [x] Reusable workflow refs SHA-pinned to complytime/org-infra (`reusable_release_preflight.yml`, `reusable_release_goreleaser.yml`) with only the declared inputs (`tag`, plus `ci_checks: ["lint", "test"]` on preflight — auto-discovery only recognizes org-infra conventions)
 - [x] Workflow-level `permissions: {}` (default-deny); job-level grants exactly mirror the callee-declared scopes at the pinned SHA (preflight: `contents: write` + `checks: read`; release: `contents: write` + `id-token: write`)
 - [x] `secrets: inherit` on both jobs
 

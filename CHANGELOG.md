@@ -201,7 +201,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Both jobs now call the underscore filenames verified at the pinned
   org-infra SHA (`reusable_release_preflight.yml`,
   `reusable_release_goreleaser.yml`) with only the declared `tag` input,
-  restoring the ability to cut releases.
+  and each job grants the permissions its org-infra counterpart requires
+  (`contents: write` + `checks: read` for preflight, `contents: write` +
+  `id-token: write` for the cosign/syft release job) — with only the
+  workflow-level `permissions: {}`, dispatched runs failed at startup
+  before any job began. Restores the ability to cut releases.
   Spec: `openspec/changes/goreleaser-release-automation/specs/release-workflow/`
 
 ## [0.1.0] - 2026-08-31

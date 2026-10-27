@@ -19,6 +19,9 @@ jobs:
     uses: complytime/org-infra/.github/workflows/reusable_release_preflight.yml@58194ad2d1b24803263cac6fd1b54422e3c208dd # main
     with:
       tag: ${{ inputs.tag }}
+    permissions:
+      contents: write
+      checks: read
     secrets: inherit
 
   release:
@@ -27,4 +30,7 @@ jobs:
     uses: complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@58194ad2d1b24803263cac6fd1b54422e3c208dd # main
     with:
       tag: ${{ needs.preflight.outputs.tag }}
+    permissions:
+      contents: write
+      id-token: write
     secrets: inherit

@@ -29,6 +29,7 @@ advisor:
     - divisor-adversary
     - divisor-architect
     - divisor-curator
+    - divisor-entropy
     - divisor-guard
     - divisor-sre
     - divisor-testing
@@ -36,6 +37,7 @@ advisor:
     - divisor-adversary
     - divisor-architect
     - divisor-curator
+    - divisor-entropy
     - divisor-guard
     - divisor-sre
     - divisor-testing
@@ -43,6 +45,7 @@ advisor:
     - divisor-adversary
     - divisor-architect
     - divisor-curator
+    - divisor-entropy
     - divisor-guard
     - divisor-sre
     - divisor-testing
@@ -50,6 +53,7 @@ advisor:
     - divisor-adversary
     - divisor-architect
     - divisor-curator
+    - divisor-entropy
     - divisor-guard
     - divisor-sre
     - divisor-testing

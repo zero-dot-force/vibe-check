@@ -192,6 +192,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RunDiff`, `RunInit`, and `(*limitedBuffer).Write` to explicitly
   document return-value semantics and mutation contracts.
 
+### Fixed
+
+- Release workflow dispatch: the `release.yml` org-infra reusable workflow
+  references used hyphenated filenames that never existed upstream, so
+  `workflow_dispatch` failed with HTTP 422 ("workflow was not found"), and an
+  undeclared `go-version-file` input was passed to the preflight workflow.
+  Both jobs now call the underscore filenames verified at the pinned
+  org-infra SHA (`reusable_release_preflight.yml`,
+  `reusable_release_goreleaser.yml`) with only the declared `tag` input,
+  restoring the ability to cut releases.
+  Spec: `openspec/changes/goreleaser-release-automation/specs/release-workflow/`
+
 ## [0.1.0] - 2026-08-31
 
 Initial release: package-level design-quality and architectural metrics

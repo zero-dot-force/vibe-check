@@ -10,13 +10,11 @@
 - [ ] Archives: `.tar.gz` on linux/darwin, `.zip` on windows
 
 ### Release Workflow
-- [ ] Header comment block (CI-011)
-- [ ] Trigger: `on: push: tags: ['v*']` only (no branch trigger)
-- [ ] `actions/checkout` SHA-pinned with `fetch-depth: 0`
-- [ ] `actions/setup-go` SHA-pinned with `go-version-file: go.mod`
-- [ ] `goreleaser/goreleaser-action` SHA-pinned with exact `version` pin
-- [ ] `permissions.contents: write` on release job only
-- [ ] `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` environment variable
+- [x] Header comment block (CI-011)
+- [x] Trigger: `workflow_dispatch` with `tag` input only (no branch or tag-push trigger)
+- [x] Reusable workflow refs SHA-pinned to complytime/org-infra (`reusable_release_preflight.yml`, `reusable_release_goreleaser.yml`) with only the declared inputs
+- [x] Workflow-level `permissions: {}` (default-deny); job-level grants exactly mirror the callee-declared scopes at the pinned SHA (preflight: `contents: write` + `checks: read`; release: `contents: write` + `id-token: write`)
+- [x] `secrets: inherit` on both jobs
 
 ### Verification (Local)
 - [ ] `goreleaser check` passes

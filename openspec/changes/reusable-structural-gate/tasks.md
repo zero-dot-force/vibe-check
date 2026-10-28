@@ -20,8 +20,8 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Run CI parity locally using the exact commands from `.github/workflows/ci.yml`: `go build ./...`, `go vet ./...`, `go test -race -count=1 -coverprofile=coverage.out ./...`, and golangci-lint per the CI action pin. Verify: all pass on the feature branch (no production source changed, so this is the regression guard).
-- [ ] 4.2 Run `actionlint` across all workflow files (the new `reusable_structural_gate.yml` and the modified `ci.yml`, plus the untouched `structural-gate.yml` and `release.yml` as regression). Verify: exit 0.
+- [x] 4.1 Run CI parity locally using the exact commands from `.github/workflows/ci.yml`: `go build ./...`, `go vet ./...`, `go test -race -count=1 -coverprofile=coverage.out ./...`, and golangci-lint per the CI action pin. Verify: all pass on the feature branch (no production source changed, so this is the regression guard).
+- [x] 4.2 Run `actionlint` across all workflow files (the new `reusable_structural_gate.yml` and the modified `ci.yml`, plus the untouched `structural-gate.yml` and `release.yml` as regression). Verify: exit 0.
 - [ ] 4.3 Prove the consumer path at dispatch time (design D10 — `uses:`/`with:` are validated only when a run actually resolves the workflow): open the PR and confirm the `structural-gate-dogfood` job resolves the local `uses:` reference, installs the released binary, completes both analyses, and reaches a gate verdict end-to-end. Verify: the dogfood job is green on the PR, or — if it fails — that the failure is a legitimate `REQUEST_CHANGES` verdict mirroring the self-gate's verdict on the same PR (a wiring error is a blocking defect).
 
 ## Workflow follow-up

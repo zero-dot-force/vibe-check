@@ -273,8 +273,9 @@ golangci-lint run ./...
 ```text
 .goreleaser.yaml    # GoReleaser configuration for cross-platform binary releases
 .github/workflows/  # CI and release workflows
-  ci.yml            # Build, test, vet, and lint on PR and push
+  ci.yml            # Build, test, vet, and lint on PR and push; structural-gate-dogfood job dogfoods the reusable gate on PRs
   release.yml       # Release pipeline (workflow_dispatch tag → GitHub Release)
+  reusable_structural_gate.yml # Reusable workflow_call structural gate consuming the released binary
   structural-gate.yml # Entropy-regression gate on pull_request
 .opencode/          # OpenCode agent configuration, skills, packs
 .specify/           # Constitution and governance memory

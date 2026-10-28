@@ -1,0 +1,96 @@
+# Reusable Structural Gate — Design Quality Regression
+# ====================================================
+# Purpose (CI-011): a reusable design-quality regression gate for Go
+# repositories. Any repository consumes it via a SHA-pinned `uses:` reference
+# and gets vibe-check's structural gate on its pull requests without building
+# vibe-check from source.
+#
+# Contract (design.md D1/D2/D11): the gate job installs the released
+# vibe-check binary (selected by the `version` input, checksum-verified
+# against the release's checksums.txt), checks out the caller's PR head and
+# base revisions itself, analyzes both with `vibe-check analyze`, fails on a
+# REQUEST_CHANGES verdict from `diff --gate` (protected thresholds by
+# default; the three max-*-delta inputs are tighten-only overrides), and
+# appends the `diff --markdown` report to the job step summary.
+#
+# Trust model (design.md D6): the gate itself runs only the released,
+# checksum-verified binary — trusted code. `vibe-check analyze` compiles the
+# caller's target module, which is the same trust posture as running Go
+# tests on a fork PR in the caller's own CI; there is deliberately no fork
+# guard (callers who want one can add their own job-level `if:`). No secrets
+# are required or read, so fork PRs work with zero configuration.
+#
+# Caller permissions (design.md D7): this workflow declares only
+# `contents: read` (needed for the two checkout steps; the release download
+# needs no token). Callers using a top-level default-deny `permissions: {}`
+# MUST grant job-level `contents: read` on the calling job, or this
+# workflow's job fails at startup. Never grant more than the callee declares
+# at its pinned SHA.
+#
+# Input handling: caller-controlled inputs are never interpolated directly
+# into `run:` scripts. Each consuming step routes them through its `env:`
+# block and references them as quoted shell variables (e.g. "$VERSION") —
+# defense-in-depth against input injection.
+#
+# Consumer contract: see the "CI integration" section of the vibe-check
+# README (usage snippet, input table, permissions guidance, trust model, and
+# version-pinning guidance).
+
+name: Reusable Structural Gate — Design Quality Regression
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "vibe-check release tag to install (e.g. v0.2.1). The literal 'latest' resolves the newest published release; pin an explicit tag for reproducible gates."
+        required: false
+        default: "latest"
+        type: string
+      path:
+        description: "Caller's Go module directory to analyze, relative to the repository root ('.' for a root module, or a subdirectory such as 'services/api' in a monorepo). The same subpath under the base checkout is analyzed for the base snapshot."
+        required: false
+        default: "."
+        type: string
+      timeout:
+        description: "Per-analysis timeout (Go duration string, e.g. 5m) forwarded to vibe-check analyze for both the head and base snapshots."
+        required: false
+        default: "5m"
+        type: string
+      go-version-file:
+        description: "Path to the caller's go.mod, relative to the head checkout root, whose Go version actions/setup-go installs. analyze forces GOTOOLCHAIN=local, so the installed toolchain must satisfy the caller's module."
+        required: false
+        default: "go.mod"
+        type: string
+      max-instability-delta:
+        description: "Optional tighten-only instability-delta threshold forwarded to diff --gate as --max-instability-delta. Unset keeps the protected default (0.15); a looser value is rejected by the CLI with exit 2 rather than weakening the gate."
+        required: false
+        type: string
+      max-distance-delta:
+        description: "Optional tighten-only distance-delta threshold forwarded to diff --gate as --max-distance-delta. Unset keeps the protected default (0.20); a looser value is rejected by the CLI with exit 2 rather than weakening the gate."
+        required: false
+        type: string
+      max-lcom-delta:
+        description: "Optional tighten-only LCOM-delta threshold forwarded to diff --gate as --max-lcom-delta. Unset keeps the protected default (2); a looser value is rejected by the CLI with exit 2 rather than weakening the gate."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  structural-gate:
+    name: Structural Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      # Scaffold placeholder (task 1.1): actionlint rejects a job with no
+      # steps, so this temporary step keeps the scaffold valid until tasks
+      # 1.2-1.4 add the real steps in the design.md D11 order — install the
+      # released binary (download + checksum verify + extract; the release
+      # archive extracts ./vibe-check at its root, no bin/ directory),
+      # checkout head, checkout base, setup-go, analyze head, analyze base,
+      # gate (diff --gate), report (diff --markdown to the step summary).
+      - name: Scaffold
+        run: echo "reusable structural gate scaffold (task 1.1); steps arrive in tasks 1.2-1.4"

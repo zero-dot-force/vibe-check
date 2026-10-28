@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Reusable structural gate: any repository can run vibe-check's
+  structural-regression gate on its pull requests via a SHA-pinned `uses:`
+  reference to the new `.github/workflows/reusable_structural_gate.yml`
+  (`workflow_call` trigger, no build-from-source). The gate job installs the
+  released binary selected by the `version` input (default `latest`),
+  checksum-verified against the release's `checksums.txt`; checks out the
+  caller's PR head and base revisions; provisions a Go toolchain from
+  `go-version-file` (default `go.mod`; `analyze` forces `GOTOOLCHAIN=local`);
+  analyzes both revisions (`path`, `timeout`); and fails the job on a
+  `REQUEST_CHANGES` verdict from `diff --gate` under the protected
+  thresholds. The three `max-*-delta` inputs are tighten-only overrides — a
+  looser value is rejected by the CLI with exit `2` instead of weakening the
+  gate. The `diff --markdown` report is appended to `$GITHUB_STEP_SUMMARY`
+  even when the gate fails, with render failures non-blocking. The workflow
+  declares only `contents: read` and requires no secrets, so fork PRs work
+  with zero configuration. `ci.yml` gains a `structural-gate-dogfood` job
+  consuming the reusable workflow on pull requests as an end-to-end smoke
+  test (the build-from-source self-gate is unchanged), and the README gains
+  a "CI integration" section documenting the consumer contract.
+  Spec: `openspec/changes/reusable-structural-gate/specs/reusable-structural-gate/spec.md`
+
 ## [0.2.0] - 2026-10-27
 
 ### Changed

@@ -239,6 +239,131 @@ summary, so the report appears in the Checks UI even when the gate fails.
 This gate is advisory until a repository admin enables branch protection and marks
 `structural-gate` required — it fails the check but does not by itself block a merge.
 
+## CI integration
+
+Any repository can run the same structural gate on its pull requests with a single SHA-pinned
+job — no build-from-source, no secrets. The called workflow
+([`reusable_structural_gate.yml`](.github/workflows/reusable_structural_gate.yml)) installs the
+released vibe-check binary (checksum-verified against the release's `checksums.txt`), checks out
+your PR head and base revisions itself, analyzes both, and fails the job on a `REQUEST_CHANGES`
+verdict from `diff --gate` under the protected thresholds. The markdown diff report is appended
+to the job step summary even when the gate fails, and the gate job runs on `ubuntu-latest`, so
+the analyzed module must build on linux/amd64. As with the self-gate, this gate is advisory
+until a repository admin enables branch protection and marks the gate's check (`Structural
+Gate`) required — it fails the check but does not by itself block a merge.
+
+```yaml
+jobs:
+  structural-gate:
+    # Required when the calling workflow triggers on events other than
+    # pull_request; see "Trigger context" below.
+    if: github.event_name == 'pull_request'
+    # Grant exactly the scope the callee declares; never broader.
+    permissions:
+      contents: read
+    # Pin the reference to a full commit SHA of this repository.
+    uses: zero-dot-force/vibe-check/.github/workflows/reusable_structural_gate.yml@<commit-sha>
+```
+
+A job that calls a reusable workflow takes no `steps`, `runs-on`, or `timeout-minutes` — the
+called workflow owns the runner, its timeout, and its steps. Inputs are passed with `with:`;
+omitted inputs take their declared defaults, so the minimal call above needs no `with:` block:
+
+```yaml
+jobs:
+  structural-gate:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    uses: zero-dot-force/vibe-check/.github/workflows/reusable_structural_gate.yml@<commit-sha>
+    with:
+      version: v0.2.0                      # pin the analyzer release
+      path: services/api                    # module directory in a monorepo
+      go-version-file: services/api/go.mod  # must select that same module
+      max-instability-delta: "0.10"         # tighten-only; quotes keep it a string
+```
+
+### Inputs
+
+| Input | Type | Default | Effect |
+|-------|------|---------|--------|
+| `version` | string | `latest` | vibe-check release tag to install. `latest` resolves the newest published release; an explicit tag (for example `v0.2.0`) gives reproducible gates. A nonexistent tag fails the job before any analysis runs. |
+| `path` | string | `.` | Go module directory to analyze, relative to the repository root — `.` for a root module, or a subdirectory such as `services/api` in a monorepo. The same subpath under the base checkout is analyzed for the base snapshot. |
+| `timeout` | string | `5m` | Per-analysis timeout (Go duration string) forwarded to `vibe-check analyze` for both the head and base snapshots. |
+| `go-version-file` | string | `go.mod` | Path to the caller's `go.mod` (or `go.work`), relative to the head-checkout root, whose Go version `actions/setup-go` installs. Must select the same module `path` points at — see the coupling note below. |
+| `max-instability-delta` | string | unset | Optional tighten-only instability-delta threshold forwarded to `diff --gate` as `--max-instability-delta`. Unset keeps the protected default (`0.15`); a looser value is rejected by the CLI with exit `2`. |
+| `max-distance-delta` | string | unset | Optional tighten-only distance-delta threshold forwarded to `diff --gate` as `--max-distance-delta`. Unset keeps the protected default (`0.20`); a looser value is rejected by the CLI with exit `2`. |
+| `max-lcom-delta` | string | unset | Optional tighten-only LCOM-delta threshold forwarded to `diff --gate` as `--max-lcom-delta`. Unset keeps the protected default (`2`); a looser value is rejected by the CLI with exit `2`. |
+
+All seven inputs are strings: quote numeric-looking values (for example
+`max-instability-delta: "0.10"`) or GitHub rejects them at dispatch time. The three
+`max-*-delta` inputs are tighten-only — a value looser than the protected default fails the job
+with exit `2` instead of weakening the gate.
+
+### Caller permissions
+
+The called workflow declares only `contents: read` — the scope its two checkout steps need; the
+release download is anonymous HTTPS and needs no token. A called workflow cannot elevate beyond
+what the caller grants, so a caller using a top-level default-deny (`permissions: {}`) must
+grant that scope at the job level or the called job fails at startup before any step runs:
+
+```yaml
+permissions: {}
+
+jobs:
+  structural-gate:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read  # mirrors the callee's declaration; never grant broader
+    uses: zero-dot-force/vibe-check/.github/workflows/reusable_structural_gate.yml@<commit-sha>
+```
+
+Never grant more than the callee declares at the SHA you have pinned.
+
+### Trigger context
+
+The gate resolves its base revision from the caller's `pull_request` event context
+(`github.event.pull_request.base.sha`). If the calling workflow triggers on events other than
+`pull_request` — `push`, `schedule`, `workflow_dispatch` — guard the job with
+`if: github.event_name == 'pull_request'` as in the snippets above. Without the guard, the PR
+context is empty on those events: the base checkout falls back to the event SHA, base equals
+head, the delta is zero, and the gate passes vacuously — a green check that proves nothing. A
+workflow that triggers only on `pull_request` does not need the guard.
+
+### `path` / `go-version-file` coupling
+
+`go-version-file` resolves from the head-checkout root, not relative to `path`. It must select
+the same module the `path` input points at — that module's `go.mod` (or `go.work`): when `path`
+is `services/api`, pass `go-version-file: services/api/go.mod`. `analyze` forces
+`GOTOOLCHAIN=local`, so the installed toolchain must satisfy the analyzed module or the
+analysis fails as a visible tool failure.
+
+### Version pinning
+
+Two independent pins govern a gate run:
+
+- The `uses:` reference pins the workflow logic. Pin a full commit SHA — immutable and
+  reviewable, like SHA-pinning an action. (vibe-check's own CI calls the workflow with the
+  same-repo local form `./.github/workflows/reusable_structural_gate.yml`, which resolves
+  against the caller's ref; external callers use the cross-repo form above.)
+- The `version` input pins the analyzer binary. The default `latest` silently moves with each
+  release; an explicit tag such as `v0.2.0` gives reproducible gates. The downloaded archive
+  is verified against the release's `checksums.txt` before any analysis runs, and a missing or
+  nonexistent tag fails the job — no silent fallback.
+
+### Trust model
+
+The gate itself runs only the released, checksum-verified vibe-check binary — it never checks
+out or builds vibe-check's source. `vibe-check analyze` compiles your module, which is the same
+trust posture as running Go tests on a fork PR in your own CI; there is deliberately no fork
+guard, and callers who want one can add their own job-level `if:`. No secrets are required or
+read, so fork PRs work with zero configuration. Both checkout steps set
+`persist-credentials: false`: the job token is used only for the clone and is never persisted
+into `.git/config`, where compiled build code could otherwise read it.
+
+vibe-check dogfoods this contract on every pull request — the `structural-gate-dogfood` job in
+[`ci.yml`](.github/workflows/ci.yml) calls the reusable workflow end-to-end.
+
 ## Deploying agents and commands: `vibe-check init`
 
 `init` deploys the embedded agent and command assets into a project's `.opencode/` directory:

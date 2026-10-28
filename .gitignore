@@ -34,3 +34,4 @@ replicator.log
 # and silently ignores every new file inside it.
 /vibe-check
 opencode.json
+.uf/progress

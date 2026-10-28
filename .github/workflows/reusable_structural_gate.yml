@@ -18,7 +18,11 @@
 # caller's target module, which is the same trust posture as running Go
 # tests on a fork PR in the caller's own CI; there is deliberately no fork
 # guard (callers who want one can add their own job-level `if:`). No secrets
-# are required or read, so fork PRs work with zero configuration.
+# are required or read, so fork PRs work with zero configuration. Both
+# checkout steps set persist-credentials: false (spec-review advisory):
+# the job token is used only for the clone itself and is never persisted
+# into .git/config, where the caller's compiled build code could otherwise
+# read it.
 #
 # Caller permissions (design.md D7): this workflow declares only
 # `contents: read` (needed for the two checkout steps; the release download
@@ -152,3 +156,45 @@ jobs:
           # Expose the binary to the analyze/gate/report steps (tasks
           # 1.3-1.4) as plain `vibe-check` on PATH.
           echo "$install_dir" >> "$GITHUB_PATH"
+
+      # Checkout head (task 1.3, design D2): the default pull_request
+      # checkout of the caller's PR — the head snapshot. persist-credentials:
+      # false (spec-review advisory): actions/checkout would otherwise persist
+      # the job token into this checkout's .git/config, and the analyze steps
+      # (task 1.4) compile the caller's — possibly untrusted fork-PR — build
+      # code over this directory, which could read it. The token is needed
+      # only for the clone; nothing later in the job touches a git remote.
+      - name: Checkout head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # Checkout base (task 1.3, design D2): the base snapshot as a sibling
+      # directory, mirroring structural-gate.yml. The caller's pull_request
+      # event context (github.event.pull_request.base.sha) propagates into
+      # this called workflow, so the base revision resolves with no extra
+      # caller input. Requires a pull_request-triggered caller — other event
+      # shapes are the caller's problem (design non-goal). Same
+      # persist-credentials: false hardening as the head checkout.
+      - name: Checkout base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      # Setup Go (task 1.3, design D5): analyze forces GOTOOLCHAIN=local —
+      # it never downloads a toolchain named by the caller's go.mod — so a
+      # satisfying toolchain must be installed first. go-version-file reads
+      # the caller's declared version from the head checkout root (default
+      # go.mod; monorepo callers pass their module's go.mod), exactly like
+      # the self-gate. The base checkout is analyzed with the same installed
+      # toolchain: if the base module would need a newer Go than the head's
+      # go.mod names, the base analysis fails as a visible tool failure.
+      # The with: interpolation below passes a caller-controlled value as an
+      # action input, not into a run: script — the header's input-injection
+      # rule (env-only routing in run:) does not apply to action inputs.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: ${{ inputs.go-version-file }}

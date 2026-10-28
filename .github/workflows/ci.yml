@@ -1,5 +1,7 @@
 # CI pipeline for vibe-check: build, test, vet, and lint.
 # Runs on pushes to main and pull requests targeting main.
+# The structural-gate-dogfood job (PRs only) smoke-tests the reusable
+# structural gate consumer path; the authoritative gate is structural-gate.yml.
 name: CI — Build, Test, and Lint
 
 on:
@@ -48,3 +50,28 @@ jobs:
         uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
           version: v2.12.2
+
+  # Dogfood the reusable structural gate (design.md D10): GitHub validates a
+  # job-level `uses:` reference and its inputs only at dispatch time, so this
+  # job dispatches the workflow_call consumer path on every PR — proving
+  # reference resolution, default-input wiring, release download, and gate
+  # execution end-to-end. A consumer smoke test, not the authoritative gate:
+  # structural-gate.yml keeps building vibe-check from the PR's own source.
+  structural-gate-dogfood:
+    # PR-only guard (spec-review advisory): ci.yml also triggers on push, and
+    # on a push event github.event.pull_request.base.sha is empty — the
+    # callee's base checkout would check out nothing and the gate would pass
+    # vacuously. The reusable workflow's base checkout expects PR context.
+    if: github.event_name == 'pull_request'
+    # Grant exactly the callee's declared scope (CI-021). ci.yml's top-level
+    # `permissions: contents: read` already satisfies it; the explicit
+    # job-level grant keeps the job self-contained and mirrors the README
+    # consumer-contract guidance.
+    permissions:
+      contents: read
+    # Static local reference: job-level `uses:` cannot contain expressions,
+    # and `./` resolves against the caller's ref — the PR's own reviewed
+    # code. External consumers use the SHA-pinned cross-repo form documented
+    # in the README. No `with:` block — all seven inputs take their declared
+    # defaults, and inputs the callee does not declare fail only at dispatch.
+    uses: ./.github/workflows/reusable_structural_gate.yml

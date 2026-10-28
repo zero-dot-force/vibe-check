@@ -9,7 +9,7 @@
 
 ## 2. Dogfood Consumer (.github/workflows/ci.yml)
 
-- [ ] 2.1 Add a `structural-gate-dogfood` job to `ci.yml` that calls `uses: ./.github/workflows/reusable_structural_gate.yml` with default inputs (static local reference — job-level `uses:` cannot contain expressions; the local reference resolves against the caller's ref); `ci.yml`'s top-level `permissions: contents: read` already satisfies the callee's declared scope. Verify: `actionlint` exits 0 on `ci.yml` and the job block matches the consumer-contract snippet shipped in the README (task 3.1).
+- [x] 2.1 Add a `structural-gate-dogfood` job to `ci.yml` that calls `uses: ./.github/workflows/reusable_structural_gate.yml` with default inputs (static local reference — job-level `uses:` cannot contain expressions; the local reference resolves against the caller's ref); `ci.yml`'s top-level `permissions: contents: read` already satisfies the callee's declared scope. Verify: `actionlint` exits 0 on `ci.yml` and the job block matches the consumer-contract snippet shipped in the README (task 3.1).
 
 ## 3. Documentation
 

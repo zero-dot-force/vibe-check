@@ -198,3 +198,100 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: ${{ inputs.go-version-file }}
+
+      # Analyze head (task 1.4, design D11): snapshot the caller's PR head
+      # into head.json at the workspace root. No threshold flags are passed
+      # to analyze — gate enforcement belongs solely to `diff --gate` — so
+      # analyze exits 0 on success and 2 on tool failure, failing the job
+      # before the gate runs (spec: analysis-failure scenario). The timeout
+      # and path inputs reach the script through env only, referenced as
+      # quoted shell variables (header input-injection rule); `path` selects
+      # the caller's module directory within the head checkout (default ".").
+      - name: Analyze head
+        env:
+          VIBE_CHECK_TIMEOUT: ${{ inputs.timeout }}
+          MODULE_PATH: ${{ inputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          vibe-check analyze \
+            --timeout "$VIBE_CHECK_TIMEOUT" \
+            --output head.json \
+            "$MODULE_PATH"
+
+      # Analyze base (task 1.4, design D11): snapshot the PR's base revision
+      # from the ./base checkout into base.json. The path input is joined
+      # under the base directory rather than hardcoded: the default "." maps
+      # to ./base exactly like the self-gate, and a subpath such as
+      # services/api maps to ./base/services/api (spec: module-at-a-subpath
+      # scenario). Same env-only input routing and no-threshold-flags rule
+      # as the head analysis; the same installed toolchain analyzes both
+      # revisions (design D5 — a base needing newer Go fails visibly).
+      - name: Analyze base
+        env:
+          VIBE_CHECK_TIMEOUT: ${{ inputs.timeout }}
+          MODULE_PATH: ${{ inputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$MODULE_PATH" = "." ]; then
+            base_path="./base"
+          else
+            base_path="./base/$MODULE_PATH"
+          fi
+
+          vibe-check analyze \
+            --timeout "$VIBE_CHECK_TIMEOUT" \
+            --output base.json \
+            "$base_path"
+
+      # Gate (task 1.4, design D9/D11): the authoritative check. `diff
+      # --gate` exits 1 on REQUEST_CHANGES (failing the job), 0 on APPROVE
+      # or COMMENT, and 2 on a tool failure (missing or schema-invalid
+      # snapshot) — the gate step owns the exit code. The three optional
+      # max-*-delta inputs are tighten-only overrides appended only when
+      # non-empty: an unset workflow_call string input is the empty string,
+      # and an unset input must not forward a value, keeping the no-override
+      # invocation identical to the self-gate's. The workflow performs no
+      # threshold validation of its own — the CLI's tighten-only enforcement
+      # (exit 2 on a looser-than-protected value) is a protected gate left
+      # entirely to diff (design D9).
+      - name: Gate
+        env:
+          MAX_INSTABILITY_DELTA: ${{ inputs.max-instability-delta }}
+          MAX_DISTANCE_DELTA: ${{ inputs.max-distance-delta }}
+          MAX_LCOM_DELTA: ${{ inputs.max-lcom-delta }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Conditional flag assembly: each override is appended only when
+          # the caller set it; env routing plus quoting keeps each value a
+          # single argv element (input-injection defense).
+          args=()
+          if [ -n "$MAX_INSTABILITY_DELTA" ]; then
+            args+=(--max-instability-delta "$MAX_INSTABILITY_DELTA")
+          fi
+          if [ -n "$MAX_DISTANCE_DELTA" ]; then
+            args+=(--max-distance-delta "$MAX_DISTANCE_DELTA")
+          fi
+          if [ -n "$MAX_LCOM_DELTA" ]; then
+            args+=(--max-lcom-delta "$MAX_LCOM_DELTA")
+          fi
+
+          vibe-check diff --gate base.json head.json "${args[@]}"
+
+      # Report (task 1.4, design D11): publish the markdown diff report as
+      # a PR step summary. `if: always()` keeps the report rendering even
+      # when the gate step fails; `continue-on-error` keeps a render failure
+      # non-blocking so the gate step remains the authoritative conclusion.
+      # Plain `--markdown` without `--gate` exits 0 even on a REQUEST_CHANGES
+      # verdict (the verdict travels in the payload, not the exit code); when
+      # analysis failed and a snapshot is missing, diff exits 2 with no
+      # stdout, so nothing is appended.
+      - name: Report
+        if: ${{ always() }}
+        continue-on-error: true
+        run: vibe-check diff --markdown base.json head.json >> "$GITHUB_STEP_SUMMARY"

@@ -18,8 +18,8 @@
 
 ## 4. Dogfood
 
-- [ ] 4.1 Run `go run ./cmd/vibe-check init .` from the repo root: this repo already carries both entries (25328d5, 81831e2), so both registration names must be reported as skipped, `git status --porcelain .uf/` must stay empty (byte-identical policy files), and the human summary must show no `Notices:` section.
-- [ ] 4.2 At implementation start, build the analyzer once (`go build -o /tmp/vibe-check-analyze ./cmd/vibe-check`) and capture the base snapshot with that binary (`/tmp/vibe-check-analyze analyze -o /tmp/vibe-check-base.json .`); after all code changes, capture the PR snapshot with the same pre-built binary (`/tmp/vibe-check-analyze analyze -o /tmp/vibe-check-pr.json .`) and run `go run ./cmd/vibe-check diff /tmp/vibe-check-base.json /tmp/vibe-check-pr.json`. Verify: the verdict is not REQUEST CHANGES — APPROVE, or COMMENT with no fired gate (both exit 0); a sub-threshold non-zero metric shift is not a regression (and the implementation adds no new imports to `internal/scaffold`, per design D3).
+- [x] 4.1 Run `go run ./cmd/vibe-check init .` from the repo root: this repo already carries both entries (25328d5, 81831e2), so both registration names must be reported as skipped, `git status --porcelain .uf/` must stay empty (byte-identical policy files), and the human summary must show no `Notices:` section.
+- [x] 4.2 At implementation start, build the analyzer once (`go build -o /tmp/vibe-check-analyze ./cmd/vibe-check`) and capture the base snapshot with that binary (`/tmp/vibe-check-analyze analyze -o /tmp/vibe-check-base.json .`); after all code changes, capture the PR snapshot with the same pre-built binary (`/tmp/vibe-check-analyze analyze -o /tmp/vibe-check-pr.json .`) and run `go run ./cmd/vibe-check diff /tmp/vibe-check-base.json /tmp/vibe-check-pr.json`. Verify: the verdict is not REQUEST CHANGES — APPROVE, or COMMENT with no fired gate (both exit 0); a sub-threshold non-zero metric shift is not a regression (and the implementation adds no new imports to `internal/scaffold`, per design D3).
 
 ## 5. Documentation gate
 

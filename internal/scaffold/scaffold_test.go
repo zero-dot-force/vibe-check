@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -1270,5 +1271,386 @@ func TestSpliceMatrix_NoticesWhenNoModeLists(t *testing.T) {
 	}
 	if string(result.content) != matrixFixtureNoModeLists {
 		t.Errorf("content changed: got:\n%s", result.content)
+	}
+}
+
+func TestRun_RegistersReviewAgentsInPolicyFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ufDir := filepath.Join(dir, ".uf")
+	if err := os.MkdirAll(ufDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ufDir, "reviewer-capabilities.yaml"), []byte(capabilitiesFixtureMissing), 0o644); err != nil {
+		t.Fatalf("write capabilities fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ufDir, "review-matrix.yaml"), []byte(matrixFixtureMissing), 0o644); err != nil {
+		t.Fatalf("write matrix fixture: %v", err)
+	}
+
+	res, err := Run(Options{TargetDir: dir})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !slices.Contains(res.Written, "reviewers/divisor-entropy") {
+		t.Errorf("Written missing %q; got %v", "reviewers/divisor-entropy", res.Written)
+	}
+	if !slices.Contains(res.Written, "advisors/divisor-entropy") {
+		t.Errorf("Written missing %q; got %v", "advisors/divisor-entropy", res.Written)
+	}
+	if slices.Contains(res.Skipped, "reviewers/divisor-entropy") || slices.Contains(res.Skipped, "advisors/divisor-entropy") {
+		t.Errorf("Skipped unexpectedly contains registration names; got %v", res.Skipped)
+	}
+	if len(res.Notices) != 0 {
+		t.Errorf("Notices: got %v, want empty", res.Notices)
+	}
+
+	capGot, err := os.ReadFile(filepath.Join(ufDir, "reviewer-capabilities.yaml"))
+	if err != nil {
+		t.Fatalf("read capabilities after Run: %v", err)
+	}
+	if !bytes.Equal(capGot, []byte(capabilitiesFixtureCanonical)) {
+		t.Errorf("capabilities after Run: got:\n%s\nwant:\n%s", capGot, capabilitiesFixtureCanonical)
+	}
+	matrixGot, err := os.ReadFile(filepath.Join(ufDir, "review-matrix.yaml"))
+	if err != nil {
+		t.Fatalf("read matrix after Run: %v", err)
+	}
+	if !bytes.Equal(matrixGot, []byte(matrixFixtureCanonical)) {
+		t.Errorf("matrix after Run: got:\n%s\nwant:\n%s", matrixGot, matrixFixtureCanonical)
+	}
+}
+
+func TestRun_RegistrationSkipsWhenEntriesPresent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ufDir := filepath.Join(dir, ".uf")
+	if err := os.MkdirAll(ufDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf: %v", err)
+	}
+	capPath := filepath.Join(ufDir, "reviewer-capabilities.yaml")
+	matrixPath := filepath.Join(ufDir, "review-matrix.yaml")
+	if err := os.WriteFile(capPath, []byte(capabilitiesFixtureCanonical), 0o644); err != nil {
+		t.Fatalf("write capabilities fixture: %v", err)
+	}
+	if err := os.WriteFile(matrixPath, []byte(matrixFixtureCanonical), 0o644); err != nil {
+		t.Fatalf("write matrix fixture: %v", err)
+	}
+
+	res, err := Run(Options{TargetDir: dir})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !slices.Contains(res.Skipped, "reviewers/divisor-entropy") {
+		t.Errorf("Skipped missing %q; got %v", "reviewers/divisor-entropy", res.Skipped)
+	}
+	if !slices.Contains(res.Skipped, "advisors/divisor-entropy") {
+		t.Errorf("Skipped missing %q; got %v", "advisors/divisor-entropy", res.Skipped)
+	}
+	if slices.Contains(res.Written, "reviewers/divisor-entropy") || slices.Contains(res.Written, "advisors/divisor-entropy") {
+		t.Errorf("Written unexpectedly contains registration names; got %v", res.Written)
+	}
+	if len(res.Notices) != 0 {
+		t.Errorf("Notices: got %v, want empty", res.Notices)
+	}
+
+	capGot, err := os.ReadFile(capPath)
+	if err != nil {
+		t.Fatalf("read capabilities after Run: %v", err)
+	}
+	if !bytes.Equal(capGot, []byte(capabilitiesFixtureCanonical)) {
+		t.Errorf("capabilities changed: got:\n%s", capGot)
+	}
+	matrixGot, err := os.ReadFile(matrixPath)
+	if err != nil {
+		t.Fatalf("read matrix after Run: %v", err)
+	}
+	if !bytes.Equal(matrixGot, []byte(matrixFixtureCanonical)) {
+		t.Errorf("matrix changed: got:\n%s", matrixGot)
+	}
+}
+
+func TestRun_ForceLeavesPolicyEntriesUntouched(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ufDir := filepath.Join(dir, ".uf")
+	if err := os.MkdirAll(ufDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf: %v", err)
+	}
+	capPath := filepath.Join(ufDir, "reviewer-capabilities.yaml")
+	matrixPath := filepath.Join(ufDir, "review-matrix.yaml")
+	if err := os.WriteFile(capPath, []byte(capabilitiesFixtureCanonical), 0o644); err != nil {
+		t.Fatalf("write capabilities fixture: %v", err)
+	}
+	if err := os.WriteFile(matrixPath, []byte(matrixFixtureCanonical), 0o644); err != nil {
+		t.Fatalf("write matrix fixture: %v", err)
+	}
+
+	res, err := Run(Options{TargetDir: dir, Force: true})
+	if err != nil {
+		t.Fatalf("force Run returned error: %v", err)
+	}
+	if !slices.Contains(res.Skipped, "reviewers/divisor-entropy") {
+		t.Errorf("Skipped missing %q; got %v", "reviewers/divisor-entropy", res.Skipped)
+	}
+	if !slices.Contains(res.Skipped, "advisors/divisor-entropy") {
+		t.Errorf("Skipped missing %q; got %v", "advisors/divisor-entropy", res.Skipped)
+	}
+	if slices.Contains(res.Forced, "reviewers/divisor-entropy") || slices.Contains(res.Forced, "advisors/divisor-entropy") {
+		t.Errorf("Forced unexpectedly contains registration names; got %v", res.Forced)
+	}
+
+	capGot, err := os.ReadFile(capPath)
+	if err != nil {
+		t.Fatalf("read capabilities after force Run: %v", err)
+	}
+	if !bytes.Equal(capGot, []byte(capabilitiesFixtureCanonical)) {
+		t.Errorf("capabilities changed under force: got:\n%s", capGot)
+	}
+	matrixGot, err := os.ReadFile(matrixPath)
+	if err != nil {
+		t.Fatalf("read matrix after force Run: %v", err)
+	}
+	if !bytes.Equal(matrixGot, []byte(matrixFixtureCanonical)) {
+		t.Errorf("matrix changed under force: got:\n%s", matrixGot)
+	}
+}
+
+func TestRun_RegistrationAppendsTerminatorAfterUnterminatedFinalLine(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ufDir := filepath.Join(dir, ".uf")
+	if err := os.MkdirAll(ufDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf: %v", err)
+	}
+	fixture := "advisor:\n  code:\n    - divisor-adversary\n    - divisor-curator"
+	if err := os.WriteFile(filepath.Join(ufDir, "review-matrix.yaml"), []byte(fixture), 0o644); err != nil {
+		t.Fatalf("write matrix fixture: %v", err)
+	}
+
+	res, err := Run(Options{TargetDir: dir})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !slices.Contains(res.Written, "advisors/divisor-entropy") {
+		t.Errorf("Written missing %q; got %v", "advisors/divisor-entropy", res.Written)
+	}
+
+	want := "advisor:\n  code:\n    - divisor-adversary\n    - divisor-curator\n    - divisor-entropy"
+	got, err := os.ReadFile(filepath.Join(ufDir, "review-matrix.yaml"))
+	if err != nil {
+		t.Fatalf("read matrix after Run: %v", err)
+	}
+	if string(got) != want {
+		t.Errorf("matrix after Run: got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestRun_RegistrationNoticesWhenUfDirAbsent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	res, err := Run(Options{TargetDir: dir})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	wantNotices := []string{
+		".uf/reviewer-capabilities.yaml: not present; not created",
+		".uf/review-matrix.yaml: not present; not created",
+	}
+	if !slices.Equal(res.Notices, wantNotices) {
+		t.Errorf("Notices: got %v, want %v", res.Notices, wantNotices)
+	}
+	if slices.Contains(res.Written, "reviewers/divisor-entropy") || slices.Contains(res.Written, "advisors/divisor-entropy") {
+		t.Errorf("Written unexpectedly contains registration names; got %v", res.Written)
+	}
+	if slices.Contains(res.Skipped, "reviewers/divisor-entropy") || slices.Contains(res.Skipped, "advisors/divisor-entropy") {
+		t.Errorf("Skipped unexpectedly contains registration names; got %v", res.Skipped)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".uf")); !os.IsNotExist(statErr) {
+		t.Errorf("expected .uf to remain absent after Run")
+	}
+}
+
+func TestRun_RegistrationRegistersPresentFileAndNoticesAbsentOne(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ufDir := filepath.Join(dir, ".uf")
+	if err := os.MkdirAll(ufDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ufDir, "review-matrix.yaml"), []byte(matrixFixtureMissing), 0o644); err != nil {
+		t.Fatalf("write matrix fixture: %v", err)
+	}
+
+	res, err := Run(Options{TargetDir: dir})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !slices.Contains(res.Written, "advisors/divisor-entropy") {
+		t.Errorf("Written missing %q; got %v", "advisors/divisor-entropy", res.Written)
+	}
+	if slices.Contains(res.Written, "reviewers/divisor-entropy") || slices.Contains(res.Skipped, "reviewers/divisor-entropy") {
+		t.Errorf("capabilities outcome unexpected; Written=%v Skipped=%v", res.Written, res.Skipped)
+	}
+	wantNotices := []string{".uf/reviewer-capabilities.yaml: not present; not created"}
+	if !slices.Equal(res.Notices, wantNotices) {
+		t.Errorf("Notices: got %v, want %v", res.Notices, wantNotices)
+	}
+
+	got, err := os.ReadFile(filepath.Join(ufDir, "review-matrix.yaml"))
+	if err != nil {
+		t.Fatalf("read matrix after Run: %v", err)
+	}
+	if !bytes.Equal(got, []byte(matrixFixtureCanonical)) {
+		t.Errorf("matrix after Run: got:\n%s\nwant:\n%s", got, matrixFixtureCanonical)
+	}
+}
+
+func TestRun_RegistrationRefusesSymlinkedPolicyFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ufDir := filepath.Join(dir, ".uf")
+	if err := os.MkdirAll(ufDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf: %v", err)
+	}
+	target := filepath.Join(ufDir, "actual-capabilities.yaml")
+	if err := os.WriteFile(target, []byte(capabilitiesFixtureMissing), 0o644); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(ufDir, "reviewer-capabilities.yaml")); err != nil {
+		t.Fatalf("symlink policy file: %v", err)
+	}
+
+	_, err := Run(Options{TargetDir: dir})
+	if err == nil {
+		t.Fatalf("expected error for symlinked policy file, got nil")
+	}
+	if !strings.Contains(err.Error(), "refusing to overwrite symlink") {
+		t.Errorf("error: got %v, want refusal mentioning symlink", err)
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read symlink target: %v", readErr)
+	}
+	if !bytes.Equal(got, []byte(capabilitiesFixtureMissing)) {
+		t.Errorf("symlink target changed: got:\n%s", got)
+	}
+}
+
+func TestRun_RegistrationRefusesSymlinkedUfDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	realUf := t.TempDir()
+	policyTarget := filepath.Join(realUf, "reviewer-capabilities.yaml")
+	if err := os.WriteFile(policyTarget, []byte(capabilitiesFixtureMissing), 0o644); err != nil {
+		t.Fatalf("write policy target: %v", err)
+	}
+	if err := os.Symlink(realUf, filepath.Join(dir, ".uf")); err != nil {
+		t.Fatalf("symlink .uf dir: %v", err)
+	}
+
+	_, err := Run(Options{TargetDir: dir})
+	if err == nil {
+		t.Fatalf("expected error for symlinked .uf dir, got nil")
+	}
+	if !strings.Contains(err.Error(), "refusing to follow symlink in policy path") {
+		t.Errorf("error: got %v, want refusal mentioning symlinked policy path", err)
+	}
+	got, readErr := os.ReadFile(policyTarget)
+	if readErr != nil {
+		t.Fatalf("read policy target: %v", readErr)
+	}
+	if !bytes.Equal(got, []byte(capabilitiesFixtureMissing)) {
+		t.Errorf("policy target changed: got:\n%s", got)
+	}
+}
+
+func TestRun_RegistrationRefusesNonRegularPolicyFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".uf", "reviewer-capabilities.yaml"), 0o755); err != nil {
+		t.Fatalf("mkdir non-regular policy path: %v", err)
+	}
+
+	_, err := Run(Options{TargetDir: dir})
+	if err == nil {
+		t.Fatalf("expected error for non-regular policy file, got nil")
+	}
+	if !strings.Contains(err.Error(), "refusing to write non-regular policy file") {
+		t.Errorf("error: got %v, want refusal mentioning non-regular policy file", err)
+	}
+}
+
+func TestRun_RegistrationPreservesFileMode(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ufDir := filepath.Join(dir, ".uf")
+	if err := os.MkdirAll(ufDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf: %v", err)
+	}
+	capPath := filepath.Join(ufDir, "reviewer-capabilities.yaml")
+	if err := os.WriteFile(capPath, []byte(capabilitiesFixtureMissing), 0o600); err != nil {
+		t.Fatalf("write capabilities fixture: %v", err)
+	}
+	if err := os.Chmod(capPath, 0o600); err != nil {
+		t.Fatalf("chmod capabilities fixture: %v", err)
+	}
+
+	res, err := Run(Options{TargetDir: dir})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !slices.Contains(res.Written, "reviewers/divisor-entropy") {
+		t.Errorf("Written missing %q; got %v", "reviewers/divisor-entropy", res.Written)
+	}
+	fi, err := os.Stat(capPath)
+	if err != nil {
+		t.Fatalf("stat capabilities after Run: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("perm after registration: got %o, want %o", got, 0o600)
+	}
+	got, err := os.ReadFile(capPath)
+	if err != nil {
+		t.Fatalf("read capabilities after Run: %v", err)
+	}
+	if !bytes.Equal(got, []byte(capabilitiesFixtureCanonical)) {
+		t.Errorf("capabilities after Run: got:\n%s", got)
+	}
+}
+
+func TestRun_RegistrationWriteFailureReturnsPartialWriteError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ufDir := filepath.Join(dir, ".uf")
+	if err := os.MkdirAll(ufDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ufDir, "reviewer-capabilities.yaml"), []byte(capabilitiesFixtureMissing), 0o644); err != nil {
+		t.Fatalf("write capabilities fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ufDir, "review-matrix.yaml"), []byte(matrixFixtureMissing), 0o644); err != nil {
+		t.Fatalf("write matrix fixture: %v", err)
+	}
+	sentinel := errors.New("injected write failure")
+
+	_, err := Run(Options{
+		TargetDir: dir,
+		WriteFile: func(p string, data []byte, perm fs.FileMode) error {
+			if filepath.Base(p) == "reviewer-capabilities.yaml" {
+				return sentinel
+			}
+			return os.WriteFile(p, data, perm)
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected error from failing WriteFile, got nil")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("error chain: got %v, want wrapped %v", err, sentinel)
+	}
+	if !strings.Contains(err.Error(), "may be partially written") || !strings.Contains(err.Error(), "restore from version control") {
+		t.Errorf("error: got %v, want partial-write and restore guidance", err)
 	}
 }

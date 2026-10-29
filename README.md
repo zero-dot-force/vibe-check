@@ -366,7 +366,8 @@ vibe-check dogfoods this contract on every pull request — the `structural-gate
 
 ## Deploying agents and commands: `vibe-check init`
 
-`init` deploys the embedded agent and command assets into a project's `.opencode/` directory:
+`init` deploys the embedded agent and command assets into a project's `.opencode/` directory and
+registers the `divisor-entropy` reviewer into the project's Unbound Force policy files:
 
 ```bash
 vibe-check init [path]     # path defaults to "."; --force to overwrite, --json for machine output
@@ -380,8 +381,23 @@ It writes assets to two directories:
 - `.opencode/commands/` — the `/vibe-check` slash command, which delegates to the
   `vibe-check-reporter` agent for conversational architectural analysis.
 
+When the project carries Unbound Force policy files, `init` also registers the reviewer
+surgically, preserving every other line:
+
+- `.uf/reviewer-capabilities.yaml` — a `divisor-entropy` entry under `reviewers:` with the
+  `review` capability.
+- `.uf/review-matrix.yaml` — a `divisor-entropy` item in each of the `advisor` mode lists
+  (`code`, `spec`, `triage`, `feedback`).
+
+Registration is idempotent: present entries are reported as `reviewers/divisor-entropy` and
+`advisors/divisor-entropy` in the `Skipped` list and left byte-identical. Absent policy files or
+unexpected shapes (a missing `reviewers:`/`advisor:` section or mode list) are reported in a
+`Notices` list — also the `notices` array under `--json` — and never created or guessed. `--force`
+affects asset overwrite only, never registration.
+
 Existing files are skipped unless `--force` is given. Exit code `0` on success (including
-when every asset is skipped), `2` on an invalid target path or I/O failure.
+when every asset is skipped and notice-only policy gaps), `2` on an invalid target path, a policy
+file that cannot be safely rewritten (symlinked or non-regular), or I/O failure.
 
 When run with `--json`, `init` also emits a top-level `provenance` object with `producer` (the constant
 `"vibe-check"`), `version` (the tool version), and `generatedAt` (an RFC 3339 UTC timestamp); pass

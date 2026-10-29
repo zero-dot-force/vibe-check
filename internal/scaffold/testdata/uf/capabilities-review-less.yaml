@@ -1,0 +1,6 @@
+# Hand-curated policy whose reviewers declare no review capability.
+reviewers:
+  - agent: divisor-curator
+    capability: content
+    scopes:
+      - content

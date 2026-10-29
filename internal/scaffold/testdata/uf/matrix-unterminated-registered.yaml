@@ -1,0 +1,5 @@
+advisor:
+  code:
+    - divisor-adversary
+    - divisor-curator
+    - divisor-entropy

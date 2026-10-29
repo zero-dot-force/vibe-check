@@ -1,0 +1,17 @@
+# Canonical eligibility policy for Divisor personas.
+version: 1
+
+reviewers:
+  - agent: divisor-curator
+    capability: review
+    scopes:
+      - documentation
+  - agent: divisor-entropy
+    capability: review
+    scopes:
+      - deep
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+# scaffolded by uf vdev

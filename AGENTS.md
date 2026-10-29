@@ -305,8 +305,12 @@ internal/scaffold/  # Embedded asset deployment + UF policy registration for `vi
   doc.go            # Package-level GoDoc
   embed.go          # //go:embed assets/{agents,commands}/*.md (embedded source of truth)
   scaffold.go       # Symlink-safe asset writer (skip/force; 0o755 dirs, 0o644 files)
-  register.go       # Byte-preserving splice + guarded rewrite of .uf/ policy files
-  scaffold_test.go  # Writer + embedded-asset + registration contract tests
+  register.go       # Registration table + guarded orchestration for .uf/ policy files
+  splice.go         # Pure byte-preserving splices for .uf/ policy files
+  lines.go          # Line-scanning helpers for the block-scalar YAML subset
+  scaffold_test.go  # Writer + embedded-asset contract tests
+  register_test.go  # UF policy registration contract tests
+  testdata/uf/      # Committed UF policy fixtures (before/after splice pairs)
   assets/agents/    # Embedded Review Council agent assets
     divisor-entropy.md      # Structural-entropy divisor agent (source of truth)
     vibe-check-reporter.md  # Interactive metrics reporter agent (summary/detailed/trending)

@@ -1,0 +1,10 @@
+# Hand-curated matrix whose mode lists appear out of registration order.
+advisor:
+  spec:
+    - divisor-guard
+  code:
+    - divisor-adversary
+  feedback:
+    - divisor-curator
+  triage:
+    - divisor-guard

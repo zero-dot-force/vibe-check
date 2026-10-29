@@ -1,0 +1,11 @@
+# Hand-curated matrix with an item-less mode key.
+advisor:
+  code:
+  spec:
+    - divisor-guard
+  triage:
+    - divisor-entropy
+    - divisor-guard
+  feedback:
+    - divisor-entropy
+    - divisor-guard

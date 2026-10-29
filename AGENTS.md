@@ -243,6 +243,7 @@ go build ./cmd/vibe-check
 
 # Deploy embedded agent and command assets into .opencode/ of a project
 go run ./cmd/vibe-check init .            # --force to overwrite, --json for machine output
+                                        # also registers divisor-entropy into .uf/ policy files
 
 # Analyze a module and write ModuleGraph JSON to a file (default: stdout)
 go run ./cmd/vibe-check analyze -o graph.json .            # --output is the long form
@@ -285,7 +286,7 @@ cmd/vibe-check/     # CLI entry point (Layer 3)
   root.go           # Cobra root command with --version flag
   analyze.go        # analyze subcommand with threshold flags (incl --output/-o)
   diff.go           # diff subcommand (base vs PR entropy delta + verdict; --markdown report)
-  init.go           # init subcommand (deploys embedded agent and command assets)
+  init.go           # init subcommand (deploys embedded assets; registers entropy reviewer in .uf/)
   report.go         # report subcommand (markdown/JSON report from a ModuleGraph snapshot)
   provenance.go     # shared provenance envelope (producer/version/generatedAt)
   testdata/         # Golden-file fixtures for the report and diff subcommands
@@ -300,11 +301,12 @@ internal/goadapter/ # Go language adapter (Layer 2)
   extensions.go     # go.interfaceWidth and go.interfaceProximity extensions
   doc.go            # Package-level GoDoc
   testdata/         # Test fixtures (coupling, types, lcom, extensions, partial)
-internal/scaffold/  # Embedded asset deployment for `vibe-check init`
+internal/scaffold/  # Embedded asset deployment + UF policy registration for `vibe-check init`
   doc.go            # Package-level GoDoc
   embed.go          # //go:embed assets/{agents,commands}/*.md (embedded source of truth)
   scaffold.go       # Symlink-safe asset writer (skip/force; 0o755 dirs, 0o644 files)
-  scaffold_test.go  # Writer + embedded-asset contract tests
+  register.go       # Byte-preserving splice + guarded rewrite of .uf/ policy files
+  scaffold_test.go  # Writer + embedded-asset + registration contract tests
   assets/agents/    # Embedded Review Council agent assets
     divisor-entropy.md      # Structural-entropy divisor agent (source of truth)
     vibe-check-reporter.md  # Interactive metrics reporter agent (summary/detailed/trending)
@@ -372,9 +374,12 @@ The architecture follows a three-layer design per the RFC phasing:
   overrides), whose `--json` output carries an optional `provenance` object
   (producer/version/generatedAt) omittable via `--no-provenance`; and
   `vibe-check init [path]` deploying the embedded agent assets into
-  `.opencode/agents/` and command assets into `.opencode/commands/`, whose
+  `.opencode/agents/` and command assets into `.opencode/commands/`, plus
+  registering the `divisor-entropy` reviewer into `.uf/reviewer-capabilities.yaml`
+  and `.uf/review-matrix.yaml` (idempotent, byte-preserving splice; absent
+  files are noticed, never created; refusal exits 2), whose
   `--json` output likewise carries the optional `provenance` object omittable
-  via `--no-provenance`.
+  via `--no-provenance` and a normalized `notices` array.
 
 RFC phasing status:
 

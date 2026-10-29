@@ -40,6 +40,10 @@ type Result struct {
 	Written []string
 	Skipped []string
 	Forced  []string
+	// Notices reports non-blocking registration caveats from the UF policy
+	// pass: absent policy files, unexpected file shapes, and advisory gaps
+	// in entries that are already present.
+	Notices []string
 }
 
 // Run deploys the embedded agent and command assets into opts.TargetDir.
@@ -72,6 +76,16 @@ func run(agentAssets, commandAssets fs.FS, opts Options) (*Result, error) {
 		result.Written = append(result.Written, written...)
 		result.Skipped = append(result.Skipped, skipped...)
 		result.Forced = append(result.Forced, forced...)
+	}
+
+	for _, reg := range registrations {
+		regWritten, regSkipped, regNotices, err := registerReviewAgent(root, reg, writeFile)
+		if err != nil {
+			return nil, err
+		}
+		result.Written = append(result.Written, regWritten...)
+		result.Skipped = append(result.Skipped, regSkipped...)
+		result.Notices = append(result.Notices, regNotices...)
 	}
 
 	sort.Strings(result.Written)

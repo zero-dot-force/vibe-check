@@ -13,8 +13,8 @@
 
 ## 3. CLI reporting (cmd/vibe-check/init.go)
 
-- [ ] 3.1 Extend `InitResult` and init output with notices per design D5: an additive `notices` array in the `--json` payload (after `forced`, normalized to an empty array, never null) and a human `Notices:` section printed only when non-empty. Verify: `RunInit` tests pass — the JSON payload contains `notices` alongside unchanged `written`/`skipped`/`forced` semantics; the human summary prints the section only when non-empty; existing init tests whose `t.TempDir()` targets now legitimately emit absent-file notices are updated to expect them.
-- [ ] 3.2 Update the init command's cobra help text in `cmd/vibe-check/init.go` — the Short, the Long (deployment enumeration and skip/force semantics), and the exit-code sentence — to cover registration: the two `.uf/` policy files written, the `Notices:` output section, and exit code 2 on policy-file symlink/non-regular refusal and registration I/O failure. Verify: `go run ./cmd/vibe-check init --help` output matches the implemented behavior.
+- [x] 3.1 Extend `InitResult` and init output with notices per design D5: an additive `notices` array in the `--json` payload (after `forced`, normalized to an empty array, never null) and a human `Notices:` section printed only when non-empty. Verify: `RunInit` tests pass — the JSON payload contains `notices` alongside unchanged `written`/`skipped`/`forced` semantics; the human summary prints the section only when non-empty; existing init tests whose `t.TempDir()` targets now legitimately emit absent-file notices are updated to expect them.
+- [x] 3.2 Update the init command's cobra help text in `cmd/vibe-check/init.go` — the Short, the Long (deployment enumeration and skip/force semantics), and the exit-code sentence — to cover registration: the two `.uf/` policy files written, the `Notices:` output section, and exit code 2 on policy-file symlink/non-regular refusal and registration I/O failure. Verify: `go run ./cmd/vibe-check init --help` output matches the implemented behavior.
 
 ## 4. Dogfood
 

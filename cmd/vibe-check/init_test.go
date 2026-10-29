@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/zero-dot-force/vibe-check/internal/scaffold"
 )
 
 // initAssetNames lists the category-prefixed asset names that scaffold.Run
@@ -73,6 +75,14 @@ func TestRunInit_HumanSummaryLifecycle(t *testing.T) {
 	out := stdout.String()
 	if !strings.Contains(out, "Written:") {
 		t.Errorf("summary missing Written section; got:\n%s", out)
+	}
+	// The t.TempDir target carries no .uf/ policy files, so the registration
+	// pass legitimately reports them as absent via the Notices section.
+	if !strings.Contains(out, "Notices:") {
+		t.Errorf("summary missing Notices section for absent policy files; got:\n%s", out)
+	}
+	if !strings.Contains(out, ".uf/reviewer-capabilities.yaml: not present; not created") {
+		t.Errorf("summary missing absent-capabilities notice; got:\n%s", out)
 	}
 	if !strings.Contains(out, "agents/divisor-entropy.md") {
 		t.Errorf("summary missing agent asset name; got:\n%s", out)
@@ -419,5 +429,80 @@ func TestInitCmd_InvalidPathReturnsExitCodeError(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Error:") {
 		t.Errorf("expected diagnostic on stderr; got: %q", stderr.String())
+	}
+}
+
+// TestRunInit_JSONNoticesListsAbsentPolicyFiles covers the --json notices key:
+// a target without .uf/ policy files reports the absent-file caveats as a JSON
+// array while the deployment still succeeds with exit code 0.
+func TestRunInit_JSONNoticesListsAbsentPolicyFiles(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	res, err := RunInit(context.Background(), InitOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Path:   t.TempDir(),
+		JSON:   true,
+	})
+	if err != nil {
+		t.Fatalf("RunInit returned error: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("ExitCode: got %d, want 0", res.ExitCode)
+	}
+	wantNotices := []string{
+		".uf/reviewer-capabilities.yaml: not present; not created",
+		".uf/review-matrix.yaml: not present; not created",
+	}
+	if got := res.Notices; !slices.Equal(got, wantNotices) {
+		t.Errorf("Notices: got %v, want %v", got, wantNotices)
+	}
+	var payload struct {
+		Notices []string `json:"notices"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%q): %v", stdout.String(), err)
+	}
+	if !slices.Equal(payload.Notices, wantNotices) {
+		t.Errorf("json notices: got %v, want %v", payload.Notices, wantNotices)
+	}
+}
+
+// TestWriteInitJSON_NoticesNormalizedToEmptyArray verifies the notices key is
+// always a JSON array, never null, even when no caveats were reported.
+func TestWriteInitJSON_NoticesNormalizedToEmptyArray(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	if err := writeInitJSON(&buf, &scaffold.Result{}, true); err != nil {
+		t.Fatalf("writeInitJSON returned error: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"notices": []`) {
+		t.Errorf("JSON payload missing empty notices array; got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "null") {
+		t.Errorf("JSON payload must not contain null arrays; got:\n%s", buf.String())
+	}
+}
+
+// TestWriteInitSummary_NoticesSectionOnlyWhenPresent verifies the human
+// summary renders a Notices section exactly when the registration pass
+// reported caveats.
+func TestWriteInitSummary_NoticesSectionOnlyWhenPresent(t *testing.T) {
+	t.Parallel()
+	var quiet bytes.Buffer
+	writeInitSummary(&quiet, ".", &scaffold.Result{})
+	if strings.Contains(quiet.String(), "Notices:") {
+		t.Errorf("summary without notices must omit the Notices section; got:\n%s", quiet.String())
+	}
+
+	var noisy bytes.Buffer
+	writeInitSummary(&noisy, ".", &scaffold.Result{
+		Notices: []string{".uf/reviewer-capabilities.yaml: not present; not created"},
+	})
+	if !strings.Contains(noisy.String(), "Notices:") {
+		t.Errorf("summary with notices missing the Notices section; got:\n%s", noisy.String())
+	}
+	if !strings.Contains(noisy.String(), ".uf/reviewer-capabilities.yaml: not present; not created") {
+		t.Errorf("summary with notices missing the notice line; got:\n%s", noisy.String())
 	}
 }

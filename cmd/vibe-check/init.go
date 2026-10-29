@@ -55,6 +55,10 @@ type InitResult struct {
 	// Forced lists the category-prefixed asset paths overwritten because Force
 	// was set.
 	Forced []string
+	// Notices lists non-blocking registration caveats from the UF policy
+	// pass: absent policy files, unexpected file shapes, and advisory gaps
+	// in entries that are already present.
+	Notices []string
 	// ExitCode is the process exit code: 0 on success (including an all-skipped
 	// run), 2 on an invalid target path or an I/O failure.
 	ExitCode int
@@ -62,27 +66,31 @@ type InitResult struct {
 
 // initJSON is the machine-readable init payload emitted under --json. Field
 // declaration order determines JSON key order and every key uses lowercase. All
-// three slices are normalized to empty (never null) so each key is always a JSON
+// four slices are normalized to empty (never null) so each key is always a JSON
 // array.
 type initJSON struct {
 	Provenance *provenanceEnvelope `json:"provenance,omitempty"`
 	Written    []string            `json:"written"`
 	Skipped    []string            `json:"skipped"`
 	Forced     []string            `json:"forced"`
+	Notices    []string            `json:"notices"`
 }
 
 // RunInit deploys the embedded Review Council agent and command assets into the
-// project's .opencode/agents/ and .opencode/commands/ directories and writes a
-// deployment summary (table or JSON) to opts.Stdout. It returns a non-nil
-// *InitResult and nil error on success. On any failure it returns a non-nil
-// *InitResult with ExitCode 2 and a wrapped error; nothing is written to
-// opts.Stdout on error paths. This is the testable entry point per AP-002/AP-003:
-// all business logic lives here, not in the cobra command layer.
+// project's .opencode/agents/ and .opencode/commands/ directories, registers
+// the divisor-entropy reviewer into the UF policy files (.uf/) when they are
+// present, and writes a deployment summary (table or JSON) to opts.Stdout. It
+// returns a non-nil *InitResult and nil error on success. On any failure it
+// returns a non-nil *InitResult with ExitCode 2 and a wrapped error; nothing is
+// written to opts.Stdout on error paths. This is the testable entry point per
+// AP-002/AP-003: all business logic lives here, not in the cobra command layer.
 //
 // Exit code semantics (also mirrored in the returned InitResult.ExitCode):
-//   - 0: assets were deployed (or all skipped) and the summary was written to
-//     opts.Stdout.
-//   - 2: the target path is invalid (missing, not a directory, or traversal) or
+//   - 0: assets were deployed (or all skipped), the UF policy registration
+//     pass completed (absent or shape-failed policy files only produce
+//     notices), and the summary was written to opts.Stdout.
+//   - 2: the target path is invalid (missing, not a directory, or traversal),
+//     a policy file cannot be safely rewritten (symlinked or non-regular), or
 //     an I/O failure occurred while writing an asset. In that case nothing is
 //     written to opts.Stdout and the returned error describes the failure.
 //
@@ -135,6 +143,7 @@ func RunInit(ctx context.Context, opts InitOptions) (*InitResult, error) {
 		Written:  res.Written,
 		Skipped:  res.Skipped,
 		Forced:   res.Forced,
+		Notices:  res.Notices,
 		ExitCode: 0,
 	}, nil
 }
@@ -149,6 +158,7 @@ func writeInitJSON(w io.Writer, res *scaffold.Result, noProvenance bool) error {
 		Written: normStringSlice(res.Written),
 		Skipped: normStringSlice(res.Skipped),
 		Forced:  normStringSlice(res.Forced),
+		Notices: normStringSlice(res.Notices),
 	}
 	if !noProvenance {
 		payload.Provenance = newProvenanceEnvelope()
@@ -165,7 +175,8 @@ func writeInitJSON(w io.Writer, res *scaffold.Result, noProvenance bool) error {
 
 // writeInitSummary renders the deployment result as a human-readable summary to
 // w. It names the target .opencode directory, then lists the written, skipped,
-// and forced assets. The lists contain category-prefixed paths (e.g.
+// and forced assets, followed by a Notices section when the UF policy pass
+// reported any caveats. The lists contain category-prefixed paths (e.g.
 // "agents/divisor-entropy.md", "commands/vibe-check.md") in stable sorted
 // order.
 func writeInitSummary(w io.Writer, targetDir string, res *scaffold.Result) {
@@ -174,6 +185,9 @@ func writeInitSummary(w io.Writer, targetDir string, res *scaffold.Result) {
 	writeListSection(w, "Written:", res.Written)
 	writeListSection(w, "Skipped:", res.Skipped)
 	writeListSection(w, "Forced:", res.Forced)
+	if len(res.Notices) > 0 {
+		writeListSection(w, "Notices:", res.Notices)
+	}
 }
 
 // normStringSlice returns s unchanged, or an empty (non-nil) slice when s is
@@ -197,11 +211,15 @@ func initCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init [path]",
-		Short: "Deploy vibe-check agent and command assets into a project",
+		Short: "Deploy vibe-check agent and command assets and register the entropy reviewer into a project",
 		Long: `Init deploys the embedded vibe-check agent assets (such as the
 divisor-entropy structural-entropy reviewer and the vibe-check-reporter) and
 command assets (such as the /vibe-check slash command) into a target project's
-.opencode/agents/ and .opencode/commands/ directories.
+.opencode/agents/ and .opencode/commands/ directories. It also registers the
+divisor-entropy reviewer into the project's Unbound Force policy files
+(.uf/reviewer-capabilities.yaml and .uf/review-matrix.yaml) when those files
+are present; absent or unexpected policy files are reported as notices and
+never created, and --force does not affect registration.
 
 Existing files are skipped by default; use --force to overwrite them. The target
 path defaults to the current directory. Output is a human-readable summary by
@@ -211,8 +229,9 @@ With --json, a provenance envelope (producer, version, generatedAt) is included
 by default so downstream consumers can attribute and audit the output. Use
 --no-provenance to omit it for byte-reproducible output.
 
-Exit code is 0 on success (including an all-skipped run) and 2 when the target
-path is invalid or an asset cannot be written.`,
+Exit code is 0 on success (including an all-skipped run and notice-only policy
+gaps) and 2 when the target path is invalid, a policy file cannot be safely
+rewritten (symlinked or non-regular), or an asset cannot be written.`,
 		Args: cobra.MaximumNArgs(1),
 		// SilenceUsage prevents cobra from printing usage on RunE errors; we
 		// report errors ourselves.

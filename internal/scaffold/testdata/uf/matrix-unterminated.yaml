@@ -1,0 +1,4 @@
+advisor:
+  code:
+    - divisor-adversary
+    - divisor-curator

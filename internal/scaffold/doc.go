@@ -1,6 +1,7 @@
-// Package scaffold embeds the vibe-check agent and command asset templates and
+// Package scaffold embeds the vibe-check agent and command asset templates,
 // deploys them into a target repository's .opencode/agents/ and
-// .opencode/commands/ directories via `vibe-check init`.
+// .opencode/commands/ directories, and registers the deployed review agent
+// into the target's Unbound Force policy files via `vibe-check init`.
 //
 // # Role
 //
@@ -8,9 +9,12 @@
 // carries the canonical, version-controlled asset definitions — the
 // divisor-entropy and vibe-check-reporter agents plus the /vibe-check slash
 // command — as files embedded into the binary, then writes them into a consuming
-// project so OpenCode can auto-discover them. Shipping the assets inside the
-// same binary that runs `vibe-check analyze` keeps the deployed assets aligned
-// with the metrics engine they drive.
+// project so OpenCode can auto-discover them. After deployment it registers
+// the divisor-entropy reviewer into the project's .uf/ policy files
+// (reviewer-capabilities.yaml and review-matrix.yaml) with a byte-preserving
+// splice, so review dispatch includes the entropy reviewer. Shipping the
+// assets inside the same binary that runs `vibe-check analyze` keeps the
+// deployed assets aligned with the metrics engine they drive.
 //
 // # Layout
 //
@@ -21,6 +25,12 @@
 //   - assets/commands/ holds the Markdown slash command definitions.
 //   - scaffold.go deploys both asset categories via [Run], using a
 //     [deployCategory] helper for each category.
+//   - register.go holds the registration table and the guarded filesystem
+//     orchestration that splices each registered review agent into the .uf/
+//     policy files.
+//   - splice.go holds the pure, byte-preserving content splices for the
+//     policy files.
+//   - lines.go holds the line-scanning helpers those splices share.
 //
 // The embedded assets are the single source of truth: the copies deployed into a
 // repository are generated from them rather than hand-authored, which prevents

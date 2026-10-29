@@ -506,3 +506,95 @@ func TestWriteInitSummary_NoticesSectionOnlyWhenPresent(t *testing.T) {
 		t.Errorf("summary with notices missing the notice line; got:\n%s", noisy.String())
 	}
 }
+
+// writeUfPolicyFixtures seeds a minimal but valid UF policy pair so the
+// CLI-level registration tests exercise the same shapes Run meets in real
+// projects.
+func writeUfPolicyFixtures(t *testing.T, dir string) {
+	t.Helper()
+	ufDir := filepath.Join(dir, ".uf")
+	if err := os.MkdirAll(ufDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf: %v", err)
+	}
+	capabilities := "reviewers:\n" +
+		"  - agent: divisor-guard\n" +
+		"    capability: review\n" +
+		"    scopes:\n" +
+		"      - standard\n"
+	if err := os.WriteFile(filepath.Join(ufDir, "reviewer-capabilities.yaml"), []byte(capabilities), 0o644); err != nil {
+		t.Fatalf("write reviewer-capabilities.yaml: %v", err)
+	}
+	matrix := "advisor:\n" +
+		"  code:\n    - divisor-guard\n" +
+		"  spec:\n    - divisor-guard\n" +
+		"  triage:\n    - divisor-guard\n" +
+		"  feedback:\n    - divisor-guard\n"
+	if err := os.WriteFile(filepath.Join(ufDir, "review-matrix.yaml"), []byte(matrix), 0o644); err != nil {
+		t.Fatalf("write review-matrix.yaml: %v", err)
+	}
+}
+
+// TestRunInit_RegistersReviewAgentsInPayload verifies end to end that init
+// registers the divisor-entropy reviewer into both UF policy files and
+// reports both registrations through the --json payload's written array
+// (and the human summary), rather than as skipped or forced assets.
+func TestRunInit_RegistersReviewAgentsInPayload(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	dir := t.TempDir()
+	writeUfPolicyFixtures(t, dir)
+
+	res, err := RunInit(context.Background(), InitOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Path:   dir,
+		JSON:   true,
+	})
+	if err != nil {
+		t.Fatalf("RunInit returned error: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("ExitCode: got %d, want 0", res.ExitCode)
+	}
+
+	var payload struct {
+		Written []string `json:"written"`
+		Skipped []string `json:"skipped"`
+		Forced  []string `json:"forced"`
+		Notices []string `json:"notices"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%q): %v", stdout.String(), err)
+	}
+	for _, name := range []string{"reviewers/divisor-entropy", "advisors/divisor-entropy"} {
+		if !slices.Contains(payload.Written, name) {
+			t.Errorf("json written missing %q; got %v", name, payload.Written)
+		}
+		if slices.Contains(payload.Skipped, name) {
+			t.Errorf("json skipped must not contain %q; got %v", name, payload.Skipped)
+		}
+		if slices.Contains(payload.Forced, name) {
+			t.Errorf("json forced must not contain %q; got %v", name, payload.Forced)
+		}
+	}
+	if len(payload.Notices) != 0 {
+		t.Errorf("json notices: got %v, want none", payload.Notices)
+	}
+
+	var human bytes.Buffer
+	humanDir := t.TempDir()
+	writeUfPolicyFixtures(t, humanDir)
+	if _, err := RunInit(context.Background(), InitOptions{
+		Stdout: &human,
+		Stderr: &stderr,
+		Path:   humanDir,
+	}); err != nil {
+		t.Fatalf("RunInit (human) returned error: %v", err)
+	}
+	for _, name := range []string{"reviewers/divisor-entropy", "advisors/divisor-entropy"} {
+		if !strings.Contains(human.String(), name) {
+			t.Errorf("human summary missing %q; got:\n%s", name, human.String())
+		}
+	}
+}

@@ -1,0 +1,22 @@
+# Canonical model policy for Divisor review dispatch.
+version: 3
+
+advisor:
+  code:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+  spec:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+  feedback:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+
+runs: {}
+# scaffolded by uf vdev

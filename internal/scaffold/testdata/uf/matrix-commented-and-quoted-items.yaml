@@ -1,0 +1,23 @@
+# Canonical model policy for Divisor review dispatch.
+version: 3
+
+advisor:
+  code:
+    - divisor-adversary
+    - divisor-entropy # hand-added
+    - divisor-guard
+  spec:
+    - divisor-adversary
+    - "divisor-entropy"
+    - divisor-guard
+  triage:
+    - divisor-adversary
+    - divisor-entropy
+    - divisor-guard
+  feedback:
+    - divisor-adversary
+    - divisor-entropy
+    - divisor-guard
+
+runs: {}
+# scaffolded by uf vdev

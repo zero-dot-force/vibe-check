@@ -1,0 +1,4 @@
+# Hand-curated minimal policy with a flow-empty reviewers section.
+reviewers: []
+defaults:
+  capability: review

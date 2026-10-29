@@ -59,8 +59,10 @@ type InitResult struct {
 	// pass: absent policy files, unexpected file shapes, and advisory gaps
 	// in entries that are already present.
 	Notices []string
-	// ExitCode is the process exit code: 0 on success (including an all-skipped
-	// run), 2 on an invalid target path or an I/O failure.
+	// ExitCode is the process exit code: 0 on success (including an
+	// all-skipped run), 2 on an invalid target path, an unsafe-to-rewrite
+	// policy file (symlinked or non-regular, including path components), or
+	// an I/O failure.
 	ExitCode int
 }
 

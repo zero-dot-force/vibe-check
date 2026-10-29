@@ -20,12 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reviewers/divisor-entropy` and `advisors/divisor-entropy` under `Skipped`
   and left byte-identical), never creates absent policy files or missing
   sections (those are reported as notices in the human summary and as a new
-  `notices` array in the `--json` payload), and is unaffected by `--force`.
-  A policy file that cannot be safely rewritten — a symlinked `.uf`
-  component, a symlinked or non-regular policy file — fails the command with
-  exit code `2` before any bytes are written, and an I/O failure mid-write
+  `notices` array in the `--json` payload, alongside notices for unexpected
+  shapes such as inline-valued or item-less lists and advisory gaps where a
+  present entry lacks the `review` capability or declares empty scopes), and
+  is unaffected by `--force`. A policy file that cannot be safely rewritten —
+  a symlinked `.uf` component, a symlinked or non-regular policy file —
+  fails the command with exit code `2` without rewriting the refused file
+  (already-deployed assets remain on disk), and an I/O failure mid-write
   reports that the file may be partially written and restorable from version
   control.
+  Spec: `openspec/changes/init-registers-divisor-entropy/specs/init-uf-registration/spec.md`
 
 ## [0.3.0] - 2026-10-28
 

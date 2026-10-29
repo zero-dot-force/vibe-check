@@ -1,0 +1,7 @@
+# Hand-curated policy whose reviewers section runs to EOF.
+reviewers:
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+# scaffolded by uf vdev

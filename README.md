@@ -390,10 +390,15 @@ surgically, preserving every other line:
   (`code`, `spec`, `triage`, `feedback`).
 
 Registration is idempotent: present entries are reported as `reviewers/divisor-entropy` and
-`advisors/divisor-entropy` in the `Skipped` list and left byte-identical. Absent policy files or
-unexpected shapes (a missing `reviewers:`/`advisor:` section or mode list) are reported in a
-`Notices` list — also the `notices` array under `--json` — and never created or guessed. `--force`
-affects asset overwrite only, never registration.
+`advisors/divisor-entropy` in the `Skipped` list and left byte-identical. Three kinds of
+caveats are reported in a `Notices` list — also the `notices` array under `--json` — and
+never created or guessed: absent policy files, unexpected shapes (a missing
+`reviewers:`/`advisor:` section or mode list, a section or list carrying an inline value
+such as `code: []`, or an item-less list), and advisory gaps where the agent is already
+present but without the `review` capability or with empty scopes (review dispatch may then
+fail closed). Presence detection reads block-scalar entries only; a flow-collection entry
+(for example `- {agent: divisor-entropy}`) is outside the splice's recognition contract
+and triggers no registration. `--force` affects asset overwrite only, never registration.
 
 Existing files are skipped unless `--force` is given. Exit code `0` on success (including
 when every asset is skipped and notice-only policy gaps), `2` on an invalid target path, a policy

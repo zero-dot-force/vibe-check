@@ -31,4 +31,4 @@
 
 ## 6. CI parity
 
-- [ ] 6.1 Derive the gate commands from `.github/workflows/ci.yml` and run them locally: `go build ./...`, `go vet ./...`, `go test -race -count=1 -coverprofile=coverage.out ./...`, and `golangci-lint run ./...` (CI runs golangci-lint-action). Verify: all pass with no new issues and `internal/scaffold/` statement coverage for the new registration code is ≥80%.
+- [x] 6.1 Derive the gate commands from `.github/workflows/ci.yml` and run them locally: `go build ./...`, `go vet ./...`, `go test -race -count=1 -coverprofile=coverage.out ./...`, and `golangci-lint run ./...` (CI runs golangci-lint-action). Verify: all pass with no new issues and `internal/scaffold/` statement coverage for the new registration code is ≥80%.

@@ -456,3 +456,819 @@ func TestRun_MixedAgentAndCommandResults(t *testing.T) {
 		t.Errorf("Written: got %v, want %v", res.Written, wantWritten)
 	}
 }
+
+// Fixtures for the registration pass, derived byte-for-byte from this
+// repo's canonical .uf/ policy files: header and inline comments, blank
+// lines, and the trailing scaffold comment are all preserved so the splice
+// functions can be asserted byte-exactly.
+
+const capabilitiesFixtureCanonical = `# Canonical eligibility policy for Divisor personas.
+version: 1
+
+reviewers:
+  - agent: divisor-adversary
+    capability: review
+    scopes:
+      - security
+      - dependencies
+      - standard
+  - agent: divisor-architect
+    capability: review
+    scopes:
+      - standard
+      - cli-ux
+      - ci-cd
+      - documentation
+  - agent: divisor-curator
+    capability: review
+    scopes:
+      - documentation
+  - agent: divisor-entropy
+    capability: review
+    scopes:
+      - standard
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+      - cli-ux
+      - documentation
+  - agent: divisor-sre
+    capability: review
+    scopes:
+      - ci-cd
+      - dependencies
+      - security
+  - agent: divisor-testing
+    capability: review
+    scopes:
+      - test-quality
+  - agent: divisor-envoy
+    capability: content
+    scopes: []
+  - agent: divisor-herald
+    capability: content
+    scopes: []
+  - agent: divisor-scribe
+    capability: content
+    scopes: []
+# scaffolded by uf vdev
+`
+
+// capabilitiesFixtureMissing is the canonical capabilities manifest with the
+// divisor-entropy entry removed; registering into it must reproduce the
+// canonical file byte-for-byte.
+const capabilitiesFixtureMissing = `# Canonical eligibility policy for Divisor personas.
+version: 1
+
+reviewers:
+  - agent: divisor-adversary
+    capability: review
+    scopes:
+      - security
+      - dependencies
+      - standard
+  - agent: divisor-architect
+    capability: review
+    scopes:
+      - standard
+      - cli-ux
+      - ci-cd
+      - documentation
+  - agent: divisor-curator
+    capability: review
+    scopes:
+      - documentation
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+      - cli-ux
+      - documentation
+  - agent: divisor-sre
+    capability: review
+    scopes:
+      - ci-cd
+      - dependencies
+      - security
+  - agent: divisor-testing
+    capability: review
+    scopes:
+      - test-quality
+  - agent: divisor-envoy
+    capability: content
+    scopes: []
+  - agent: divisor-herald
+    capability: content
+    scopes: []
+  - agent: divisor-scribe
+    capability: content
+    scopes: []
+# scaffolded by uf vdev
+`
+
+// capabilitiesFixtureNonCanonicalScopes carries a present divisor-entropy
+// entry whose scopes differ from the canonical entry.
+const capabilitiesFixtureNonCanonicalScopes = `# Canonical eligibility policy for Divisor personas.
+version: 1
+
+reviewers:
+  - agent: divisor-curator
+    capability: review
+    scopes:
+      - documentation
+  - agent: divisor-entropy
+    capability: review
+    scopes:
+      - deep
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+# scaffolded by uf vdev
+`
+
+// capabilitiesFixtureTrailingComment carries a present divisor-entropy
+// entry whose agent line has a hand-added trailing comment.
+const capabilitiesFixtureTrailingComment = `# Canonical eligibility policy for Divisor personas.
+version: 1
+
+reviewers:
+  - agent: divisor-curator
+    capability: review
+    scopes:
+      - documentation
+  - agent: divisor-entropy # hand-added
+    capability: review
+    scopes:
+      - standard
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+# scaffolded by uf vdev
+`
+
+// capabilitiesFixtureQuotedName carries a present divisor-entropy entry
+// whose agent name is a quoted scalar.
+const capabilitiesFixtureQuotedName = `# Canonical eligibility policy for Divisor personas.
+version: 1
+
+reviewers:
+  - agent: divisor-curator
+    capability: review
+    scopes:
+      - documentation
+  - agent: "divisor-entropy"
+    capability: review
+    scopes:
+      - standard
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+# scaffolded by uf vdev
+`
+
+// capabilitiesFixtureContentCapability carries a present divisor-entropy
+// entry that declares a non-review capability.
+const capabilitiesFixtureContentCapability = `# Canonical eligibility policy for Divisor personas.
+version: 1
+
+reviewers:
+  - agent: divisor-curator
+    capability: review
+    scopes:
+      - documentation
+  - agent: divisor-entropy
+    capability: content
+    scopes: []
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+# scaffolded by uf vdev
+`
+
+// capabilitiesFixtureEmptyFlowScopes carries a present divisor-entropy
+// entry whose scopes are an empty flow-style list.
+const capabilitiesFixtureEmptyFlowScopes = `# Canonical eligibility policy for Divisor personas.
+version: 1
+
+reviewers:
+  - agent: divisor-curator
+    capability: review
+    scopes:
+      - documentation
+  - agent: divisor-entropy
+    capability: review
+    scopes: []
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+# scaffolded by uf vdev
+`
+
+// capabilitiesFixtureEmptyBlockScopes carries a present divisor-entropy
+// entry whose scopes key has no block items.
+const capabilitiesFixtureEmptyBlockScopes = `# Canonical eligibility policy for Divisor personas.
+version: 1
+
+reviewers:
+  - agent: divisor-curator
+    capability: review
+    scopes:
+      - documentation
+  - agent: divisor-entropy
+    capability: review
+    scopes:
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+# scaffolded by uf vdev
+`
+
+// capabilitiesFixtureMissingScopes carries a present divisor-entropy entry
+// with no scopes key at all.
+const capabilitiesFixtureMissingScopes = `# Canonical eligibility policy for Divisor personas.
+version: 1
+
+reviewers:
+  - agent: divisor-curator
+    capability: review
+    scopes:
+      - documentation
+  - agent: divisor-entropy
+    capability: review
+  - agent: divisor-guard
+    capability: review
+    scopes:
+      - standard
+# scaffolded by uf vdev
+`
+
+// capabilitiesFixtureNoReviewers has no reviewers: section at all.
+const capabilitiesFixtureNoReviewers = `# Canonical eligibility policy for Divisor personas.
+version: 1
+# scaffolded by uf vdev
+`
+
+const matrixFixtureCanonical = `# Canonical model policy for Divisor review dispatch.
+# Per-developer model/variant overrides can be placed in
+# .uf/review-matrix.override.yaml (gitignored). Only
+# profiles.*.model and profiles.*.variant paths are
+# permitted in the override file.
+version: 3
+
+profiles:
+  lightweight: {}
+  standard: {}
+  heavy: {}
+
+defaults:
+  code: standard
+  spec: standard
+  triage: standard
+  feedback: standard
+
+# These overrides apply only when the advisor generates a run.
+always:
+  divisor-adversary: heavy
+  divisor-sre: lightweight
+
+# Membership permits generated runs; reviewer capabilities still
+# determine
+# whether an agent is relevant to a particular review.
+advisor:
+  code:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-entropy
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  spec:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-entropy
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  triage:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-entropy
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  feedback:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-entropy
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+
+# Explicit mode/agent arrays are authoritative and preserve
+# declaration order.
+# The canonical policy starts without explicit replacements.
+runs: {}
+
+risk_augmentation:
+  enabled: true
+  agents:
+    - divisor-adversary
+    - divisor-architect
+
+limits:
+  max_personas: 16
+  max_runs_per_persona: 3
+  max_total_runs: 24
+  max_parallel_runs: 4
+  per_run_timeout_seconds: 1200
+  max_reported_cost_usd: 25
+# scaffolded by uf vdev
+`
+
+// matrixFixtureMissing is the canonical review matrix with the
+// divisor-entropy item removed from all four advisor mode lists;
+// registering into it must reproduce the canonical file byte-for-byte.
+const matrixFixtureMissing = `# Canonical model policy for Divisor review dispatch.
+# Per-developer model/variant overrides can be placed in
+# .uf/review-matrix.override.yaml (gitignored). Only
+# profiles.*.model and profiles.*.variant paths are
+# permitted in the override file.
+version: 3
+
+profiles:
+  lightweight: {}
+  standard: {}
+  heavy: {}
+
+defaults:
+  code: standard
+  spec: standard
+  triage: standard
+  feedback: standard
+
+# These overrides apply only when the advisor generates a run.
+always:
+  divisor-adversary: heavy
+  divisor-sre: lightweight
+
+# Membership permits generated runs; reviewer capabilities still
+# determine
+# whether an agent is relevant to a particular review.
+advisor:
+  code:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  spec:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  triage:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  feedback:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+
+# Explicit mode/agent arrays are authoritative and preserve
+# declaration order.
+# The canonical policy starts without explicit replacements.
+runs: {}
+
+risk_augmentation:
+  enabled: true
+  agents:
+    - divisor-adversary
+    - divisor-architect
+
+limits:
+  max_personas: 16
+  max_runs_per_persona: 3
+  max_total_runs: 24
+  max_parallel_runs: 4
+  per_run_timeout_seconds: 1200
+  max_reported_cost_usd: 25
+# scaffolded by uf vdev
+`
+
+// matrixFixturePartiallyRegistered carries the item only in the code list;
+// the other three lists are spliced while code stays byte-identical.
+const matrixFixturePartiallyRegistered = `# Canonical model policy for Divisor review dispatch.
+# Per-developer model/variant overrides can be placed in
+# .uf/review-matrix.override.yaml (gitignored). Only
+# profiles.*.model and profiles.*.variant paths are
+# permitted in the override file.
+version: 3
+
+profiles:
+  lightweight: {}
+  standard: {}
+  heavy: {}
+
+defaults:
+  code: standard
+  spec: standard
+  triage: standard
+  feedback: standard
+
+# These overrides apply only when the advisor generates a run.
+always:
+  divisor-adversary: heavy
+  divisor-sre: lightweight
+
+# Membership permits generated runs; reviewer capabilities still
+# determine
+# whether an agent is relevant to a particular review.
+advisor:
+  code:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-entropy
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  spec:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  triage:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  feedback:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+
+# Explicit mode/agent arrays are authoritative and preserve
+# declaration order.
+# The canonical policy starts without explicit replacements.
+runs: {}
+
+risk_augmentation:
+  enabled: true
+  agents:
+    - divisor-adversary
+    - divisor-architect
+
+limits:
+  max_personas: 16
+  max_runs_per_persona: 3
+  max_total_runs: 24
+  max_parallel_runs: 4
+  per_run_timeout_seconds: 1200
+  max_reported_cost_usd: 25
+# scaffolded by uf vdev
+`
+
+// matrixFixtureCommentedAndQuotedItems carries the item in all four lists,
+// once as a commented scalar and once as a quoted scalar.
+const matrixFixtureCommentedAndQuotedItems = `# Canonical model policy for Divisor review dispatch.
+version: 3
+
+advisor:
+  code:
+    - divisor-adversary
+    - divisor-entropy # hand-added
+    - divisor-guard
+  spec:
+    - divisor-adversary
+    - "divisor-entropy"
+    - divisor-guard
+  triage:
+    - divisor-adversary
+    - divisor-entropy
+    - divisor-guard
+  feedback:
+    - divisor-adversary
+    - divisor-entropy
+    - divisor-guard
+
+runs: {}
+# scaffolded by uf vdev
+`
+
+// matrixFixtureNoTriage omits the triage mode list entirely; the remaining
+// lists are still spliced and a notice identifies the missing list.
+const matrixFixtureNoTriage = `# Canonical model policy for Divisor review dispatch.
+version: 3
+
+advisor:
+  code:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+  spec:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+  feedback:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+
+runs: {}
+# scaffolded by uf vdev
+`
+
+// matrixFixtureNoModeLists has an advisor: section with no mode lists.
+const matrixFixtureNoModeLists = `# Canonical model policy for Divisor review dispatch.
+version: 3
+
+advisor:
+
+runs: {}
+# scaffolded by uf vdev
+`
+
+func TestSpliceCapabilities_InsertsCanonicalEntryInSortedPosition(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+
+	result := spliceCapabilities([]byte(capabilitiesFixtureMissing), reg)
+
+	if !result.inserted {
+		t.Errorf("inserted: got false, want true")
+	}
+	if result.present {
+		t.Errorf("present: got true, want false")
+	}
+	if len(result.notices) != 0 {
+		t.Errorf("notices: got %v, want none", result.notices)
+	}
+	if string(result.content) != capabilitiesFixtureCanonical {
+		t.Errorf("content: got:\n%s\nwant:\n%s", result.content, capabilitiesFixtureCanonical)
+	}
+}
+
+func TestSpliceCapabilities_SkipsWhenEntryPresent(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+	fixtures := []struct {
+		name    string
+		content string
+	}{
+		{"canonical entry", capabilitiesFixtureCanonical},
+		{"non-canonical scopes", capabilitiesFixtureNonCanonicalScopes},
+		{"trailing comment", capabilitiesFixtureTrailingComment},
+		{"quoted name", capabilitiesFixtureQuotedName},
+	}
+	for _, tc := range fixtures {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := spliceCapabilities([]byte(tc.content), reg)
+
+			if result.inserted {
+				t.Errorf("inserted: got true, want false")
+			}
+			if !result.present {
+				t.Errorf("present: got false, want true")
+			}
+			if len(result.notices) != 0 {
+				t.Errorf("notices: got %v, want none", result.notices)
+			}
+			if string(result.content) != tc.content {
+				t.Errorf("content changed: got:\n%s", result.content)
+			}
+		})
+	}
+}
+
+func TestSpliceCapabilities_AdvisoryNoticeForNonReviewPresence(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+	cases := []struct {
+		name       string
+		content    string
+		wantNotice string
+	}{
+		{
+			name:       "non-review capability",
+			content:    capabilitiesFixtureContentCapability,
+			wantNotice: ".uf/reviewer-capabilities.yaml: divisor-entropy present with capability: content; review dispatch may fail closed",
+		},
+		{
+			name:       "empty flow scopes",
+			content:    capabilitiesFixtureEmptyFlowScopes,
+			wantNotice: ".uf/reviewer-capabilities.yaml: divisor-entropy present with empty scopes; review dispatch may fail closed",
+		},
+		{
+			name:       "empty block scopes",
+			content:    capabilitiesFixtureEmptyBlockScopes,
+			wantNotice: ".uf/reviewer-capabilities.yaml: divisor-entropy present with empty scopes; review dispatch may fail closed",
+		},
+		{
+			name:       "missing scopes key",
+			content:    capabilitiesFixtureMissingScopes,
+			wantNotice: ".uf/reviewer-capabilities.yaml: divisor-entropy present with empty scopes; review dispatch may fail closed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := spliceCapabilities([]byte(tc.content), reg)
+
+			if result.inserted {
+				t.Errorf("inserted: got true, want false")
+			}
+			if !result.present {
+				t.Errorf("present: got false, want true")
+			}
+			if !slices.Equal(result.notices, []string{tc.wantNotice}) {
+				t.Errorf("notices: got %v, want [%s]", result.notices, tc.wantNotice)
+			}
+			if string(result.content) != tc.content {
+				t.Errorf("content changed: got:\n%s", result.content)
+			}
+		})
+	}
+}
+
+func TestSpliceCapabilities_NoticesWhenReviewersSectionAbsent(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+
+	result := spliceCapabilities([]byte(capabilitiesFixtureNoReviewers), reg)
+
+	if result.inserted {
+		t.Errorf("inserted: got true, want false")
+	}
+	if result.present {
+		t.Errorf("present: got true, want false")
+	}
+	want := []string{".uf/reviewer-capabilities.yaml: no top-level reviewers: section; entry not inserted"}
+	if !slices.Equal(result.notices, want) {
+		t.Errorf("notices: got %v, want %v", result.notices, want)
+	}
+	if string(result.content) != capabilitiesFixtureNoReviewers {
+		t.Errorf("content changed: got:\n%s", result.content)
+	}
+}
+
+func TestSpliceMatrix_InsertsItemInAllModeLists(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+
+	result := spliceMatrix([]byte(matrixFixtureMissing), reg)
+
+	if !result.inserted {
+		t.Errorf("inserted: got false, want true")
+	}
+	if result.present {
+		t.Errorf("present: got true, want false")
+	}
+	if len(result.notices) != 0 {
+		t.Errorf("notices: got %v, want none", result.notices)
+	}
+	if string(result.content) != matrixFixtureCanonical {
+		t.Errorf("content: got:\n%s\nwant:\n%s", result.content, matrixFixtureCanonical)
+	}
+}
+
+func TestSpliceMatrix_SkipsWhenAllListsPresent(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+	fixtures := []struct {
+		name    string
+		content string
+	}{
+		{"canonical items", matrixFixtureCanonical},
+		{"commented and quoted items", matrixFixtureCommentedAndQuotedItems},
+	}
+	for _, tc := range fixtures {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := spliceMatrix([]byte(tc.content), reg)
+
+			if result.inserted {
+				t.Errorf("inserted: got true, want false")
+			}
+			if !result.present {
+				t.Errorf("present: got false, want true")
+			}
+			if len(result.notices) != 0 {
+				t.Errorf("notices: got %v, want none", result.notices)
+			}
+			if string(result.content) != tc.content {
+				t.Errorf("content changed: got:\n%s", result.content)
+			}
+		})
+	}
+}
+
+func TestSpliceMatrix_PerListGranularity(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+
+	result := spliceMatrix([]byte(matrixFixturePartiallyRegistered), reg)
+
+	if !result.inserted {
+		t.Errorf("inserted: got false, want true (the lists missing the item are spliced)")
+	}
+	if result.present {
+		t.Errorf("present: got true, want false (three lists still gained the item)")
+	}
+	if len(result.notices) != 0 {
+		t.Errorf("notices: got %v, want none", result.notices)
+	}
+	if string(result.content) != matrixFixtureCanonical {
+		t.Errorf("content: got:\n%s\nwant:\n%s", result.content, matrixFixtureCanonical)
+	}
+}
+
+func TestSpliceMatrix_NoticesMissingModeList(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+
+	result := spliceMatrix([]byte(matrixFixtureNoTriage), reg)
+
+	if !result.inserted {
+		t.Errorf("inserted: got false, want true (remaining lists are spliced)")
+	}
+	if result.present {
+		t.Errorf("present: got true, want false")
+	}
+	wantNotices := []string{`.uf/review-matrix.yaml: advisor mode list "triage" absent; not created`}
+	if !slices.Equal(result.notices, wantNotices) {
+		t.Errorf("notices: got %v, want %v", result.notices, wantNotices)
+	}
+	inserted := 0
+	for _, line := range bytes.Split(result.content, []byte("\n")) {
+		if string(line) == "    - divisor-entropy" {
+			inserted++
+		}
+	}
+	if inserted != 3 {
+		t.Errorf("inserted items: got %d, want 3", inserted)
+	}
+	if bytes.Contains(result.content, []byte("  triage:")) {
+		t.Errorf("triage list was created; missing lists must not be created")
+	}
+}
+
+func TestSpliceMatrix_NoticesWhenNoModeLists(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+
+	result := spliceMatrix([]byte(matrixFixtureNoModeLists), reg)
+
+	if result.inserted {
+		t.Errorf("inserted: got true, want false")
+	}
+	if result.present {
+		t.Errorf("present: got true, want false")
+	}
+	want := []string{
+		`.uf/review-matrix.yaml: advisor mode list "code" absent; not created`,
+		`.uf/review-matrix.yaml: advisor mode list "spec" absent; not created`,
+		`.uf/review-matrix.yaml: advisor mode list "triage" absent; not created`,
+		`.uf/review-matrix.yaml: advisor mode list "feedback" absent; not created`,
+	}
+	if !slices.Equal(result.notices, want) {
+		t.Errorf("notices: got %v, want %v", result.notices, want)
+	}
+	if string(result.content) != matrixFixtureNoModeLists {
+		t.Errorf("content changed: got:\n%s", result.content)
+	}
+}

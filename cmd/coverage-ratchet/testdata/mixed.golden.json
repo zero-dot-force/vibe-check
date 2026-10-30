@@ -1,0 +1,35 @@
+{
+  "packages": [
+    {
+      "package": "cmd/coverage-ratchet",
+      "measured": 100,
+      "floor": null,
+      "status": "unregistered"
+    },
+    {
+      "package": "internal/coverratchet",
+      "measured": 40,
+      "floor": 80,
+      "status": "below-floor"
+    },
+    {
+      "package": "internal/gone",
+      "measured": null,
+      "floor": 50,
+      "status": "stale-floor"
+    },
+    {
+      "package": "metrics",
+      "measured": 60,
+      "floor": 60,
+      "status": "pass"
+    }
+  ],
+  "verdict": "fail",
+  "updated": false,
+  "provenance": {
+    "producer": "coverage-ratchet",
+    "version": "dev",
+    "generatedAt": "TIMESTAMP"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "floors": {
+    "internal/coverratchet": 80.0,
+    "internal/gone": 50.0,
+    "metrics": 60.0
+  }
+}

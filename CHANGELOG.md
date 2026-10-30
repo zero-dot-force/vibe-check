@@ -30,6 +30,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports that the file may be partially written and restorable from version
   control.
   Spec: `openspec/changes/init-registers-divisor-entropy/specs/init-uf-registration/spec.md`
+- Per-package coverage ratchet: `cmd/coverage-ratchet` (backed by the new
+  `internal/coverratchet` engine) parses a go test coverage profile, computes
+  statement-weighted per-package coverage truncated to one decimal, and
+  enforces the tighten-only floors committed in `coverage-floors.json` at the
+  repository root. Check mode exits 1 on any package below its floor, any
+  package with coverable statements missing from the baseline, or any stale
+  floor; `--update` raises floors to measured coverage and registers new
+  packages only at 80% or above (the entry bar), never lowering a floor —
+  loosening always requires a direct, human-reviewed baseline edit. The
+  default table and `--json` reports are deterministic, the JSON carrying a
+  provenance envelope (producer `coverage-ratchet`, version, RFC 3339 UTC
+  `generatedAt`). CI enforces the gate as a `Coverage ratchet` step
+  immediately after the test step, so no package's coverage can regress
+  without failing the build. Floors record each package's truncated
+  measured coverage, with two documented exceptions: `metrics` sits at
+  82.0 rather than its typical 82.7–82.9 measurement, because the
+  package's external-adapter subprocess tests vary run-to-run coverage
+  (roughly 82.1–82.9 under `-race`) and a floor at typical coverage would
+  fail the gate intermittently — a direct, documented edit of
+  `coverage-floors.json` (the one sanctioned path for lowering a floor),
+  with the stabilization work and the follow-up re-raise tracked in #71;
+  and the `cmd/coverage-ratchet` (87.2) and `internal/coverratchet` (97.0)
+  floors were re-recorded upward by direct reviewed edits after
+  review-round test additions raised their measured coverage — equivalent
+  to `--update` for those packages alone, since a blanket update would
+  also have raised `metrics` past its 82.0 accommodation.
+  Spec: `openspec/changes/ci-coverage-ratchet-floors/specs/ci-coverage-ratchet/spec.md`
 
 ## [0.3.0] - 2026-10-28
 

@@ -1,4 +1,4 @@
-# CI pipeline for vibe-check: build, test, vet, and lint.
+# CI pipeline for vibe-check: build, test, coverage-floor ratchet, vet, and lint.
 # Runs on pushes to main and pull requests targeting main.
 # The structural-gate-dogfood job (PRs only) smoke-tests the reusable
 # structural gate consumer path; the authoritative gate is structural-gate.yml.
@@ -35,6 +35,9 @@ jobs:
 
       - name: Test
         run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Coverage ratchet
+        run: go run ./cmd/coverage-ratchet --profile coverage.out --floors coverage-floors.json
 
   lint:
     runs-on: ubuntu-latest

@@ -262,6 +262,16 @@ go run ./cmd/vibe-check diff base.json pr.json             # --json for machine 
 # Test (with race detection)
 go test -race -count=1 ./...
 
+# Enforce per-package coverage floors from coverage.out (generate the profile
+# with go test -race -count=1 -coverprofile=coverage.out ./...; CI runs this
+# step right after tests). Floors are tighten-only: --update raises floors to
+# measured coverage and registers new packages at >= 80%; lowering a floor
+# requires a direct, reviewed edit of coverage-floors.json. The registration
+# universe is the coverage profile's package set (design D4), so a package
+# with no test files is invisible to registration checks — give every new
+# package at least one test.
+go run ./cmd/coverage-ratchet --profile coverage.out --floors coverage-floors.json
+
 # Vet
 go vet ./...
 
@@ -273,8 +283,9 @@ golangci-lint run ./...
 
 ```text
 .goreleaser.yaml    # GoReleaser configuration for cross-platform binary releases
+coverage-floors.json # Committed per-package coverage floor baseline (tighten-only; enforced by the CI Coverage ratchet step)
 .github/workflows/  # CI and release workflows
-  ci.yml            # Build, test, vet, and lint on PR and push; structural-gate-dogfood job dogfoods the reusable gate on PRs
+  ci.yml            # Build, test, vet, lint, and coverage-floor ratchet on PR and push; structural-gate-dogfood job dogfoods the reusable gate on PRs
   release.yml       # Release pipeline (workflow_dispatch tag → GitHub Release)
   reusable_structural_gate.yml # Reusable workflow_call structural gate consuming the released binary
   structural-gate.yml # Entropy-regression gate on pull_request
@@ -292,6 +303,12 @@ cmd/vibe-check/     # CLI entry point (Layer 3)
   testdata/         # Golden-file fixtures for the report and diff subcommands
     report/         # ModuleGraph snapshots with summary/detailed/JSON goldens
     diff/           # Base/PR snapshot pairs with markdown and table goldens
+cmd/coverage-ratchet/ # Per-package coverage floor gate CLI (tighten-only ratchet)
+  main.go           # Binary entry point with ldflags version and exit-code mapping
+  ratchet.go        # Cobra root command and RunRatchet gate pipeline
+  report.go         # Deterministic table and JSON report renderers
+  provenance.go     # Provenance envelope (producer/version/generatedAt)
+  testdata/         # Golden-file fixtures for the table and JSON reports
 internal/goadapter/ # Go language adapter (Layer 2)
   adapter.go        # Adapter struct implementing metrics.Adapter
   resolve.go        # Package loading via go/packages
@@ -316,6 +333,14 @@ internal/scaffold/  # Embedded asset deployment + UF policy registration for `vi
     vibe-check-reporter.md  # Interactive metrics reporter agent (summary/detailed/trending)
   assets/commands/  # Embedded slash command assets
     vibe-check.md   # /vibe-check command (delegates to vibe-check-reporter agent)
+internal/coverratchet/ # Per-package coverage floor engine (tighten-only ratchet)
+  doc.go            # Package-level GoDoc
+  profile.go        # Coverage profile loading and module-relative package keys
+  aggregate.go      # Statement-weighted per-package coverage (one-decimal truncation)
+  baseline.go       # coverage-floors.json read/write (atomic, deterministic, sorted)
+  evaluate.go       # Check-mode evaluation (pass/below-floor/unregistered/stale-floor)
+  update.go         # Tighten-only update (raise floors, >= 80% entry bar)
+  testdata/         # Test fixtures (multipackage, foreign, atomic profiles)
 metrics/            # Universal coupling metrics model (Layer 1)
   adapter.go        # Adapter interface and Capability type
   compute.go        # Metric computation functions

@@ -1,0 +1,4 @@
+mode: set
+github.com/zero-dot-force/vibe-check/internal/scaffold/scaffold.go:15.3,19.4 4 1
+github.com/zero-dot-force/vibe-check/metrics/metrics.go:10.2,12.3 2 1
+github.com/zero-dot-force/vibe-check/metrics/zone.go:20.1,25.2 3 0

@@ -1,0 +1,6 @@
+package                         measured    floor  status
+cmd/coverage-ratchet              100.0%        -  unregistered
+internal/coverratchet              40.0%    80.0%  below-floor
+internal/gone                          -    50.0%  stale-floor
+metrics                            60.0%    60.0%  pass
+summary: 4 packages, 1 pass, 1 below-floor, 1 unregistered, 1 stale-floor

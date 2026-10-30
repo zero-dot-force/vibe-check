@@ -1,0 +1,4 @@
+mode: atomic
+github.com/zero-dot-force/vibe-check/metrics/covered.go:10.2,12.3 2 7
+github.com/zero-dot-force/vibe-check/metrics/mixed.go:20.1,25.2 3 0
+github.com/zero-dot-force/vibe-check/metrics/mixed.go:30.1,32.2 2 4

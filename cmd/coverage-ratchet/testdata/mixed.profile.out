@@ -1,0 +1,6 @@
+mode: set
+github.com/zero-dot-force/vibe-check/cmd/coverage-ratchet/ratchet.go:5.2,7.1 2 1
+github.com/zero-dot-force/vibe-check/internal/coverratchet/profile.go:10.20,12.3 2 1
+github.com/zero-dot-force/vibe-check/internal/coverratchet/profile.go:15.10,17.3 3 0
+github.com/zero-dot-force/vibe-check/metrics/values.go:8.2,10.1 3 1
+github.com/zero-dot-force/vibe-check/metrics/values.go:12.2,14.1 2 0

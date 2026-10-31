@@ -1434,6 +1434,157 @@ func TestDuplicationFlag_Validation(t *testing.T) {
 	})
 }
 
+// --- duplicationPercent unit tests (pure function, no integration) ---
+
+func TestDuplicationPercent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		m    metrics.ModuleResult
+		want float64
+	}{
+		{
+			name: "no duplications",
+			m:    metrics.ModuleResult{TotalLines: 100},
+			want: 0.0,
+		},
+		{
+			name: "zero total lines",
+			m: metrics.ModuleResult{
+				Duplications: []metrics.Duplication{{
+					Blocks: []metrics.DuplicateBlock{{File: "a.go", StartLine: 1, EndLine: 5, LineCount: 5}},
+				}},
+			},
+			want: 0.0,
+		},
+		{
+			name: "counts each unique block once",
+			m: metrics.ModuleResult{
+				TotalLines: 200,
+				Duplications: []metrics.Duplication{
+					{Blocks: []metrics.DuplicateBlock{{File: "a.go", StartLine: 1, EndLine: 5, LineCount: 5}}},
+					{Blocks: []metrics.DuplicateBlock{{File: "b.go", StartLine: 10, EndLine: 22, LineCount: 10}}},
+				},
+			},
+			want: 7.5,
+		},
+		{
+			name: "identical block in two duplications counted once",
+			m: metrics.ModuleResult{
+				TotalLines: 100,
+				Duplications: []metrics.Duplication{
+					{Blocks: []metrics.DuplicateBlock{{File: "a.go", StartLine: 1, EndLine: 5, LineCount: 5}}},
+					{Blocks: []metrics.DuplicateBlock{{File: "a.go", StartLine: 1, EndLine: 5, LineCount: 5}}},
+				},
+			},
+			want: 5.0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := duplicationPercent(tc.m); got != tc.want {
+				t.Errorf("duplicationPercent: got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// lcomDuplicationModule creates a temp Go module whose single package
+// combines LCOM4 = 2 (Processor.Collect and Filter.Keep are methods on
+// different types touching disjoint fields) with structurally identical
+// method bodies, so both --max-lcom and --max-duplication have a real
+// violation to report at their strictest settings.
+func lcomDuplicationModule(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	goMod := "module test\n\ngo 1.25\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	src := `package test
+
+type Processor struct {
+	items []string
+}
+
+func (p *Processor) Collect() []string {
+	var result []string
+	for _, item := range p.items {
+		if len(item) > 0 {
+			result = append(result, item)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+type Filter struct {
+	values []string
+}
+
+func (f *Filter) Keep() []string {
+	var output []string
+	for _, val := range f.values {
+		if len(val) > 0 {
+			output = append(output, val)
+		}
+	}
+	if len(output) == 0 {
+		return nil
+	}
+	return output
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	return dir
+}
+
+// TestAnalyzeCommand_LcomDuplicationFlagWiring drives the analyze subcommand
+// through cobra with --max-lcom and --max-duplication set together, covering
+// both Flags().Changed()→pointer conversions. Both thresholds must reach the
+// violation check for real: the fixture reports LCOM 2 and duplicated lines,
+// so the strictest thresholds produce both violation kinds and exit code 1.
+func TestAnalyzeCommand_LcomDuplicationFlagWiring(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	cmd := rootCmd()
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"analyze", "--max-lcom", "1", "--max-duplication", "0", lcomDuplicationModule(t)})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute: expected error, got nil")
+	}
+	var ece *exitCodeError
+	if !errors.As(err, &ece) {
+		t.Fatalf("Execute: error is not *exitCodeError: %T (%v)", err, err)
+	}
+	if ece.code != 1 {
+		t.Errorf("exit code: got %d, want 1", ece.code)
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, "lcom") {
+		t.Errorf("stderr does not contain an lcom violation: %s", stderr)
+	}
+	if !strings.Contains(stderr, "duplication") {
+		t.Errorf("stderr does not contain a duplication violation: %s", stderr)
+	}
+}
+
 // --- Phase 1: --store flag tests ---
 
 func TestResolveGitMetadata_InGitRepo(t *testing.T) {

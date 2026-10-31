@@ -302,8 +302,7 @@ func methodComponents(methods []cohesionMethod) int {
 	for i := range parent {
 		parent[i] = i
 	}
-	var find func(int) int
-	find = func(x int) int {
+	find := func(x int) int {
 		for parent[x] != x {
 			x = parent[x]
 		}
@@ -335,12 +334,13 @@ func methodComponents(methods []cohesionMethod) int {
 func lineIndent(line string) int {
 	n := 0
 	for _, r := range line {
-		if r == ' ' {
+		switch r {
+		case ' ':
 			n++
-		} else if r == '\t' {
+		case '\t':
 			n += 4
-		} else {
-			break
+		default:
+			return n
 		}
 	}
 	return n

@@ -68,16 +68,6 @@ func absentBinaryError(lookErr error) error {
 	)
 }
 
-// checkRipwirePin resolves the ripwire binary on PATH and validates its
-// reported version and commit against the pinned pair. It runs at Analyze
-// time (never at construction) so an adapter instance never captures stale
-// PATH state. The --version subprocess runs through the shared runner with
-// a sanitized environment (no host credentials) and a tight output bound.
-func checkRipwirePin(ctx context.Context) error {
-	_, _, err := validatedRipwire(ctx)
-	return err
-}
-
 // validatedRipwire resolves the ripwire binary on PATH, validates its
 // reported version and commit against the pinned pair, and returns both
 // the binary path and the validated version info. Analyze uses the

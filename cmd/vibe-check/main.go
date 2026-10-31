@@ -1,13 +1,13 @@
 // Package main provides the vibe-check CLI tool for computing design quality
-// and architectural metrics for Go codebases.
+// and architectural metrics for Go, Python, and TypeScript codebases.
 //
 // Usage:
 //
-//	vibe-check analyze [path]    Analyze Go packages and compute coupling metrics
+//	vibe-check analyze [path]    Analyze a module and compute coupling metrics
 //	vibe-check --version         Print version information
 //
 // The analyze command produces JSON output conforming to the ModuleGraph schema
-// (version 1.2) and supports CI gate flags for threshold enforcement.
+// (version 1.3) and supports CI gate flags for threshold enforcement.
 package main
 
 import (

@@ -11,10 +11,11 @@ import (
 func rootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "vibe-check",
-		Short: "Design quality and architectural metrics for Go codebases",
+		Short: "Design quality and architectural metrics for codebases",
 		Long: `vibe-check computes package-level coupling metrics (afferent/efferent coupling,
 instability, abstractness, distance from main sequence), cohesion analysis,
-and circular dependency detection for Go codebases.`,
+and circular dependency detection for Go, Python, and TypeScript codebases
+(Go natively; Python and TypeScript via the ripwire adapter).`,
 		Version: versionString(),
 	}
 

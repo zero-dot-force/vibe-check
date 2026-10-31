@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional multi-language analysis: `vibe-check analyze` now detects the
+  project language (`go.mod` / `pyproject.toml` / `setup.py` / `setup.cfg` /
+  `tsconfig.json` markers, with a `.py` vs `.ts`/`.tsx` census fallback that
+  defaults to Go) and routes Python and TypeScript projects to a new
+  ripwire-backed adapter (`internal/ripwireadapter`). Coupling data comes
+  from a pinned external `ripwire` 0.6.9 (commit `bedc0cd`) binary —
+  resolved on `PATH` and validated fail-closed at analyze time —
+  hybridized with vibe-check's own light language parse for Python
+  abstractness (ABC / ABCMeta / Protocol class detection) and LCOM4
+  (connected components over methods sharing `self.X` / `this.X` fields)
+  in both languages. Modules map at directory grain; cycles are derived
+  by the adapter's own Tarjan SCC over directory edges and corroborated
+  against ripwire's capped listing; duplication is reported as
+  unsupported (zero-valued plus a warning). Python and TypeScript graphs
+  carry spike-measured error-budget and per-stage accuracy warnings and
+  are `partial` whenever any warning exists. Provenance gains optional
+  `sourceTool` / `sourceToolVersion` / `sourceToolCommit` fields recording
+  the validated instrument. Go analysis is unchanged — byte-identical
+  output through the new adapter registry, pinned by a regression golden.
+  Without ripwire on `PATH`, Python and TypeScript analysis exits `2`
+  with install guidance; Go analysis needs no ripwire.
 - `vibe-check init` now registers the `divisor-entropy` reviewer into the
   project's Unbound Force policy files after deploying assets. It inserts a
   canonical `divisor-entropy` entry under `reviewers:` in

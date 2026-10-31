@@ -69,6 +69,17 @@ type ProvenanceInput struct {
 	// Branch is the git branch name at the time of analysis. Empty when not in
 	// a git repository, on a detached HEAD, or when --store is not set.
 	Branch string `json:"branch,omitempty"`
+	// SourceTool names the external analysis tool the adapter sourced its
+	// data from (e.g., "ripwire"). Empty for adapters that compute every
+	// metric natively.
+	SourceTool string `json:"sourceTool,omitempty"`
+	// SourceToolVersion is the external source tool's validated version
+	// (e.g., "0.6.9"). Empty when SourceTool is empty.
+	SourceToolVersion string `json:"sourceToolVersion,omitempty"`
+	// SourceToolCommit is the external source tool's validated commit
+	// identifier (e.g., "bedc0cdcf"). Empty when SourceTool is empty or the
+	// tool reports no commit.
+	SourceToolCommit string `json:"sourceToolCommit,omitempty"`
 }
 
 // ModuleResult combines Module identity data with computed metrics and zone

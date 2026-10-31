@@ -1,0 +1,19 @@
+# ripwire --arch rules file for the vibe-check ripwireadapter fixture captures.
+#
+# Grammar (bundled ripwire 0.6.9, skills/ripwire-layers/SKILL.md):
+#   layer NAME = substr    assign files whose ROOT-RELATIVE path contains substr
+#   deny FROM -> TO        forbid dependency edges from layer FROM to layer TO
+#   allow FROM -> TO       permit an otherwise-denied edge
+#   #                      comment
+#
+# This file defines layers only, with no deny rules: the fixture captures want
+# the Martin Ca/Ce/I <metrics> table that --arch emits, not enforcement, so no
+# rule can fire a violation (--arch exits 2 on a violation; these captures
+# expect exit 0). Layer substrings match root-relative paths, so the file means
+# the same thing in every checkout. Both fixtures' cycle directories are
+# covered: Python spells them cycle_a/cycle_b, TypeScript cycle-a/cycle-b.
+layer models = models
+layer python_cycle_a = cycle_a
+layer python_cycle_b = cycle_b
+layer ts_cycle_a = cycle-a
+layer ts_cycle_b = cycle-b

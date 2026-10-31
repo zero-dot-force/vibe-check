@@ -741,3 +741,91 @@ func TestValidate_InvalidInputs(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_ProvenanceSourceToolFields(t *testing.T) {
+	t.Parallel()
+
+	base := func() ModuleGraph {
+		return ModuleGraph{
+			SchemaVersion: "1.2",
+			Language:      "python",
+			Modules: []ModuleResult{
+				{
+					Module: Module{
+						Path: "fixturepy",
+						Name: "fixturepy",
+						Ca:   0,
+						Ce:   1,
+					},
+					Zone: ZoneMainSequence,
+				},
+			},
+			Cycles:   []Cycle{},
+			Warnings: []Warning{},
+			Status:   StatusComplete,
+		}
+	}
+
+	withTool := base()
+	withTool.Provenance = &Provenance{
+		Producer:    "vibe-check",
+		Version:     "0.1.0",
+		GeneratedAt: "2026-10-30T00:00:00Z",
+		Input: ProvenanceInput{
+			Path:              ".",
+			ModulePath:        "fixturepy",
+			SourceTool:        "ripwire",
+			SourceToolVersion: "0.6.9",
+			SourceToolCommit:  "bedc0cdcf",
+		},
+	}
+
+	data, err := json.Marshal(withTool)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	for _, key := range []string{`"sourceTool":"ripwire"`, `"sourceToolVersion":"0.6.9"`, `"sourceToolCommit":"bedc0cdcf"`} {
+		if !strings.Contains(string(data), key) {
+			t.Errorf("marshaled provenance missing %s: %s", key, data)
+		}
+	}
+	if err := Validate(data); err != nil {
+		t.Fatalf("Validate with sourceTool fields present: %v", err)
+	}
+
+	var decoded ModuleGraph
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	in := decoded.Provenance.Input
+	if in.SourceTool != "ripwire" || in.SourceToolVersion != "0.6.9" || in.SourceToolCommit != "bedc0cdcf" {
+		t.Errorf("sourceTool fields did not round-trip: %+v", in)
+	}
+
+	// Absent case: omitempty drops the keys entirely and validation still
+	// passes.
+	withoutTool := base()
+	withoutTool.Provenance = &Provenance{
+		Producer: "vibe-check",
+		Input:    ProvenanceInput{Path: ".", ModulePath: "fixturepy"},
+	}
+	data, err = json.Marshal(withoutTool)
+	if err != nil {
+		t.Fatalf("json.Marshal (absent case) failed: %v", err)
+	}
+	for _, key := range []string{"sourceTool", "sourceToolVersion", "sourceToolCommit"} {
+		if strings.Contains(string(data), key) {
+			t.Errorf("marshaled provenance unexpectedly contains %q: %s", key, data)
+		}
+	}
+	if err := Validate(data); err != nil {
+		t.Fatalf("Validate with sourceTool fields absent: %v", err)
+	}
+	var decodedAbsent ModuleGraph
+	if err := json.Unmarshal(data, &decodedAbsent); err != nil {
+		t.Fatalf("json.Unmarshal (absent case) failed: %v", err)
+	}
+	if in := decodedAbsent.Provenance.Input; in.SourceTool != "" || in.SourceToolVersion != "" || in.SourceToolCommit != "" {
+		t.Errorf("absent case did not decode to empty strings: %+v", in)
+	}
+}

@@ -2,10 +2,11 @@
   "version": 1,
   "floors": {
     "cmd/coverage-ratchet": 87.2,
-    "cmd/vibe-check": 92.7,
+    "cmd/vibe-check": 93.1,
     "internal/coverratchet": 97,
     "internal/goadapter": 89.2,
-    "internal/scaffold": 87.8,
+    "internal/ripwireadapter": 91.6,
+    "internal/scaffold": 91.6,
     "metrics": 82.0,
     "metrics/report": 99.4
   }

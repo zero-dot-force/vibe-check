@@ -118,7 +118,7 @@ func parseRipwireVersion(output []byte) (ripwireVersionInfo, error) {
 	fields := strings.Fields(string(output))
 	if len(fields) < 2 {
 		return ripwireVersionInfo{}, fmt.Errorf(
-			"%w: %s", ErrRipwireVersionUnparseable, previewVersionOutput(output),
+			"%w: %s", ErrRipwireVersionUnparseable, previewOutput(string(output), maxVersionPreviewBytes),
 		)
 	}
 	info := ripwireVersionInfo{version: fields[1]}
@@ -132,23 +132,8 @@ func parseRipwireVersion(output []byte) (ripwireVersionInfo, error) {
 	}
 	if info.commit == "" {
 		return ripwireVersionInfo{}, fmt.Errorf(
-			"%w: no built_from= commit in %s", ErrRipwireVersionUnparseable, previewVersionOutput(output),
+			"%w: no built_from= commit in %s", ErrRipwireVersionUnparseable, previewOutput(string(output), maxVersionPreviewBytes),
 		)
 	}
 	return info, nil
-}
-
-// previewVersionOutput renders a bounded preview of unparseable version
-// output for error messages, so a hostile or corrupt binary cannot flood
-// the error (and any log it lands in) with arbitrary bytes.
-func previewVersionOutput(output []byte) string {
-	const maxPreview = 120
-	s := strings.TrimSpace(string(output))
-	if len(s) > maxPreview {
-		s = s[:maxPreview] + "..."
-	}
-	if s == "" {
-		s = "<empty>"
-	}
-	return fmt.Sprintf("%q", s)
 }

@@ -6,17 +6,20 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/zero-dot-force/vibe-check/metrics"
 )
 
-// defaultMaxOutputBytes bounds the combined stdout the runner accepts from
-// a single ripwire invocation. The bound is sized for the largest expected
-// verb output (--export=cc.json on a large repository) while keeping a
-// misbehaving binary from exhausting analyzer memory. Output at or below
-// the bound is returned verbatim; anything larger is an error, never a
-// silent truncation.
+// defaultMaxOutputBytes bounds how much output the runner accepts from a
+// single ripwire invocation on EACH stream: stdout and stderr are captured
+// through independent bounded readers, so one invocation can deliver at
+// most twice this bound. It is sized for the largest expected verb output
+// (--export=cc.json on a large repository) while keeping a misbehaving
+// binary from exhausting analyzer memory. Output at or below the bound is
+// returned verbatim; anything larger is an error, never a silent
+// truncation.
 const defaultMaxOutputBytes = 16 << 20 // 16 MiB
 
 // errOutputOversized is returned (wrapped) when a ripwire invocation
@@ -30,8 +33,9 @@ var errOutputOversized = errors.New("ripwire output exceeds capture bound")
 type ripwireRunner struct {
 	// binary is the PATH-resolved ripwire executable.
 	binary string
-	// maxOutputBytes is the stdout capture bound; it exists as a field so
-	// tests can shrink it. Production callers use the package default.
+	// maxOutputBytes is the per-stream capture bound applied to both the
+	// stdout and the stderr pipe; it exists as a field so tests can shrink
+	// it. Production callers use the package default.
 	maxOutputBytes int64
 }
 
@@ -56,8 +60,8 @@ func ripwireEnv() []string {
 //     with the subprocess terminated (never orphaned);
 //   - a nonzero exit returns an error wrapping the exit error plus a
 //     bounded stderr preview;
-//   - stdout exceeding the capture bound returns an error naming the
-//     bound — output is never truncated.
+//   - either stream (stdout or stderr) exceeding the capture bound returns
+//     an error naming the bound and the stream — output is never truncated.
 func (r *ripwireRunner) run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	// Fast path: refuse to start at all when the context is already dead.
 	if err := ctx.Err(); err != nil {
@@ -141,21 +145,40 @@ func (r *ripwireRunner) run(ctx context.Context, dir string, args ...string) ([]
 	}
 	if waitErr != nil {
 		return nil, fmt.Errorf("ripwire runner: %s %v: %w; stderr: %s",
-			r.binary, args, waitErr, previewBytes(stderr))
+			r.binary, args, waitErr, previewOutput(string(stderr), maxStderrPreviewBytes))
 	}
 	return stdout, nil
 }
 
-// previewBytes renders a bounded, quoted preview of subprocess stderr for
-// error messages.
-func previewBytes(b []byte) string {
-	const maxPreview = 512
-	s := string(b)
-	if len(s) > maxPreview {
-		s = s[:maxPreview] + "..."
+// maxStderrPreviewBytes bounds the preview of multi-line stderr from a
+// failed ripwire run: larger than the version preview because stderr
+// diagnostics span several lines, still small enough that a hostile binary
+// cannot flood a log through a failed run.
+const maxStderrPreviewBytes = 512
+
+// maxVersionPreviewBytes bounds the preview of a single-line --version
+// payload: enough to name a recognizable prefix, small enough to keep
+// unparseable-version errors readable.
+const maxVersionPreviewBytes = 120
+
+// previewOutput renders a bounded, quoted preview of subprocess output for
+// error messages. It exists so a hostile or broken binary cannot flood the
+// error (and any log it lands in) with arbitrary bytes: the preview is
+// trimmed of surrounding whitespace, capped at limit bytes (a trailing
+// "..." marks the cut), quoted with %q so control bytes render visibly,
+// and an empty or whitespace-only result renders as "<empty>". The byte
+// cap can split a multi-byte UTF-8 rune; %q renders the dangling byte as
+// an escape sequence, so the split is accepted rather than paying for rune
+// alignment on a diagnostic path. Both ripwire subprocess consumers — the
+// --version parser and the failed-run stderr diagnostic — share this
+// helper so the bounding policy lives in exactly one place.
+func previewOutput(s string, limit int) string {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		trimmed = "<empty>"
 	}
-	if s == "" {
-		s = "<empty>"
+	if len(trimmed) > limit {
+		trimmed = trimmed[:limit] + "..."
 	}
-	return fmt.Sprintf("%q", s)
+	return fmt.Sprintf("%q", trimmed)
 }

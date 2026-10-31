@@ -1,6 +1,7 @@
 package ripwireadapter
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -69,9 +70,11 @@ func deriveCycles(mapping moduleMapping, deps depsGraph) ([]metrics.Cycle, []met
 	confirmed := corroborateCycles(cycles, deps)
 	warning := metrics.Warning{
 		Code: warningCycleApproximation,
-		Message: "cycles are the adapter's own directory-grain SCC derivation; " +
-			"ripwire's capped file-level listing (20 SCCs × 12 members) " +
-			corroborationVerdict(confirmed),
+		Message: fmt.Sprintf(
+			"cycles are the adapter's own directory-grain SCC derivation; "+
+				"ripwire's capped file-level listing (%d SCCs × %d members) ",
+			ripwireCycleMaxSCCs, ripwireCycleMaxMembers,
+		) + corroborationVerdict(confirmed),
 	}
 	return cycles, []metrics.Warning{warning}
 }

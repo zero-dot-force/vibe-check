@@ -146,20 +146,22 @@ func parseDepsOutput(data []byte) (depsGraph, error) {
 	if err := xml.Unmarshal(data, &root); err != nil {
 		return depsGraph{}, fmt.Errorf("parse deps output: %w", err)
 	}
-	if err := requireInts(map[string]*int{
-		"files": root.Files, "shown": root.Shown, "capped": root.Capped,
-		"total": root.Total, "has_more": root.HasMore,
-		"next_offset": root.NextOffset, "offset": root.Offset, "limit": root.Limit,
-	}); err != nil {
+	if err := requireInts(
+		intAttr{"files", root.Files}, intAttr{"shown", root.Shown},
+		intAttr{"capped", root.Capped}, intAttr{"total", root.Total},
+		intAttr{"has_more", root.HasMore}, intAttr{"next_offset", root.NextOffset},
+		intAttr{"offset", root.Offset}, intAttr{"limit", root.Limit},
+	); err != nil {
 		return depsGraph{}, fmt.Errorf("parse deps output: <deps> %w", err)
 	}
 	if root.Root == nil {
 		return depsGraph{}, fmt.Errorf("parse deps output: <deps> missing root attribute")
 	}
 	h := root.Health
-	if err := requireInts(map[string]*int{
-		"health files": h.Files, "health dep_files": h.DepFiles, "health ccd": h.CCD,
-	}); err != nil {
+	if err := requireInts(
+		intAttr{"health files", h.Files}, intAttr{"health dep_files", h.DepFiles},
+		intAttr{"health ccd", h.CCD},
+	); err != nil {
 		return depsGraph{}, fmt.Errorf("parse deps output: %w", err)
 	}
 	if h.ACD == nil || h.NCCD == nil || h.Shape == nil || h.DepLangs == nil {
@@ -212,9 +214,10 @@ func parseDepsOutput(data []byte) (depsGraph, error) {
 		if f.Path == nil {
 			return depsGraph{}, fmt.Errorf("parse deps output: <f> row missing p attribute")
 		}
-		if err := requireInts(map[string]*int{
-			"includes": f.Includes, "afferent": f.Afferent, "transitive": f.Transitive,
-		}); err != nil {
+		if err := requireInts(
+			intAttr{"includes", f.Includes}, intAttr{"afferent", f.Afferent},
+			intAttr{"transitive", f.Transitive},
+		); err != nil {
 			return depsGraph{}, fmt.Errorf("parse deps output: <f> %q %w", *f.Path, err)
 		}
 		if f.Instability == nil {
@@ -241,11 +244,20 @@ func parseDepsOutput(data []byte) (depsGraph, error) {
 	return graph, nil
 }
 
-// requireInts fails closed naming the first nil pointer among attrs.
-func requireInts(attrs map[string]*int) error {
-	for label, v := range attrs {
-		if v == nil {
-			return fmt.Errorf("missing %s attribute", label)
+// intAttr pairs a wire-attribute label with its parsed value so requireInts
+// can report nil attributes in a deterministic, declaration-defined order.
+type intAttr struct {
+	label string
+	value *int
+}
+
+// requireInts fails closed naming the first nil pointer among attrs. The
+// ordered pairs keep the error deterministic: map iteration would pick an
+// arbitrary nil among several missing attributes.
+func requireInts(attrs ...intAttr) error {
+	for _, attr := range attrs {
+		if attr.value == nil {
+			return fmt.Errorf("missing %s attribute", attr.label)
 		}
 	}
 	return nil

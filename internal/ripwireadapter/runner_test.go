@@ -1,8 +1,10 @@
 package ripwireadapter
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +38,37 @@ func installProbeScript(t *testing.T) {
 		t.Fatalf("installProbeScript: chmod %s: %v", bin, err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestPreviewOutput pins the shared preview helper's contract: bounded
+// output (cap bytes plus a trailing "..."), %q quoting, the "<empty>"
+// fallback, the whitespace-trim policy, and the accepted UTF-8 rune split
+// at the cap. Both the --version parser and the failed-run stderr
+// diagnostic render through this helper, so the contract lives here once.
+func TestPreviewOutput(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		input string
+		limit int
+		want  string
+	}{
+		{name: "short input passes through quoted", input: "unknown flag", limit: maxStderrPreviewBytes, want: `"unknown flag"`},
+		{name: "input over the cap renders cap bytes then ellipsis", input: strings.Repeat("a", 200), limit: maxVersionPreviewBytes, want: `"` + strings.Repeat("a", maxVersionPreviewBytes) + `..."`},
+		{name: "empty input renders the empty placeholder", input: "", limit: maxStderrPreviewBytes, want: `"<empty>"`},
+		{name: "whitespace-only input renders the empty placeholder", input: " \n\t ", limit: maxStderrPreviewBytes, want: `"<empty>"`},
+		{name: "surrounding whitespace is trimmed before quoting", input: "  ok  ", limit: maxStderrPreviewBytes, want: `"ok"`},
+		{name: "cap may split a multi-byte rune, rendered as an escape", input: "abécd", limit: 3, want: "\"ab\\xc3...\""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := previewOutput(tc.input, tc.limit); got != tc.want {
+				t.Errorf("previewOutput(%q, %d) = %s, want %s", tc.input, tc.limit, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestRunner_EnvironmentAndWorkingDirectory(t *testing.T) {
@@ -112,27 +145,82 @@ func TestRunner_CancelledContext(t *testing.T) {
 	}
 }
 
+// installFloodScript installs a probe executable named ripwire on PATH that
+// writes blob to the named stream ("stdout" or "stderr") and nothing to the
+// other stream, so the runner's oversized-capture error can be driven per
+// stream. The blob is expected to exceed the OS pipe buffer, which exercises
+// the concurrent drain: the first bounded reader to cross the bound kills the
+// process so the sibling reader unblocks.
+func installFloodScript(t *testing.T, stream string, blob []byte) {
+	t.Helper()
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "ripwire")
+	blobFile := filepath.Join(dir, "blob")
+	if err := os.WriteFile(blobFile, blob, 0o644); err != nil {
+		t.Fatalf("installFloodScript: write %s: %v", blobFile, err)
+	}
+	redirect := ">&1"
+	if stream == "stderr" {
+		redirect = ">&2"
+	}
+	script := "#!/bin/sh\ncat \"" + blobFile + "\" " + redirect + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("installFloodScript: write %s: %v", bin, err)
+	}
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatalf("installFloodScript: chmod %s: %v", bin, err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestRunner_OversizedOutput pins the oversized-capture error for BOTH
+// streams: the error wraps errOutputOversized, names the crossed bound
+// ("more than N bytes"), names the stream that crossed it ("bytes of
+// stdout" / "bytes of stderr"), and the stdout capture is nil rather than
+// truncated. The label assertion also pins the label-selection expression
+// against a stream-swap regression.
 func TestRunner_OversizedOutput(t *testing.T) {
 	// Not parallel: installs PATH state.
-	installFakeRipwireWrapper(t, filepath.Join("testdata", "recorded", "python"), "valid")
+	const bound = 8
+	// The blob exceeds the OS pipe buffer, so the writer blocks until the
+	// bounded reader crosses the bound and kills the process.
+	blob := bytes.Repeat([]byte("x"), 128<<10)
 
-	bin, err := exec.LookPath("ripwire")
-	if err != nil {
-		t.Fatalf("fake not on PATH: %v", err)
+	cases := []struct {
+		name      string
+		stream    string
+		wantLabel string
+	}{
+		{name: "stdout crossing the bound", stream: "stdout", wantLabel: "bytes of stdout"},
+		{name: "stderr crossing the bound", stream: "stderr", wantLabel: "bytes of stderr"},
 	}
-	// Shrink the bound below the 91-byte version line: the field exists
-	// for exactly this test.
-	runner := &ripwireRunner{binary: bin, maxOutputBytes: 8}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installFloodScript(t, tc.stream, blob)
 
-	stdout, err := runner.run(t.Context(), ".", "--version")
-	if stdout != nil {
-		t.Fatalf("oversized output: got stdout %d bytes, want nil (never truncated)", len(stdout))
-	}
-	if !errors.Is(err, errOutputOversized) {
-		t.Fatalf("oversized output: got error %v, want errOutputOversized", err)
-	}
-	if !strings.Contains(err.Error(), "8") {
-		t.Errorf("oversized output: error %q does not name the bound", err)
+			bin, err := exec.LookPath("ripwire")
+			if err != nil {
+				t.Fatalf("flood script not on PATH: %v", err)
+			}
+			// Shrink the bound below the blob size: the field exists for
+			// exactly this test.
+			runner := &ripwireRunner{binary: bin, maxOutputBytes: bound}
+
+			stdout, err := runner.run(t.Context(), ".")
+			if stdout != nil {
+				t.Fatalf("oversized output: got stdout %d bytes, want nil (never truncated)", len(stdout))
+			}
+			if !errors.Is(err, errOutputOversized) {
+				t.Fatalf("oversized output: got error %v, want errOutputOversized", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantLabel) {
+				t.Errorf("oversized output: error %q does not name %q", err, tc.wantLabel)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("more than %d bytes", bound)) {
+				t.Errorf("oversized output: error %q does not name the bound", err)
+			}
+		})
 	}
 }
 

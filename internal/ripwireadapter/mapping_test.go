@@ -3,6 +3,7 @@ package ripwireadapter
 import (
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/zero-dot-force/vibe-check/metrics"
@@ -205,9 +206,55 @@ func TestMapToModules_AmbiguityRate(t *testing.T) {
 		t.Fatalf("mapToModules: %v", err)
 	}
 	if len(mapping.Edges) != 0 {
-		t.Errorf("edges: got %v, want none (unresolved dropped)", mapping.Edges)
+		t.Fatalf("got %d resolved edges, want 0 (the only include target is ambiguous)", len(mapping.Edges))
 	}
-	assertHasCodes(t, mapping.Warnings, []string{"ambiguity-rate"}, nil)
+	assertHasCodes(t, mapping.Warnings, []string{warningAmbiguityRate}, nil)
+}
+
+// TestMapToModules_WarningProse pins the disclosure prose of the three
+// mapping warnings. The code-level tests above prove which warnings fire;
+// this test proves the messages still carry their load-bearing disclosure
+// clauses, so a rewording that drops the disclosure cannot pass silently.
+func TestMapToModules_WarningProse(t *testing.T) {
+	findMessage := func(t *testing.T, ws []metrics.Warning, code string) string {
+		t.Helper()
+		for _, w := range ws {
+			if w.Code == code {
+				return w.Message
+			}
+		}
+		t.Fatalf("warning %q not present in %v", code, warningCodes(ws))
+		return ""
+	}
+
+	t.Run("directory as module", func(t *testing.T) {
+		mapping := mapRecordedFixture(t, languagePython)
+		msg := findMessage(t, mapping.Warnings, warningDirectoryAsModule)
+		if !strings.Contains(msg, "invisible to the graph") {
+			t.Errorf("directory-as-module message = %q, want disclosure that intra-directory coupling is invisible to the graph", msg)
+		}
+	})
+
+	t.Run("name resolved edges", func(t *testing.T) {
+		mapping := mapRecordedFixture(t, languagePython)
+		msg := findMessage(t, mapping.Warnings, warningNameResolvedEdges)
+		if !strings.Contains(msg, "misattribute") {
+			t.Errorf("name-resolved-edges message = %q, want disclosure that name-based resolution can misattribute", msg)
+		}
+	})
+
+	t.Run("ambiguity rate", func(t *testing.T) {
+		table := syntheticArch(archModuleRow{Path: "./src", Ca: 0, Ce: 1, Zone: "n/a"})
+		deps := depsGraph{Rows: []depsFile{{Path: "src/index.ts", IncTargets: []string{"./orphan-dir"}}}}
+		mapping, err := mapToModules(languageTypeScript, table, deps)
+		if err != nil {
+			t.Fatalf("mapToModules: %v", err)
+		}
+		msg := findMessage(t, mapping.Warnings, warningAmbiguityRate)
+		if !strings.Contains(msg, "edges were dropped") {
+			t.Errorf("ambiguity-rate message = %q, want disclosure that unmatched in-crawl edges were dropped", msg)
+		}
+	})
 }
 
 func TestMapToModules_PythonAllExternalNoNameResolution(t *testing.T) {

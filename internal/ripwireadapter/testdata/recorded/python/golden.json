@@ -15,7 +15,7 @@
       "lcom": 6,
       "zone": "normal",
       "duplications": [],
-      "totalLines": 0
+      "totalLines": 95
     },
     {
       "path": "fixturepy.cycle_a",
@@ -30,7 +30,7 @@
       "lcom": 0,
       "zone": "normal",
       "duplications": [],
-      "totalLines": 0
+      "totalLines": 16
     },
     {
       "path": "fixturepy.cycle_b",
@@ -45,7 +45,7 @@
       "lcom": 0,
       "zone": "normal",
       "duplications": [],
-      "totalLines": 0
+      "totalLines": 16
     },
     {
       "path": "fixturepy.operations",
@@ -60,7 +60,7 @@
       "lcom": 0,
       "zone": "zone-of-pain",
       "duplications": [],
-      "totalLines": 0
+      "totalLines": 1
     }
   ],
   "cycles": [

@@ -38,6 +38,12 @@
 //   - Duplication: unsupported. It is never declared as a capability, is
 //     zero-valued in results, and is reported as an "unsupported-metric"
 //     warning.
+//   - TotalLines: summed from ripwire's --export=cc.json per-file physical
+//     line counts, counting only indexed files with a source extension.
+//     The figure is a physical line count (the Go adapter reports
+//     significant lines), and a module whose directory holds only config
+//     files (a TypeScript crawl root's package.json/tsconfig.json) reports
+//     zero source lines.
 //
 // Every known mapping approximation (the directory-as-module unit, measured
 // import-graph error budgets, cycle-membership approximation, TypeScript

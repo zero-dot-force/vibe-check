@@ -86,6 +86,67 @@ func TestAnalyze_MatchesGolden(t *testing.T) {
 	}
 }
 
+// TestAnalyze_ZeroCouplingGuardFires pins the zero-coupling guard through
+// the full Analyze pipeline (the task 3.3 end-to-end verification): a
+// crawl that reports zero dependency edges over a non-empty source corpus
+// must never be presented as a complete all-zero graph. The
+// python-zero-edge recordings carry an edgeless --deps XML over the
+// standard python fixture tree, so the graph must be partial and carry
+// the zero-coupling-guard warning naming both counts.
+func TestAnalyze_ZeroCouplingGuardFires(t *testing.T) {
+	installFakeRipwireWrapper(t, filepath.Join("testdata", "recorded", "python-zero-edge"), "valid")
+	adapter := NewPython()
+	graph, err := adapter.Analyze(t.Context(), filepath.Join("testdata", "python"))
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if graph.Status != metrics.StatusPartial {
+		t.Fatalf("status: got %q, want %q (the guard warning must force partial)", graph.Status, metrics.StatusPartial)
+	}
+	var guard *metrics.Warning
+	for i := range graph.Warnings {
+		if graph.Warnings[i].Code == warningZeroCouplingGuard {
+			guard = &graph.Warnings[i]
+		}
+	}
+	if guard == nil {
+		codes := make([]string, 0, len(graph.Warnings))
+		for _, w := range graph.Warnings {
+			codes = append(codes, w.Code)
+		}
+		t.Fatalf("warnings %v: want %q present", codes, warningZeroCouplingGuard)
+	}
+	// The census walks testdata/python/src, which holds 9 source files
+	// (including 2 under the denylisted operations/build directory: the
+	// census deliberately over-counts rather than disengage the guard).
+	if !strings.Contains(guard.Message, "0 dependency edges") || !strings.Contains(guard.Message, "9 source files") {
+		t.Errorf("guard message: got %q, want it to name both counts (0 edges, 9 files)", guard.Message)
+	}
+	if len(graph.Cycles) != 0 {
+		t.Errorf("cycles: got %v, want none for an edgeless graph", graph.Cycles)
+	}
+}
+
+// TestAnalyze_UnsupportedMetricWarningProse pins the message of the
+// always-present unsupported-metric warning. The golden comparison pins
+// warning codes only, so the disclosure prose — which the spec requires
+// to name duplication as unavailable — needs its own assertion.
+func TestAnalyze_UnsupportedMetricWarningProse(t *testing.T) {
+	graph := analyzeFixture(t, languagePython)
+	var msg string
+	for _, w := range graph.Warnings {
+		if w.Code == warningUnsupportedMetric {
+			msg = w.Message
+		}
+	}
+	if msg == "" {
+		t.Fatal("unsupported-metric warning absent from the python fixture graph")
+	}
+	if !strings.Contains(msg, "duplication") || !strings.Contains(msg, "zero-valued") {
+		t.Errorf("message: got %q, want it to name duplication and the zero-valued consequence", msg)
+	}
+}
+
 func TestAnalyze_ValidatesAgainstSchema(t *testing.T) {
 	for _, language := range []string{languagePython, languageTypeScript} {
 		t.Run(language, func(t *testing.T) {
@@ -142,12 +203,27 @@ func TestAnalyze_StructuralInvariants(t *testing.T) {
 			if graph.Warnings == nil {
 				t.Error("warnings slice: got nil, want non-nil")
 			}
+			wantLines := map[string]map[string]int{
+				languagePython: {
+					"fixturepy":            95,
+					"fixturepy.cycle_a":    16,
+					"fixturepy.cycle_b":    16,
+					"fixturepy.operations": 1,
+				},
+				languageTypeScript: {
+					".":           0,
+					"src":         60,
+					"src/cycle-a": 16,
+					"src/cycle-b": 16,
+				},
+			}[language]
 			for i, m := range graph.Modules {
 				if m.Duplications == nil {
 					t.Errorf("modules[%d].duplications: got nil, want non-nil", i)
 				}
-				if m.TotalLines != 0 {
-					t.Errorf("modules[%d].totalLines: got %d, want 0 (duplication unsupported)", i, m.TotalLines)
+				if m.TotalLines != wantLines[m.Path] {
+					t.Errorf("modules[%d] (%s) totalLines: got %d, want %d (sum of indexed source-file loc)",
+						i, m.Path, m.TotalLines, wantLines[m.Path])
 				}
 			}
 

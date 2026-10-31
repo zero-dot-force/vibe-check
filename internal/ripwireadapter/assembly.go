@@ -68,7 +68,7 @@ const sourceToolName = "ripwire"
 //  2. Crawl-root resolution per language (design D9), then three ripwire
 //     crawls from that root: the --arch metrics table (with a generated
 //     minimal rules file), the --deps file graph, and the --export=cc.json
-//     per-file metrics (the crawl census feeding the zero-coupling guard).
+//     per-file metrics (the source of the per-module TotalLines).
 //  3. Parsing (tasks 4.1/4.2), directory-module mapping (task 4.3), and
 //     SCC cycle derivation with corroboration (task 4.4).
 //  4. The light language parse on the same crawl root: Python abstractness
@@ -156,8 +156,15 @@ func (a *Adapter) Analyze(ctx context.Context, projectPath string) (*metrics.Mod
 		return nil, fmt.Errorf("ripwire adapter: lcom scan of %s: %w", projectPath, err)
 	}
 
-	// Guard and denylist warnings.
-	guardWarnings := zeroCouplingGuard(len(mapping.Edges), len(ccFiles))
+	// Guard and denylist warnings. The source-file census comes from the
+	// adapter's own recursive walk of the crawl root (countSourceFiles),
+	// not from the cc.json export, so the guard stays sensitive to source
+	// files the crawl failed to index.
+	sourceFileCount, err := countSourceFiles(crawlRoot)
+	if err != nil {
+		return nil, fmt.Errorf("ripwire adapter: %w", err)
+	}
+	guardWarnings := zeroCouplingGuard(len(mapping.Edges), sourceFileCount)
 	denylistWarnings, err := detectDenylistPruned(crawlRoot)
 	if err != nil {
 		return nil, fmt.Errorf("ripwire adapter: denylist pre-check of %s: %w", projectPath, err)
@@ -166,6 +173,7 @@ func (a *Adapter) Analyze(ctx context.Context, projectPath string) (*metrics.Mod
 	// Module assembly, sorted by identity.
 	sorted := append([]mappedModule(nil), mapping.Modules...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Identity < sorted[j].Identity })
+	totalLines := totalLinesByDir(ccFiles)
 	modules := make([]metrics.ModuleResult, 0, len(sorted))
 	for _, m := range sorted {
 		abstractTypes, exportedTypes := m.Abstract, m.Types
@@ -189,7 +197,7 @@ func (a *Adapter) Analyze(ctx context.Context, projectPath string) (*metrics.Mod
 			},
 			LCOM:         metrics.LCOM(lcomScan[identityToDir(m.Identity)]),
 			Duplications: []metrics.Duplication{},
-			TotalLines:   0,
+			TotalLines:   totalLines[identityToDir(m.Identity)],
 		}
 		result.Instability = metrics.ComputeInstability(m.Ca, m.Ce)
 		result.Abstractness = metrics.ComputeAbstractness(abstractTypes, exportedTypes)

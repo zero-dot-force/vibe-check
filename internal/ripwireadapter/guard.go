@@ -34,12 +34,14 @@ const warningZeroCouplingGuard = "zero-coupling-guard"
 // an edgeless graph, and any non-zero edge count proves the crawl resolved
 // real dependencies.
 //
-// Wiring point: nothing calls the guard yet. Task 6.2 (Analyze graph
-// assembly) must call it with the real parsed numbers and, when it returns
-// a non-empty slice, append the warnings to the ModuleGraph and force the
-// graph status to metrics.StatusPartial instead of metrics.StatusComplete.
-// The design deliberately chose warning + partial over a hard error so
-// users still receive the graph with the caveat attached.
+// Wiring: Analyze (assembly.go) calls the guard on every run with the
+// edge count parsed from the --deps mapping and the source-file count
+// from countSourceFiles over the crawl root, appends any returned warning
+// to the ModuleGraph, and any warning forces the graph status to
+// metrics.StatusPartial via graphStatusForWarnings instead of
+// metrics.StatusComplete. The design deliberately chose warning + partial
+// over a hard error so users still receive the graph with the caveat
+// attached.
 func zeroCouplingGuard(edgeCount, sourceFileCount int) []metrics.Warning {
 	// Complement of the fire condition (edgeCount == 0 && sourceFileCount > 0):
 	// resolved edges, an empty corpus, or a nonsensical negative count all

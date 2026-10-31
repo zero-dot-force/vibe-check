@@ -3,11 +3,11 @@
 ## Project Overview
 
 Vibe-Check is a design quality and architectural metrics toolkit for
-Go codebases. It computes package-level coupling metrics (afferent/
+codebases. It computes package-level coupling metrics (afferent/
 efferent coupling, instability, abstractness, distance from main
 sequence), cohesion analysis, and circular dependency detection —
 providing the full Martin metrics suite, which few OSS tools compute
-for Go.
+for Go (natively) and for Python/TypeScript (via the ripwire adapter).
 
 Vibe-Check also serves as the metrics backbone for the Unbound Force
 ecosystem's entropy sentinel and architectural drift tracking
@@ -300,6 +300,7 @@ cmd/vibe-check/     # CLI entry point (Layer 3)
   main.go           # Binary entry point with ldflags version embedding
   root.go           # Cobra root command with --version flag
   analyze.go        # analyze subcommand with threshold flags (incl --output/-o)
+  detect.go         # analyze language detection (Go native; Python/TypeScript via ripwire)
   diff.go           # diff subcommand (base vs PR entropy delta + verdict; --markdown report)
   init.go           # init subcommand (deploys embedded assets; --ci scaffolds the pinned structural-gate caller; registers entropy reviewer in .uf/)
   report.go         # report subcommand (markdown/JSON report from a ModuleGraph snapshot)

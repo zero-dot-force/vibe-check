@@ -330,17 +330,28 @@ func analyzeCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "analyze [path]",
-		Short: "Analyze Go packages and compute coupling metrics",
-		Long: `Analyze computes package-level coupling metrics for a Go project:
-afferent coupling (Ca), efferent coupling (Ce), instability, abstractness,
-distance from main sequence, LCOM4 cohesion, and circular dependency detection.
+		Short: "Analyze a module and compute coupling metrics (Go natively; Python/TypeScript via ripwire)",
+		Long: `Analyze computes package-level coupling metrics: afferent coupling (Ca),
+efferent coupling (Ce), instability, abstractness, distance from main
+sequence, LCOM4 cohesion, and circular dependency detection.
 
-Output is JSON conforming to the ModuleGraph schema (version 1.2).
+The module language is auto-detected from the analyzed path. Go modules are
+analyzed natively. Python and TypeScript projects are analyzed through the
+riprewire adapter, which requires a pinned, validated ripwire binary on
+PATH (the error output and README name the exact required version); the
+command fails closed with exit code 2 when that binary is absent or is the
+wrong build.
+
+Output is JSON conforming to the ModuleGraph schema (version 1.3).
 Use --no-provenance to omit provenance metadata for byte-reproducible output.
+Graphs carrying analysis caveats (for example ripwire error budgets) are
+marked with status "partial" rather than "complete".
 
 Use threshold flags (--max-instability, --max-distance, --max-lcom,
---no-circular-deps) for CI gate enforcement. Violations cause exit code 1.
-JSON output is always written to stdout, even when violations are detected.`,
+--max-duplication, --no-circular-deps) for CI gate enforcement. Violations
+cause exit code 1. Tool failures — including an absent or mismatched
+riprewire binary — cause exit code 2. JSON output is always written to
+stdout, even when violations are detected.`,
 		Args: cobra.MaximumNArgs(1),
 		// SilenceUsage prevents cobra from printing usage on RunE errors.
 		// We handle error reporting ourselves.

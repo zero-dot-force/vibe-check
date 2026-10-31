@@ -1,7 +1,8 @@
 # Vibe-Check
 
-Vibe-Check is a design-quality and architectural-metrics tool for Go. It computes the
-Martin package-coupling metrics suite — afferent coupling (Ca), efferent coupling (Ce),
+Vibe-Check is a design-quality and architectural-metrics tool for Go, Python, and
+TypeScript. It computes the Martin package-coupling metrics suite — afferent coupling
+(Ca), efferent coupling (Ce),
 instability, abstractness, and distance from the main sequence — plus LCOM4 cohesion and
 circular-dependency detection, and emits the results as JSON.
 
@@ -93,6 +94,7 @@ vibe-check analyze ./my-python-project
 | LCOM4 | vibe-check light parse (methods sharing `self.X` / `this.X` fields) |
 | Cycles | ripwire `--deps` edges + vibe-check's own SCC derivation |
 | Duplication | unsupported — zero-valued, with an `unsupported-metric` warning |
+| TotalLines | ripwire `--export=cc.json` census — physical lines of indexed source files; config-only modules report an honest 0 (Go counts significant lines) |
 
 ### Caveats
 
@@ -114,6 +116,7 @@ Python and TypeScript graphs are `partial` whenever any warning is present.
 | `--max-instability` | float | unset (no check) | Fail if any module's instability exceeds this value. Must be in `[0.0, 1.0]`. |
 | `--max-distance` | float | unset (no check) | Fail if any module's distance from the main sequence exceeds this value. Must be in `[0.0, 1.0]`. |
 | `--max-lcom` | int | unset (no check) | Fail if any module's LCOM4 exceeds this value. Must be `>= 1`. |
+| `--max-duplication` | float | `5.0` | Fail if any module's duplication percentage exceeds this value. Must be in `[0.0, 100.0]`. Populated by the Go adapter; Python/TypeScript report duplication as unsupported (zero-valued), so the flag never fires for them. |
 | `--no-circular-deps` | bool | `false` | Treat any detected circular dependency as a violation. |
 | `--no-provenance` | bool | `false` | Omit the `provenance` object from output for byte-reproducible JSON. |
 | `--timeout` | duration | none | Bound total analysis time (e.g., `30s`, `2m`). No timeout by default. |
@@ -138,7 +141,7 @@ gate.
 
 ## Output
 
-The analysis is printed to stdout as pretty-printed JSON with `schemaVersion` `"1.2"`. Each
+The analysis is printed to stdout as pretty-printed JSON with `schemaVersion` `"1.3"`. Each
 entry in `modules[]` carries `ca`, `ce`, `instability`, `abstractness`, `distance`, `lcom`,
 `exportedTypes`, `abstractTypes`, `zone`, and an optional `extensions` object. For Go, the
 extensions may include `go.interfaceWidth` (method count per exported interface) and
@@ -151,7 +154,7 @@ A top-level `provenance` object records how the graph was produced: `producer` (
 
 ```json
 {
-  "schemaVersion": "1.2",
+  "schemaVersion": "1.3",
   "language": "go",
   "modules": [
     {

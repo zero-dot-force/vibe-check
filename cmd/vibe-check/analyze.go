@@ -337,7 +337,7 @@ sequence, LCOM4 cohesion, and circular dependency detection.
 
 The module language is auto-detected from the analyzed path. Go modules are
 analyzed natively. Python and TypeScript projects are analyzed through the
-riprewire adapter, which requires a pinned, validated ripwire binary on
+ripwire adapter, which requires a pinned, validated ripwire binary on
 PATH (the error output and README name the exact required version); the
 command fails closed with exit code 2 when that binary is absent or is the
 wrong build.
@@ -350,7 +350,7 @@ marked with status "partial" rather than "complete".
 Use threshold flags (--max-instability, --max-distance, --max-lcom,
 --max-duplication, --no-circular-deps) for CI gate enforcement. Violations
 cause exit code 1. Tool failures — including an absent or mismatched
-riprewire binary — cause exit code 2. JSON output is always written to
+ripwire binary — cause exit code 2. JSON output is always written to
 stdout, even when violations are detected.`,
 		Args: cobra.MaximumNArgs(1),
 		// SilenceUsage prevents cobra from printing usage on RunE errors.

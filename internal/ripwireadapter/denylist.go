@@ -27,11 +27,12 @@ var crawlDenylistNames = []string{
 	"captures",
 }
 
-// denylistSourceExtensions are the file extensions that make a directory
-// "source-bearing" for the denylist pre-check. The set covers the languages
-// this adapter analyzes; a directory holding none of them is invisible to
-// ripwire's pruner anyway (nothing to prune), so it does not warrant a
-// warning.
+// denylistSourceExtensions are the file extensions recognized as source
+// files for the languages this adapter analyzes. The set is the adapter's
+// shared definition of a source file, used by the denylist pre-check (a
+// directory holding none of these extensions is invisible to ripwire's
+// pruner anyway — nothing to prune — so it does not warrant a warning),
+// by guard.go's source census, and by parse_cc.go's totalLines filter.
 var denylistSourceExtensions = map[string]bool{
 	".py":  true,
 	".ts":  true,

@@ -22,7 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in both languages. Modules map at directory grain; cycles are derived
   by the adapter's own Tarjan SCC over directory edges and corroborated
   against ripwire's capped listing; duplication is reported as
-  unsupported (zero-valued plus a warning). Python and TypeScript graphs
+  unsupported (zero-valued plus a warning). `totalLines` is populated
+  from the cc.json census as physical lines of indexed source files
+  (config-only modules report an honest 0), where Go counts significant
+  lines. Python and TypeScript graphs
   carry spike-measured error-budget and per-stage accuracy warnings and
   are `partial` whenever any warning exists. Provenance gains optional
   `sourceTool` / `sourceToolVersion` / `sourceToolCommit` fields recording

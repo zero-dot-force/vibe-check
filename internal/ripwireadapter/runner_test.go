@@ -164,7 +164,7 @@ func installFloodScript(t *testing.T, stream string, blob []byte) {
 	if stream == "stderr" {
 		redirect = ">&2"
 	}
-	script := "#!/bin/sh\ncat \"" + blobFile + "\" " + redirect + "\n"
+	script := "#!/bin/sh\ncat " + shellSingleQuote(blobFile) + " " + redirect + "\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("installFloodScript: write %s: %v", bin, err)
 	}

@@ -380,11 +380,11 @@ metrics/            # Universal coupling metrics model (Layer 1)
   graph.go          # ModuleGraph, ModuleResult, Provenance, ProvenanceInput types
   jsonrpc.go        # JSON-RPC 2.0 protocol types
   module.go         # Module type (universal unit of analysis)
-  modulegraph.schema.json  # JSON Schema for ModuleGraph validation (v1.2)
+  modulegraph.schema.json  # JSON Schema for ModuleGraph validation (v1.3)
   registry.go       # Adapter registry (dependency-injected)
   schema.go         # Embedded JSON schema access
   security.go       # Path validation and environment sanitization
-  validate.go       # JSON schema validation (accepts v1.0, v1.1, and v1.2)
+  validate.go       # JSON schema validation (accepts v1.0, v1.1, 1.2, and v1.3)
   values.go         # Named metric types (Instability, Abstractness, etc.)
   verdict.go        # Verdict + DecideVerdict (protected entropy gate thresholds)
   warning.go        # Warning type for analysis caveats
@@ -410,7 +410,7 @@ The architecture follows a three-layer design per the RFC phasing:
   Instability, Abstractness, Distance from Main Sequence, LCOM4,
   circular dependency detection, JSON schema validation, adapter
   interface, security primitives, provenance metadata (`Provenance`/
-  `ProvenanceInput` types, schema `1.2`), and the base↔PR entropy delta engine
+  `ProvenanceInput` types, schema `1.3`), and the base↔PR entropy delta engine
   (`ComputeDelta`) plus verdict engine (`DecideVerdict`) with protected
   gate thresholds (ΔInstability ≥ 0.15, ΔDistance ≥ 0.20, ΔLCOM ≥ 2, or a
   new circular dependency). The deterministic report engine (grades,
@@ -425,7 +425,7 @@ The architecture follows a three-layer design per the RFC phasing:
   (`go.interfaceWidth`, `go.interfaceProximity`).
 - **Layer 3** (`cmd/vibe-check/`): CLI entry point using cobra. Provides
   `vibe-check analyze` with threshold flags (`--max-instability`,
-  `--max-distance`, `--max-lcom`, `--no-circular-deps`, `--timeout`,
+  `--max-distance`, `--max-lcom`, `--max-duplication`, `--no-circular-deps`, `--timeout`,
   `--output`/`-o`, `--no-provenance`) and JSON output (with an optional
   `provenance` object); `vibe-check diff <base.json> <pr.json>`
   computing the entropy delta and verdict (with tighten-only threshold

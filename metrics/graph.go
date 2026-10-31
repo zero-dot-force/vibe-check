@@ -104,7 +104,12 @@ type ModuleResult struct {
 
 	// TotalLines is the total number of lines across all source files in
 	// this module. Used to compute duplication percentage for threshold
-	// enforcement. Zero indicates the line count could not be determined.
+	// enforcement. The counting basis is adapter-specific: the Go adapter
+	// counts significant lines per source file, while the ripwire adapter
+	// reports the physical lines of the files it indexes (a config-only
+	// module honestly reports 0). Zero is a measured count, not a
+	// "could not be determined" sentinel; consult the adapter's
+	// documentation for the sourcing semantics.
 	TotalLines int `json:"totalLines"`
 
 	// Extensions contains language-specific metric extensions namespaced by language.

@@ -217,6 +217,10 @@ func TestAnalyze_StructuralInvariants(t *testing.T) {
 					"src/cycle-b": 16,
 				},
 			}[language]
+			if len(graph.Modules) != len(wantLines) {
+				t.Errorf("module count: got %d, want %d (wantLines keys are the expected module set)",
+					len(graph.Modules), len(wantLines))
+			}
 			for i, m := range graph.Modules {
 				if m.Duplications == nil {
 					t.Errorf("modules[%d].duplications: got nil, want non-nil", i)

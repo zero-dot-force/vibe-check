@@ -50,7 +50,7 @@ func TestAnalyze_PinGate_ThroughProductionPath(t *testing.T) {
 		{
 			name:      "matching version passes pin",
 			variant:   "valid",
-			wantError: nil, // the not-implemented stub, not a pin error
+			wantError: nil, // the pin passed: analysis proceeds and produces a graph
 		},
 		{
 			name:      "wrong version fails closed",

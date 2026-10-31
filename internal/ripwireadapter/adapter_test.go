@@ -5,8 +5,13 @@
 // identifier each constructor reports, the exact seven-capability set per
 // language (duplication deliberately undeclared — it becomes an
 // "unsupported-metric" warning at analysis time), and the distinctness of the
-// two constructors' adapters. Analyze is a not-implemented stub at this stage
-// (tasks 2.2, 2.3, 4.x, and 6.2 build it out), so it carries no tests yet.
+// two constructors' adapters. Analyze is implemented and driven through the
+// production path elsewhere in this package: version_test.go pins the
+// ripwire pin gate (absent binary, version mismatch, unparseable output,
+// sanitized environment), assembly_test.go pins the assembled graphs
+// against recorded goldens plus the schema, provenance, zero-coupling-guard,
+// and TotalLines invariants, and integration_test.go pins the full
+// Python and TypeScript fixture pipelines and their determinism.
 
 package ripwireadapter
 

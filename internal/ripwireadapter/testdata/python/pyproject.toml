@@ -1,0 +1,5 @@
+# Project identity for the src-layout Python fixture.
+# This file is parsed for project metadata; it is never built or installed.
+[project]
+name = "fixturepy"
+version = "0.1.0"

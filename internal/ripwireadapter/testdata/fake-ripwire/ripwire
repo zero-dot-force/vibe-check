@@ -1,0 +1,127 @@
+#!/bin/sh
+# fake-ripwire — hermetic test double for the ripwire binary.
+#
+# Replays the recorded ripwire 0.6.9 outputs (task 1.2) selected by flag, so
+# the ripwire-adapter test suite exercises the full subprocess path without
+# ripwire installed (openspec/changes/ripwire-adapter design.md D12). Test
+# scaffolding only: never shipped, vendored, or executed outside `go test`.
+#
+# Environment:
+#   FAKE_RIPWIRE_RECORDINGS  Required. Directory containing version.txt,
+#                            arch.txt, deps.xml, and cc.json to replay.
+#   FAKE_RIPWIRE_VARIANT     Optional. Version-output variant:
+#                            valid (default)  replay recorded version.txt
+#                            wrong-version    well-formed non-matching line
+#                            garbage          unparseable version output
+#
+# Flags — the LAST output flag wins if several appear; runner tests always
+# send exactly one:
+#   --version            replay version output (variant-aware)
+#   --arch=<rules>       replay arch.txt (the rules path is ignored)
+#   --deps               replay deps.xml
+#   --export=cc.json...  replay cc.json (any --export=cc.json prefix)
+#   <root>, --no-cache, --limit=<N>, --offset=<N>
+#                        accepted and ignored (the fake never crawls)
+# Any other flag is an error. Replayed bytes go to stdout; nothing is written
+# to stderr on success. Exit status is 0 on replay, 2 on any harness
+# misconfiguration or unknown flag.
+#
+# Deliberately NOT modeled: real ripwire 0.6.9 refuses --limit/--offset on
+# --arch and --export (task 1.2). The fake accepts them everywhere — the
+# harness only needs the replay surface, and uniform acceptance keeps the
+# contract minimal for the runner tests that consume it.
+
+set -eu
+
+prog=fake-ripwire
+
+# Configuration is validated before any argument is parsed: the fake either
+# replays a known output or fails closed — it never half-replays.
+recordings=${FAKE_RIPWIRE_RECORDINGS:-}
+if [ -z "$recordings" ]; then
+	printf '%s: FAKE_RIPWIRE_RECORDINGS is not set\n' "$prog" >&2
+	exit 2
+fi
+for recording in version.txt arch.txt deps.xml cc.json; do
+	if [ ! -f "$recordings/$recording" ]; then
+		printf '%s: recording not found: %s/%s\n' "$prog" "$recordings" "$recording" >&2
+		exit 2
+	fi
+done
+
+variant=${FAKE_RIPWIRE_VARIANT:-valid}
+case "$variant" in
+valid | wrong-version | garbage) ;;
+*)
+	printf '%s: unknown FAKE_RIPWIRE_VARIANT %s (want valid, wrong-version, or garbage)\n' "$prog" "$variant" >&2
+	exit 2
+	;;
+esac
+
+# Scan every argument before replaying anything, so an unknown flag anywhere
+# in the invocation fails closed without partial stdout.
+verb=
+for arg in "$@"; do
+	case "$arg" in
+	--version)
+		verb='version'
+		;;
+	--arch=*)
+		# The rules-file path is part of the real invocation shape (the
+		# task 1.2 capture commands) but cannot affect replayed bytes.
+		verb='arch'
+		;;
+	--deps)
+		verb='deps'
+		;;
+	--export=cc.json*)
+		verb='export'
+		;;
+	--no-cache | --limit=* | --offset=*)
+		# Accepted and ignored: the fake never crawls, so cache and
+		# paging flags have nothing to do.
+		;;
+	-*)
+		printf '%s: unknown flag: %s\n' "$prog" "$arg" >&2
+		exit 2
+		;;
+	*)
+		# Positional crawl-root argument: accepted and ignored.
+		;;
+	esac
+done
+
+case "$verb" in
+version)
+	case "$variant" in
+	valid)
+		cat "$recordings/version.txt"
+		;;
+	wrong-version)
+		# Well-formed but matching neither the pinned version (0.6.9)
+		# nor the pinned commit prefix (bedc0cd): exercises the version
+		# mismatch path of the fail-closed pin (task 2.2).
+		printf '%s\n' 'ripwire 0.6.8 (Release, AppleClang 21.0.0.21000101, emit=std::print, built_from=deadbeef00)'
+		;;
+	garbage)
+		# Unparseable output: exercises the unparseable-version path.
+		printf '%s\n' 'totally not a version string'
+		;;
+	esac
+	;;
+arch)
+	cat "$recordings/arch.txt"
+	;;
+deps)
+	cat "$recordings/deps.xml"
+	;;
+export)
+	cat "$recordings/cc.json"
+	;;
+*)
+	printf '%s: no output flag given (want --version, --arch=<rules>, --deps, or --export=cc.json)\n' "$prog" >&2
+	exit 2
+	;;
+esac
+
+exit 0

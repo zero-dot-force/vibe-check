@@ -44,11 +44,16 @@ go build ./cmd/vibe-check
 vibe-check analyze [path]
 ```
 
-`analyze` takes a single optional path to a Go module directory and defaults to the
-current directory (`.`). It writes the analysis as JSON to stdout, or to a file with
-`--output`/`-o`. Analysis forces `GOTOOLCHAIN=local` for its internal `go/packages`
-subprocess, so it never downloads a Go toolchain named by the target module's `go.mod`
-(a trusted module that requires a newer-than-local toolchain must be built manually).
+`analyze` takes a single optional path to a project directory and defaults to the
+current directory (`.`). The project's language is detected from its markers (`go.mod`
+→ Go, `pyproject.toml`/`setup.py`/`setup.cfg` → Python, `tsconfig.json` → TypeScript;
+markerless trees fall back to a `.py` vs `.ts`/`.tsx` file census, with ties defaulting
+to Go) and routed to the matching adapter. It writes the analysis as JSON to stdout,
+or to a file with `--output`/`-o`. Go analysis forces `GOTOOLCHAIN=local` for its
+internal `go/packages` subprocess, so it never downloads a Go toolchain named by the
+target module's `go.mod` (a trusted module that requires a newer-than-local toolchain
+must be built manually). Python and TypeScript analysis requires ripwire — see the
+next section.
 
 ```bash
 # Analyze the current module
@@ -57,6 +62,50 @@ vibe-check analyze
 # Analyze a module elsewhere, failing CI if any package is too unstable
 vibe-check analyze ./myproject --max-instability 0.8 --no-circular-deps
 ```
+
+## Analyzing Python and TypeScript projects
+
+Python and TypeScript analysis is powered by an optional external tool:
+[ripwire](https://github.com/redhat-et/ripwire).
+
+```bash
+# Prerequisite for Python/TypeScript only: install ripwire 0.6.9 and put it on PATH
+vibe-check analyze ./my-python-project
+```
+
+- **Install**: build or download ripwire `0.6.9` (built from commit `bedc0cd`) from
+  <https://github.com/redhat-et/ripwire> and ensure the binary is on `PATH`.
+- **Version pin, fail-closed**: `analyze` validates the resolved binary's reported
+  version and commit before doing any work. Any other version exits `2` — every
+  parsing and mapping decision was validated against that exact output shape.
+- **Absent binary**: without ripwire on `PATH`, Python/TypeScript analysis exits `2`
+  with install guidance and writes no report. Go analysis never invokes ripwire.
+- **Output**: the same ModuleGraph JSON schema as Go analysis, with
+  `provenance.sourceTool` recording the validated ripwire version and commit.
+
+### Metric sources (Python / TypeScript)
+
+| Metric | Source |
+|--------|--------|
+| Ca, Ce, Instability | ripwire `--arch` metrics table |
+| Abstractness | Python: vibe-check light parse (ABC / ABCMeta / Protocol classes); TypeScript: ripwire interface share |
+| Distance, Zone | derived (`metrics.Compute*`) |
+| LCOM4 | vibe-check light parse (methods sharing `self.X` / `this.X` fields) |
+| Cycles | ripwire `--deps` edges + vibe-check's own SCC derivation |
+| Duplication | unsupported — zero-valued, with an `unsupported-metric` warning |
+
+### Caveats
+
+| Caveat warning | Meaning |
+|----------------|---------|
+| `name-resolved-edges` | Python imports are resolved by dotted name to directories; name-based resolution can misattribute when package names collide. |
+| `directory-as-module` | Modules are directories; coupling between files in the same directory is intra-module and invisible. |
+| `error-budget` | Spike-measured inaccuracy of the coupling data: Python 1.9% of edges lost / 2.2% spurious; TypeScript 0.16% of targets unresolved. |
+| `cycle-approximation` | Cycles are a directory-grain SCC derivation, corroborated against ripwire's own capped (20 SCCs × 12 members) file-level listing. |
+| `ts-abstractness-bias` | TypeScript abstractness undercounts `abstract class` declarations and type aliases inflate the type denominator. |
+| `unsupported-metric` | Duplication is not computed for these languages. |
+
+Python and TypeScript graphs are `partial` whenever any warning is present.
 
 ## Flags
 

@@ -318,6 +318,25 @@ internal/goadapter/ # Go language adapter (Layer 2)
   extensions.go     # go.interfaceWidth and go.interfaceProximity extensions
   doc.go            # Package-level GoDoc
   testdata/         # Test fixtures (coupling, types, lcom, extensions, partial)
+internal/ripwireadapter/  # ripwire-backed Python/TypeScript adapter (Layer 2)
+  adapter.go       # Adapter struct (one type, language-parameterized) + capabilities
+  version.go       # Fail-closed ripwire 0.6.9 @ bedc0cd version pin + sentinels
+  runner.go        # Sanitized subprocess runner (bounded output, cancellation)
+  crawl.go         # Crawl-root resolution (D9: Python src-layout, TS manifests)
+  denylist.go      # Denylist pre-check warning (build/dist/out/target/vendor/...)
+  guard.go         # Zero-coupling guard (edges == 0 with sources present)
+  parse_arch.go    # --arch metrics table parser (Ca/Ce authoritative)
+  parse_deps.go    # --deps file graph parser (edges, cycles, paging attrs)
+  parse_cc.go      # --export=cc.json per-file metrics reader
+  mapping.go       # Directory-module mapping (D4 identity, deduped edges)
+  cycles.go        # Tarjan SCC cycle derivation + corroboration warning
+  lightparse.go    # Python abstractness light parse (ABC/ABCMeta/Protocol)
+  lcom.go          # LCOM4 light parse (indent stack / brace depth, union-find)
+  budget.go        # Error-budget warnings + any-warning ⇒ partial status rule
+  tsabstractness.go  # TS interface-share bias warning
+  assembly.go      # Analyze assembly: hybrid merge, warnings, provenance
+  testdata/        # Fixtures: python/ (src layout), typescript/, recorded/
+                   # goldens + fake-ripwire harness (hermetic test double)
 internal/scaffold/  # Embedded asset deployment + UF policy registration for `vibe-check init`
   doc.go            # Package-level GoDoc
   embed.go          # //go:embed assets/{agents,commands}/*.md (embedded source of truth)
@@ -415,8 +434,9 @@ RFC phasing status:
 - **P0**: Core coupling metrics engine (complete — `metrics/` package)
 - **P0 effective**: Go adapter and CLI (complete — `internal/goadapter/`
   and `cmd/vibe-check/`; classified as P1 in RFC but required for MVP)
-- **P2**: Python adapter, cognitive complexity, branch coverage,
-  architectural drift tracking
+- **P2**: Python and TypeScript adapters delivered via the ripwire-backed
+  hybrid (openspec/changes/ripwire-adapter); cognitive complexity, branch
+  coverage, and architectural drift tracking remain
 - **P3**: TS/JS adapter, SBOM integration, mutation testing hooks
 
 ## Coding Conventions

@@ -297,6 +297,36 @@ func TestMethodComponents(t *testing.T) {
 	}
 }
 
+func TestLineIndent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		line string
+		want int
+	}{
+		{name: "empty line", line: "", want: 0},
+		{name: "four leading spaces", line: "    return x", want: 4},
+		{name: "eight leading spaces", line: "        return x", want: 8},
+		{name: "one leading tab", line: "\treturn x", want: 4},
+		{name: "two leading tabs", line: "\t\treturn x", want: 8},
+		{name: "two spaces then tab", line: "  \treturn x", want: 6},
+		{name: "tab then two spaces", line: "\t  return x", want: 6},
+		{name: "tab-only line", line: "\t", want: 4},
+		{name: "two tabs only", line: "\t\t", want: 8},
+		{name: "spaces-only line", line: "      ", want: 6},
+		{name: "first rune non-whitespace", line: "x", want: 0},
+		{name: "interior whitespace after non-whitespace not counted", line: "  x\t\t y", want: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := lineIndent(tc.line); got != tc.want {
+				t.Errorf("lineIndent(%q): got %d, want %d", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLCOM4Scan_Errors(t *testing.T) {
 	t.Parallel()
 

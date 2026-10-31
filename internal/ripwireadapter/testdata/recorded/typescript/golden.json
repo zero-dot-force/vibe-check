@@ -30,7 +30,7 @@
       "lcom": 2,
       "zone": "main-sequence",
       "duplications": [],
-      "totalLines": 0
+      "totalLines": 60
     },
     {
       "path": "src/cycle-a",
@@ -45,7 +45,7 @@
       "lcom": 0,
       "zone": "normal",
       "duplications": [],
-      "totalLines": 0
+      "totalLines": 16
     },
     {
       "path": "src/cycle-b",
@@ -60,7 +60,7 @@
       "lcom": 0,
       "zone": "normal",
       "duplications": [],
-      "totalLines": 0
+      "totalLines": 16
     }
   ],
   "cycles": [

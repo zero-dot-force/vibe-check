@@ -120,20 +120,24 @@ counts**. The light parse mirrors this (D8: "the same union-find approach as
 - **Module LCOM = total connected components across the module's classes**
   (sum); a module with no class-bound methods is 0.
 
-### C3 — `totalLines` = 0
+### C3 — `totalLines` = per-module sum of indexed source-file `loc`
 
-`ModuleResult.TotalLines` exists solely to compute duplication percentage for
-threshold enforcement, and duplication is an undeclared capability for both
-ripwire languages (spec: capability gating — "Duplication detection SHALL
-NOT be declared"). No task in the change assigns `totalLines` a source. The
-golden pins **0** (the documented "not determined" sentinel in the
-`ModuleResult` GoDoc). Alternative rejected: summing `cc.json` per-file `loc`
-per directory (Python fixturepy = 1 + 94 = 95, cycle_a = 16, cycle_b = 16,
-operations = 1; TS `.` = 5 + 9 = 14, src = 92, cycle-a/b = 16) — ripewire's
-`loc` is a *physical* line count that includes config files (`tsconfig.json`,
-`package.json` are indexed as config languages), semantics that do not match
-goadapter's significant-lines counter and that the design never assigned to
-this field.
+`ModuleResult.TotalLines` is populated from ripwire's `--export=cc.json`
+per-file `loc`, summed per directory module over the indexed files whose
+extension is a source extension (`.py`, `.ts`, `.tsx`, `.js`, `.jsx`).
+Config files the crawl indexes at a TypeScript root (`package.json`,
+`tsconfig.json`) are excluded, so a config-only module (TS `.`) reports
+**0** — the honest count of its source lines, not the "not determined"
+sentinel. Python: fixturepy = 1 + 94 = **95**, cycle_a = 10 + 6 = **16**,
+cycle_b = **16**, operations = **1**; TS: `.` = **0** (config only),
+src = **60** (`models.ts`; an earlier draft of this ledger said 92, an
+arithmetic slip that folded in the cycle directories' 32), cycle-a/b =
+**16**. ripwire's `loc` is a *physical* line count, a different
+denominator than goadapter's significant-lines counter; the adapter's
+`doc.go` sourcing matrix discloses the difference. The original goldens
+pinned 0 with no sourcing-matrix entry; PR #75 review feedback (noting
+the report engine renders every ripwire graph as "0 lines") overturned
+that to the populated convention above.
 
 ### C4 — `duplications: []` (non-nil), `extensions` omitted
 

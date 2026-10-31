@@ -2,6 +2,7 @@ package ripwireadapter
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -167,6 +168,27 @@ func TestParseDepsOutput_MalformedInputs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ccFileByPath indexes parsed cc.json files for lookup by path.
+func ccFileByPath(files []ccFile) map[string]ccFile {
+	byPath := make(map[string]ccFile, len(files))
+	for _, f := range files {
+		byPath[f.Path] = f
+	}
+	return byPath
+}
+
+// countCCFilesWithPrefix reports how many parsed files live under a path
+// prefix — a convenience for asserting pruned subtrees are absent.
+func countCCFilesWithPrefix(files []ccFile, prefix string) int {
+	n := 0
+	for _, f := range files {
+		if strings.HasPrefix(f.Path, prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 func TestParseCCOutput_RecordedPython(t *testing.T) {

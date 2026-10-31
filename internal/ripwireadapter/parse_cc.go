@@ -3,6 +3,7 @@ package ripwireadapter
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 )
 
@@ -31,8 +32,8 @@ type ccNode struct {
 
 // ccAttributes carries the per-file metrics; missing keys decode as zero
 // (ripwire emits the full set for every File node, but a missing key is
-// a data gap, not a structural failure — task 4.3/6.2 consumers treat
-// zeros as absent signal).
+// a data gap, not a structural failure: a zero loc flows into the
+// TotalLines assembly as a recorded zero rather than failing the parse).
 type ccAttributes struct {
 	Loc         int `json:"loc"`
 	Symbols     int `json:"symbols"`
@@ -107,23 +108,20 @@ func joinCCPath(prefix, name string) string {
 	return prefix + "/" + name
 }
 
-// ccFileByPath indexes parsed files for test and mapping lookups.
-func ccFileByPath(files []ccFile) map[string]ccFile {
-	byPath := make(map[string]ccFile, len(files))
+// totalLinesByDir sums the recorded physical line counts of the indexed
+// source files per directory, keyed by the cc.json path directory. Files
+// whose extension is not a source extension (denylistSourceExtensions —
+// for example the package.json and tsconfig.json config files a
+// TypeScript crawl root indexes) are excluded, so a module whose
+// directory holds only config files reports zero source lines. The keys
+// match the identityToDir form of mapped module identities.
+func totalLinesByDir(files []ccFile) map[string]int {
+	totals := make(map[string]int)
 	for _, f := range files {
-		byPath[f.Path] = f
-	}
-	return byPath
-}
-
-// countCCFilesWithPrefix reports how many parsed files live under a path
-// prefix — a test convenience for asserting pruned subtrees are absent.
-func countCCFilesWithPrefix(files []ccFile, prefix string) int {
-	n := 0
-	for _, f := range files {
-		if strings.HasPrefix(f.Path, prefix) {
-			n++
+		if !denylistSourceExtensions[strings.ToLower(path.Ext(f.Path))] {
+			continue
 		}
+		totals[path.Dir(f.Path)] += f.Loc
 	}
-	return n
+	return totals
 }

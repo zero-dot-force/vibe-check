@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/zero-dot-force/vibe-check/internal/goadapter"
+	"github.com/zero-dot-force/vibe-check/internal/ripwireadapter"
 	"github.com/zero-dot-force/vibe-check/metrics"
 )
 
@@ -101,8 +102,29 @@ func RunAnalyze(ctx context.Context, opts AnalyzeOptions) (*AnalyzeResult, error
 		defer cancel()
 	}
 
-	// Step 3: Run analysis via the Go adapter.
-	adapter := goadapter.New()
+	// Step 3: Run analysis via the adapter registry. Language detection
+	// (task 7.1) selects the adapter: Go targets use the native Go
+	// adapter without invoking ripwire; Python and TypeScript targets
+	// use the ripwire-backed adapters (task 7.2, go-analyze D10's
+	// deferred refactor).
+	language, err := detectLanguage(opts.Path)
+	if err != nil {
+		return &AnalyzeResult{ExitCode: 2}, fmt.Errorf("analyze: %w", err)
+	}
+	registry := metrics.NewRegistry()
+	for _, adapter := range []metrics.Adapter{
+		goadapter.New(),
+		ripwireadapter.NewPython(),
+		ripwireadapter.NewTypeScript(),
+	} {
+		if err := registry.Register(adapter); err != nil {
+			return &AnalyzeResult{ExitCode: 2}, fmt.Errorf("analyze: register %s adapter: %w", adapter.Language(), err)
+		}
+	}
+	adapter, err := registry.Get(language)
+	if err != nil {
+		return &AnalyzeResult{ExitCode: 2}, fmt.Errorf("analyze: %w", err)
+	}
 	graph, err := adapter.Analyze(ctx, opts.Path)
 	if err != nil {
 		return &AnalyzeResult{ExitCode: 2}, fmt.Errorf("analyze: %w", err)

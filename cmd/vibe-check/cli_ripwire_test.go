@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,23 +53,55 @@ func installPoisonRipwire(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'poison ripwire invoked' >&2\nexit 3\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Chmod after WriteFile so a restrictive umask cannot strip the exec bit:
+	// exec.LookPath silently skips a non-executable ripwire, and the negative
+	// assertion would then pass vacuously.
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", prependPath(bin))
 }
 
 // installFakeRipwireWrapper puts a wrapper for the committed fake
 // ripwire on PATH, baking the recordings directory into the wrapper so
-// the production adapter's sanitized environment cannot strip it.
+// the production adapter's sanitized environment cannot strip it. The
+// baked values are single-quoted (never fmt %q, whose double quotes let
+// POSIX sh expand $ and backticks in adversarial checkout or TMPDIR
+// paths) and the exec bit is forced with Chmod so a restrictive umask
+// cannot make exec.LookPath skip the wrapper.
 func installFakeRipwireWrapper(t *testing.T, language string) {
 	t.Helper()
 	bin := t.TempDir()
 	recordings := filepath.Join(repoRoot(t), "internal", "ripwireadapter", "testdata", "recorded", language)
 	fake := filepath.Join(repoRoot(t), "internal", "ripwireadapter", "testdata", "fake-ripwire", "ripwire")
 	wrapper := filepath.Join(bin, "ripwire")
-	script := fmt.Sprintf("#!/bin/sh\nFAKE_RIPWIRE_RECORDINGS=%q FAKE_RIPWIRE_VARIANT=valid exec %q \"$@\"\n", recordings, fake)
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"FAKE_RIPWIRE_RECORDINGS=" + shellSingleQuote(recordings),
+		"FAKE_RIPWIRE_VARIANT=" + shellSingleQuote("valid"),
+		"export FAKE_RIPWIRE_RECORDINGS FAKE_RIPWIRE_VARIANT",
+		"exec " + shellSingleQuote(fake) + " \"$@\"",
+		"",
+	}, "\n")
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Chmod after WriteFile so a restrictive umask cannot strip the exec bit:
+	// exec.LookPath silently skips a non-executable ripwire, and the
+	// adapter-selection assertions would then pass vacuously.
+	if err := os.Chmod(wrapper, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", prependPath(bin))
+}
+
+// shellSingleQuote quotes s as a POSIX single-quoted word: no interpolation,
+// no expansion. It is a deliberate duplicate of the helper in
+// internal/ripwireadapter/fake_ripwire_test.go — _test.go helpers are not
+// importable across packages, and a shared test-support package earns its
+// place only at a third consumer.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // TestRunAnalyze_AdapterSelection proves registry selection (task 7.2):
@@ -222,7 +253,7 @@ func TestRunAnalyze_GoPathByteRegression(t *testing.T) {
 
 	// The recorded golden: stability across branches, not just this run.
 	goldenPath := filepath.Join(repoRoot(t), "cmd", "vibe-check", "testdata", "analyze", "go-regression.json")
-	if os.Getenv("WRITE_GOLDEN") == "1" {
+	if *updateGoldens {
 		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -233,10 +264,10 @@ func TestRunAnalyze_GoPathByteRegression(t *testing.T) {
 	}
 	golden, err := os.ReadFile(goldenPath)
 	if err != nil {
-		t.Fatalf("read golden (generate with WRITE_GOLDEN=1): %v", err)
+		t.Fatalf("read golden (generate with go test ./cmd/vibe-check/ -update): %v", err)
 	}
 	if !bytes.Equal(got, golden) {
-		t.Error("output differs from the recorded golden; if intentional, regenerate with WRITE_GOLDEN=1")
+		t.Error("output differs from the recorded golden; if intentional, regenerate with go test ./cmd/vibe-check/ -update")
 	}
 }
 

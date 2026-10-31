@@ -573,10 +573,11 @@ const reportFixtureDir = "testdata/report"
 //	go test ./cmd/vibe-check/ -update
 //
 // It governs every golden family in this package: the report goldens under
-// testdata/report and the diff goldens under testdata/diff. Regeneration
-// runs inside the test binary, so the no-provenance golden records exactly
-// the fallback identity that binary renders.
-var updateGoldens = flag.Bool("update", false, "rewrite golden files under testdata/report and testdata/diff instead of comparing")
+// testdata/report, the diff goldens under testdata/diff, and the analyze
+// golden under testdata/analyze (the Go-path byte-regression snapshot).
+// Regeneration runs inside the test binary, so the no-provenance golden
+// records exactly the fallback identity that binary renders.
+var updateGoldens = flag.Bool("update", false, "rewrite golden files under testdata/report, testdata/diff, and testdata/analyze instead of comparing")
 
 // reportGoldenFixtures lists every committed fixture with the behavior the
 // report command must produce for it:

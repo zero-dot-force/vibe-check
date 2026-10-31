@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "1.3",
+  "language": "go",
+  "modules": [
+    {
+      "path": "example.com/coupling/pkga",
+      "name": "pkga",
+      "ca": 0,
+      "ce": 2,
+      "exportedTypes": 0,
+      "abstractTypes": 0,
+      "instability": 1,
+      "abstractness": 0,
+      "distance": 0,
+      "lcom": 0,
+      "zone": "main-sequence",
+      "duplications": null,
+      "totalLines": 0
+    },
+    {
+      "path": "example.com/coupling/pkgb",
+      "name": "pkgb",
+      "ca": 2,
+      "ce": 0,
+      "exportedTypes": 0,
+      "abstractTypes": 0,
+      "instability": 0,
+      "abstractness": 0,
+      "distance": 1,
+      "lcom": 0,
+      "zone": "zone-of-pain",
+      "duplications": null,
+      "totalLines": 0
+    },
+    {
+      "path": "example.com/coupling/pkgc",
+      "name": "pkgc",
+      "ca": 0,
+      "ce": 1,
+      "exportedTypes": 0,
+      "abstractTypes": 0,
+      "instability": 1,
+      "abstractness": 0,
+      "distance": 0,
+      "lcom": 0,
+      "zone": "main-sequence",
+      "duplications": null,
+      "totalLines": 0
+    }
+  ],
+  "cycles": [],
+  "warnings": [],
+  "status": "complete"
+}

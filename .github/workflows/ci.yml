@@ -1,7 +1,7 @@
 # CI pipeline for vibe-check: build, test, coverage-floor ratchet, vet, and lint.
 # Runs on pushes to main and pull requests targeting main.
 # The structural-gate-dogfood job (PRs only) smoke-tests the reusable
-# structural gate consumer path; the authoritative gate is structural-gate.yml.
+# structural gate consumer path; the authoritative gate is vibe-check-structural-gate.yaml.
 name: CI — Build, Test, and Lint
 
 on:
@@ -59,7 +59,7 @@ jobs:
   # job dispatches the workflow_call consumer path on every PR — proving
   # reference resolution, default-input wiring, release download, and gate
   # execution end-to-end. A consumer smoke test, not the authoritative gate:
-  # structural-gate.yml keeps building vibe-check from the PR's own source.
+  # vibe-check-structural-gate.yaml keeps building vibe-check from the PR's own source.
   structural-gate-dogfood:
     # PR-only guard (spec-review advisory): ci.yml also triggers on push, and
     # on a push event github.event.pull_request.base.sha is empty — the

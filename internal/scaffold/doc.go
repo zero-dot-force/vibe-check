@@ -1,7 +1,9 @@
-// Package scaffold embeds the vibe-check agent and command asset templates,
-// deploys them into a target repository's .opencode/agents/ and
-// .opencode/commands/ directories, and registers the deployed review agent
-// into the target's Unbound Force policy files via `vibe-check init`.
+// Package scaffold embeds the vibe-check agent and command asset templates
+// and the CI workflow template, deploys the agent and command assets into a
+// target repository's .opencode/agents/ and .opencode/commands/ directories,
+// optionally deploys the CI workflow into .github/workflows/, and registers
+// the deployed review agent into the target's Unbound Force policy files
+// via `vibe-check init`.
 //
 // # Role
 //
@@ -12,19 +14,29 @@
 // project so OpenCode can auto-discover them. After deployment it registers
 // the divisor-entropy reviewer into the project's .uf/ policy files
 // (reviewer-capabilities.yaml and review-matrix.yaml) with a byte-preserving
-// splice, so review dispatch includes the entropy reviewer. Shipping the
-// assets inside the same binary that runs `vibe-check analyze` keeps the
-// deployed assets aligned with the metrics engine they drive.
+// splice, so review dispatch includes the entropy reviewer. Under
+// `vibe-check init --ci` it additionally renders the embedded
+// structural-gate caller workflow template with the validated release pin
+// pair (tag plus commit SHA) and deploys it into the target's
+// .github/workflows/ directory, skip-if-present because the file is user
+// property once written. Shipping the assets inside the same binary that
+// runs `vibe-check analyze` keeps the deployed assets aligned with the
+// metrics engine they drive.
 //
 // # Layout
 //
 //   - embed.go embeds assets/agents/*.md into an [embed.FS] exposed by
-//     [AgentAssets] and assets/commands/*.md into an [embed.FS] exposed by
-//     [CommandAssets].
+//     [AgentAssets], assets/commands/*.md into an [embed.FS] exposed by
+//     [CommandAssets], and assets/ci/*.yaml into an [embed.FS] exposed by
+//     [CIAssets].
 //   - assets/agents/ holds the Markdown agent definitions.
 //   - assets/commands/ holds the Markdown slash command definitions.
+//   - assets/ci/ holds the CI workflow templates deployed by init --ci.
 //   - scaffold.go deploys both asset categories via [Run], using a
 //     [deployCategory] helper for each category.
+//   - ci.go validates the release pin pair, renders the caller workflow
+//     template, deploys it skip-if-present, and detects the language
+//     manifest at the target root.
 //   - register.go holds the registration table and the guarded filesystem
 //     orchestration that splices each registered review agent into the .uf/
 //     policy files.

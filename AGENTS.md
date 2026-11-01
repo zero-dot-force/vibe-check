@@ -244,6 +244,10 @@ go build ./cmd/vibe-check
 # Deploy embedded agent and command assets into .opencode/ of a project
 go run ./cmd/vibe-check init .            # --force to overwrite, --json for machine output
                                         # also registers divisor-entropy into .uf/ policy files
+                                        # --ci additionally scaffolds the structural-gate caller
+                                        # workflow into .github/workflows/ (pinned to a release;
+                                        # skipped on rerun; --vibe-version overrides the pin,
+                                        # requires --ci)
 
 # Analyze a module and write ModuleGraph JSON to a file (default: stdout)
 go run ./cmd/vibe-check analyze -o graph.json .            # --output is the long form
@@ -288,7 +292,7 @@ coverage-floors.json # Committed per-package coverage floor baseline (tighten-on
   ci.yml            # Build, test, vet, lint, and coverage-floor ratchet on PR and push; structural-gate-dogfood job dogfoods the reusable gate on PRs
   release.yml       # Release pipeline (workflow_dispatch tag → GitHub Release)
   reusable_structural_gate.yml # Reusable workflow_call structural gate consuming the released binary
-  structural-gate.yml # Entropy-regression gate on pull_request
+  vibe-check-structural-gate.yaml # Entropy-regression gate on pull_request; same filename `vibe-check init --ci` scaffolds
 .opencode/          # OpenCode agent configuration, skills, packs
 .specify/           # Constitution and governance memory
 .uf/                # Unbound Force tooling configuration
@@ -297,7 +301,7 @@ cmd/vibe-check/     # CLI entry point (Layer 3)
   root.go           # Cobra root command with --version flag
   analyze.go        # analyze subcommand with threshold flags (incl --output/-o)
   diff.go           # diff subcommand (base vs PR entropy delta + verdict; --markdown report)
-  init.go           # init subcommand (deploys embedded assets; registers entropy reviewer in .uf/)
+  init.go           # init subcommand (deploys embedded assets; --ci scaffolds the pinned structural-gate caller; registers entropy reviewer in .uf/)
   report.go         # report subcommand (markdown/JSON report from a ModuleGraph snapshot)
   provenance.go     # shared provenance envelope (producer/version/generatedAt)
   testdata/         # Golden-file fixtures for the report and diff subcommands
@@ -320,19 +324,24 @@ internal/goadapter/ # Go language adapter (Layer 2)
   testdata/         # Test fixtures (coupling, types, lcom, extensions, partial)
 internal/scaffold/  # Embedded asset deployment + UF policy registration for `vibe-check init`
   doc.go            # Package-level GoDoc
-  embed.go          # //go:embed assets/{agents,commands}/*.md (embedded source of truth)
+  embed.go          # //go:embed assets/{agents,commands}/*.md + assets/ci/*.yaml (embedded source of truth)
   scaffold.go       # Symlink-safe asset writer (skip/force; 0o755 dirs, 0o644 files)
+  ci.go             # CI caller workflow: pin validation, manifest seam, template render + skip-if-present deploy
   register.go       # Registration table + guarded orchestration for .uf/ policy files
   splice.go         # Pure byte-preserving splices for .uf/ policy files
   lines.go          # Line-scanning helpers for the block-scalar YAML subset
   scaffold_test.go  # Writer + embedded-asset contract tests
+  ci_test.go        # CI deployment contract tests (golden, skip-if-present, atomicity, manifest seam)
   register_test.go  # UF policy registration contract tests
   testdata/uf/      # Committed UF policy fixtures (before/after splice pairs)
+  testdata/ci/      # Golden file for the rendered caller workflow (-update to regenerate)
   assets/agents/    # Embedded Review Council agent assets
     divisor-entropy.md      # Structural-entropy divisor agent (source of truth)
     vibe-check-reporter.md  # Interactive metrics reporter agent (summary/detailed/trending)
   assets/commands/  # Embedded slash command assets
     vibe-check.md   # /vibe-check command (delegates to vibe-check-reporter agent)
+  assets/ci/        # Embedded CI caller-workflow template (two-pin placeholders per design D10)
+    vibe-check-structural-gate.yaml # Structural-gate caller workflow template
 internal/coverratchet/ # Per-package coverage floor engine (tighten-only ratchet)
   doc.go            # Package-level GoDoc
   profile.go        # Coverage profile loading and module-relative package keys
@@ -406,7 +415,12 @@ The architecture follows a three-layer design per the RFC phasing:
   `.opencode/agents/` and command assets into `.opencode/commands/`, plus
   registering the `divisor-entropy` reviewer into `.uf/reviewer-capabilities.yaml`
   and `.uf/review-matrix.yaml` (idempotent, byte-preserving splice; absent
-  files are noticed, never created; refusal exits 2), whose
+  files are noticed, never created; refusal exits 2) — and, with `--ci`,
+  additionally scaffolding the structural-gate caller workflow into
+  `.github/workflows/vibe-check-structural-gate.yaml`, fail-closed pinned to
+  a vibe-check release `>= v0.3.0` (tag via `with:`, release commit SHA via
+  `uses:`; `--vibe-version` overrides the pin and requires `--ci`; the
+  emitted file is skipped on rerun even under `--force`) — whose
   `--json` output likewise carries the optional `provenance` object omittable
   via `--no-provenance` and a normalized `notices` array.
 

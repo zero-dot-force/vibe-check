@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -148,5 +149,24 @@ func TestVerifyContained(t *testing.T) {
 	}
 	if err := verifyContained(root, outside); err == nil {
 		t.Errorf("verifyContained(outside): expected escape error, got nil")
+	}
+}
+
+// TestVerifyContained_MissingTarget covers the resolve failure path: a
+// target that does not exist cannot be resolved and is rejected.
+func TestVerifyContained_MissingTarget(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+
+	missing := filepath.Join(root, "missing")
+	err = verifyContained(root, missing)
+	if err == nil {
+		t.Fatalf("verifyContained(missing): expected resolve error, got nil")
+	}
+	if !strings.Contains(err.Error(), "scaffold: resolve") {
+		t.Errorf("verifyContained(missing): got %v, want error mentioning scaffold: resolve", err)
 	}
 }

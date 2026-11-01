@@ -466,15 +466,18 @@ type globErrFS struct {
 
 func (f globErrFS) Glob(string) ([]string, error) { return nil, f.err }
 
-// TestRun_GlobEnumerationError covers the enumeration failure path: a
-// failing Glob aborts the run with the underlying error in the chain.
-func TestRun_GlobEnumerationError(t *testing.T) {
+// TestDeployCategory_GlobEnumerationError covers the enumeration failure
+// path: a failing Glob aborts the deploy with the underlying error in the
+// chain. It calls deployCategory directly because run's parameter set
+// varies across scaffold revisions; the Glob seam belongs to deployCategory.
+func TestDeployCategory_GlobEnumerationError(t *testing.T) {
 	t.Parallel()
 	sentinel := errors.New("injected glob failure")
 	failing := globErrFS{FS: fstest.MapFS{}, err: sentinel}
+	cat := category{sourceDir: "assets/agents", targetSubdir: ".opencode/agents", prefix: "agents"}
 
-	if _, err := run(failing, emptyFS, Options{TargetDir: t.TempDir()}); !errors.Is(err, sentinel) {
-		t.Fatalf("run with failing Glob: got %v, want wrapped %v", err, sentinel)
+	if _, _, _, err := deployCategory(failing, cat, t.TempDir(), nil, false); !errors.Is(err, sentinel) {
+		t.Fatalf("deployCategory with failing Glob: got %v, want wrapped %v", err, sentinel)
 	}
 }
 

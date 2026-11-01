@@ -162,8 +162,12 @@ func TestParseDepsOutput_MalformedInputs(t *testing.T) {
 		// first-error choice; the pre-fix map-iteration order reported a
 		// random attribute here.
 		{"missing root attrs", `<deps schema="ripwire.deps/v1"><health files="1" dep_files="1" ccd="1" acd="1" nccd="1" shape="x" dep_langs="py"/></deps>`, "<deps> missing files attribute"},
-		{"health missing attrs", `<deps schema="ripwire.deps/v1" files="0" shown="0" capped="0" total="0" has_more="0" next_offset="0" offset="0" limit="1" root="."><health dep_files="1" ccd="1" acd="1" nccd="1" shape="x" dep_langs="py"/></deps>`, ""},
-		{"f row missing p", `<deps schema="ripwire.deps/v1" files="1" shown="1" capped="0" total="1" has_more="0" next_offset="1" offset="0" limit="1" root="."><health files="1" dep_files="1" ccd="1" acd="1" nccd="1" shape="x" dep_langs="py"/><godfiles total="0" shown="0" capped="0"/><f includes="0" afferent="0" instab="0" transitive="1"/></deps>`, ""},
+		// <health> omits only "files", so the health requireInts group
+		// deterministically names "health files" first by declaration order.
+		{"health missing attrs", `<deps schema="ripwire.deps/v1" files="0" shown="0" capped="0" total="0" has_more="0" next_offset="0" offset="0" limit="1" root="."><health dep_files="1" ccd="1" acd="1" nccd="1" shape="x" dep_langs="py"/></deps>`, "missing health files attribute"},
+		// The <f> row omits only its p attribute; the row loop's direct
+		// path check fires before the row's requireInts group.
+		{"f row missing p", `<deps schema="ripwire.deps/v1" files="1" shown="1" capped="0" total="1" has_more="0" next_offset="1" offset="0" limit="1" root="."><health files="1" dep_files="1" ccd="1" acd="1" nccd="1" shape="x" dep_langs="py"/><godfiles total="0" shown="0" capped="0"/><f includes="0" afferent="0" instab="0" transitive="1"/></deps>`, "<f> row missing p attribute"},
 	}
 
 	for _, tc := range cases {

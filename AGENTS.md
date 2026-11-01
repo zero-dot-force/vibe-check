@@ -384,7 +384,7 @@ metrics/            # Universal coupling metrics model (Layer 1)
   registry.go       # Adapter registry (dependency-injected)
   schema.go         # Embedded JSON schema access
   security.go       # Path validation and environment sanitization
-  validate.go       # JSON schema validation (accepts v1.0, v1.1, 1.2, and v1.3)
+  validate.go       # JSON schema validation (accepts v1.0, v1.1, v1.2, and v1.3)
   values.go         # Named metric types (Instability, Abstractness, etc.)
   verdict.go        # Verdict + DecideVerdict (protected entropy gate thresholds)
   warning.go        # Warning type for analysis caveats

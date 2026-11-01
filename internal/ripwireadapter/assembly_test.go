@@ -221,13 +221,25 @@ func TestAnalyze_StructuralInvariants(t *testing.T) {
 				t.Errorf("module count: got %d, want %d (wantLines keys are the expected module set)",
 					len(graph.Modules), len(wantLines))
 			}
+			consumed := make(map[string]bool, len(wantLines))
 			for i, m := range graph.Modules {
 				if m.Duplications == nil {
 					t.Errorf("modules[%d].duplications: got nil, want non-nil", i)
 				}
-				if m.TotalLines != wantLines[m.Path] {
+				want, ok := wantLines[m.Path]
+				if !ok {
+					t.Errorf("modules[%d] (%s): path missing from wantLines", i, m.Path)
+					continue
+				}
+				consumed[m.Path] = true
+				if m.TotalLines != want {
 					t.Errorf("modules[%d] (%s) totalLines: got %d, want %d (sum of indexed source-file loc)",
-						i, m.Path, m.TotalLines, wantLines[m.Path])
+						i, m.Path, m.TotalLines, want)
+				}
+			}
+			for path := range wantLines {
+				if !consumed[path] {
+					t.Errorf("wantLines key %q matched no module; a missing key reads as 0 and can collide with an expected-0 entry", path)
 				}
 			}
 

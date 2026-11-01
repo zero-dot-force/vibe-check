@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output through the new adapter registry, pinned by a regression golden.
   Without ripwire on `PATH`, Python and TypeScript analysis exits `2`
   with install guidance; Go analysis needs no ripwire.
+  Spec: `openspec/changes/ripwire-adapter/specs/ripwire-adapter/spec.md`
 - `vibe-check init` now registers the `divisor-entropy` reviewer into the
   project's Unbound Force policy files after deploying assets. It inserts a
   canonical `divisor-entropy` entry under `reviewers:` in

@@ -116,7 +116,7 @@ Python and TypeScript graphs are `partial` whenever any warning is present.
 | `--max-instability` | float | unset (no check) | Fail if any module's instability exceeds this value. Must be in `[0.0, 1.0]`. |
 | `--max-distance` | float | unset (no check) | Fail if any module's distance from the main sequence exceeds this value. Must be in `[0.0, 1.0]`. |
 | `--max-lcom` | int | unset (no check) | Fail if any module's LCOM4 exceeds this value. Must be `>= 1`. |
-| `--max-duplication` | float | `5.0` | Fail if any module's duplication percentage exceeds this value. Must be in `[0.0, 100.0]`. Populated by the Go adapter; Python/TypeScript report duplication as unsupported (zero-valued), so the flag never fires for them. |
+| `--max-duplication` | float | unset (no check) | Fail if any module's duplication percentage exceeds this value. Must be in `[0.0, 100.0]`. Populated by the Go adapter; Python/TypeScript report duplication as unsupported (zero-valued), so the flag never fires for them. |
 | `--no-circular-deps` | bool | `false` | Treat any detected circular dependency as a violation. |
 | `--no-provenance` | bool | `false` | Omit the `provenance` object from output for byte-reproducible JSON. |
 | `--timeout` | duration | none | Bound total analysis time (e.g., `30s`, `2m`). No timeout by default. |

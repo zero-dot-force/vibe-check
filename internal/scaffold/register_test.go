@@ -842,3 +842,151 @@ advisor:
 		t.Errorf("content: got:\n%s\nwant:\n%s", result.content, want)
 	}
 }
+
+func TestSpliceMatrix_NoticesWhenAdvisorSectionAbsent(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+	content := `# Hand-curated matrix without an advisor section.
+defaults:
+  tier: standard
+`
+
+	result := spliceMatrix([]byte(content), reg)
+
+	if result.inserted || result.present {
+		t.Errorf("outcome: got inserted=%v present=%v, want false/false", result.inserted, result.present)
+	}
+	wantNotices := []string{
+		".uf/review-matrix.yaml: no top-level advisor: section; item not inserted",
+	}
+	if !slices.Equal(result.notices, wantNotices) {
+		t.Errorf("notices: got %v, want %v", result.notices, wantNotices)
+	}
+	if string(result.content) != content {
+		t.Errorf("content changed: got:\n%s", result.content)
+	}
+}
+
+func TestSpliceMatrix_NoticesAdvisorInlineValue(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+	content := `# Hand-curated matrix whose advisor section is flow-mapped.
+advisor: {}
+`
+
+	result := spliceMatrix([]byte(content), reg)
+
+	if result.inserted || result.present {
+		t.Errorf("outcome: got inserted=%v present=%v, want false/false", result.inserted, result.present)
+	}
+	wantNotices := []string{
+		`.uf/review-matrix.yaml: advisor: section carries inline value "{}"; item not inserted`,
+	}
+	if !slices.Equal(result.notices, wantNotices) {
+		t.Errorf("notices: got %v, want %v", result.notices, wantNotices)
+	}
+	if string(result.content) != content {
+		t.Errorf("content changed: got:\n%s", result.content)
+	}
+}
+
+func TestSpliceMatrix_FallbackIndentForZeroColumnItems(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+	content := `# Hand-curated matrix whose code items sit at column zero.
+advisor:
+  code:
+- divisor-guard
+  spec:
+    - divisor-guard
+  triage:
+    - divisor-guard
+  feedback:
+    - divisor-guard
+`
+
+	result := spliceMatrix([]byte(content), reg)
+
+	if !result.inserted {
+		t.Fatalf("inserted: got false, want true (all four lists gain the item)")
+	}
+	if result.present {
+		t.Errorf("present: got true, want false (no list contained the item)")
+	}
+	if len(result.notices) != 0 {
+		t.Errorf("notices: got %v, want none", result.notices)
+	}
+	want := `# Hand-curated matrix whose code items sit at column zero.
+advisor:
+  code:
+    - divisor-entropy
+- divisor-guard
+  spec:
+    - divisor-entropy
+    - divisor-guard
+  triage:
+    - divisor-entropy
+    - divisor-guard
+  feedback:
+    - divisor-entropy
+    - divisor-guard
+`
+	if string(result.content) != want {
+		t.Errorf("content: got:\n%s\nwant:\n%s", result.content, want)
+	}
+}
+
+func TestSpliceCapabilities_RecognizesFlowScopesAsNonEmpty(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+	content := `# Hand-curated policy whose reviewer declares flow-style scopes.
+reviewers:
+  - agent: divisor-entropy
+    capability: review
+    scopes: [standard]
+`
+
+	result := spliceCapabilities([]byte(content), reg)
+
+	if result.inserted {
+		t.Errorf("inserted: got true, want false (entry already present)")
+	}
+	if !result.present {
+		t.Errorf("present: got false, want true")
+	}
+	if len(result.notices) != 0 {
+		t.Errorf("notices: got %v, want none (flow scopes read as non-empty)", result.notices)
+	}
+	if string(result.content) != content {
+		t.Errorf("content changed: got:\n%s", result.content)
+	}
+}
+
+func TestSpliceCapabilities_AdvisoryNoticeForMissingCapability(t *testing.T) {
+	t.Parallel()
+	reg := registrations[0]
+	content := `# Hand-curated policy whose reviewer declares scopes but no capability.
+reviewers:
+  - agent: divisor-entropy
+    scopes:
+      - standard
+`
+
+	result := spliceCapabilities([]byte(content), reg)
+
+	if result.inserted {
+		t.Errorf("inserted: got true, want false (entry already present)")
+	}
+	if !result.present {
+		t.Errorf("present: got false, want true")
+	}
+	wantNotices := []string{
+		".uf/reviewer-capabilities.yaml: divisor-entropy present with capability: none; review dispatch may fail closed",
+	}
+	if !slices.Equal(result.notices, wantNotices) {
+		t.Errorf("notices: got %v, want %v", result.notices, wantNotices)
+	}
+	if string(result.content) != content {
+		t.Errorf("content changed: got:\n%s", result.content)
+	}
+}

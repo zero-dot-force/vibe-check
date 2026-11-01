@@ -456,3 +456,51 @@ func TestRun_MixedAgentAndCommandResults(t *testing.T) {
 		t.Errorf("Written: got %v, want %v", res.Written, wantWritten)
 	}
 }
+
+// globErrFS is an fs.FS whose Glob always fails, exercising the asset
+// enumeration error path in deployCategory.
+type globErrFS struct {
+	fs.FS
+	err error
+}
+
+func (f globErrFS) Glob(string) ([]string, error) { return nil, f.err }
+
+// TestRun_GlobEnumerationError covers the enumeration failure path: a
+// failing Glob aborts the run with the underlying error in the chain.
+func TestRun_GlobEnumerationError(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("injected glob failure")
+	failing := globErrFS{FS: fstest.MapFS{}, err: sentinel}
+
+	if _, err := run(failing, emptyFS, Options{TargetDir: t.TempDir()}); !errors.Is(err, sentinel) {
+		t.Fatalf("run with failing Glob: got %v, want wrapped %v", err, sentinel)
+	}
+}
+
+// TestEnsureDir_SkipsEmptyComponents covers the empty-component skip in
+// ensureDir's walk: doubled separators in the relative path must not
+// produce a zero-length path component.
+func TestEnsureDir_SkipsEmptyComponents(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+
+	got, err := ensureDir(root, "agents//nested")
+	if err != nil {
+		t.Fatalf("ensureDir: %v", err)
+	}
+	want := filepath.Join(root, "agents", "nested")
+	if got != want {
+		t.Errorf("path: got %q, want %q", got, want)
+	}
+	info, statErr := os.Stat(got)
+	if statErr != nil {
+		t.Fatalf("stat created dir: %v", statErr)
+	}
+	if !info.IsDir() {
+		t.Errorf("created path is not a directory: %s", got)
+	}
+}

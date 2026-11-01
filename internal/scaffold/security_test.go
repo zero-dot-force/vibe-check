@@ -121,7 +121,7 @@ func TestRun_ReadEmbeddedAssetError(t *testing.T) {
 		FS:         fstest.MapFS{},
 		globResult: []string{"assets/agents/ghost.md"},
 	}
-	if _, err := run(agents, emptyFS, Options{TargetDir: t.TempDir()}); err == nil {
+	if _, err := run(agents, emptyFS, emptyFS, Options{TargetDir: t.TempDir()}); err == nil {
 		t.Fatalf("expected error reading a missing embedded asset, got nil")
 	}
 }

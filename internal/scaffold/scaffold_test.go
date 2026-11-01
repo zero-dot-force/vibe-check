@@ -406,7 +406,7 @@ func TestRun_ResultsAreSorted(t *testing.T) {
 	want := []string{"agents/alpha.md", "agents/bravo.md", "agents/charlie.md"}
 	dir := t.TempDir()
 
-	res, err := run(agents, emptyFS, Options{TargetDir: dir})
+	res, err := run(agents, emptyFS, emptyFS, Options{TargetDir: dir})
 	if err != nil {
 		t.Fatalf("run (write): %v", err)
 	}
@@ -414,7 +414,7 @@ func TestRun_ResultsAreSorted(t *testing.T) {
 		t.Errorf("Written not sorted: got %v, want %v", res.Written, want)
 	}
 
-	res2, err := run(agents, emptyFS, Options{TargetDir: dir})
+	res2, err := run(agents, emptyFS, emptyFS, Options{TargetDir: dir})
 	if err != nil {
 		t.Fatalf("run (skip): %v", err)
 	}
@@ -422,7 +422,7 @@ func TestRun_ResultsAreSorted(t *testing.T) {
 		t.Errorf("Skipped not sorted: got %v, want %v", res2.Skipped, want)
 	}
 
-	res3, err := run(agents, emptyFS, Options{TargetDir: dir, Force: true})
+	res3, err := run(agents, emptyFS, emptyFS, Options{TargetDir: dir, Force: true})
 	if err != nil {
 		t.Fatalf("run (force): %v", err)
 	}
@@ -447,7 +447,7 @@ func TestRun_MixedAgentAndCommandResults(t *testing.T) {
 	}
 	dir := t.TempDir()
 
-	res, err := run(agents, cmds, Options{TargetDir: dir})
+	res, err := run(agents, cmds, emptyFS, Options{TargetDir: dir})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

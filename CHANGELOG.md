@@ -57,6 +57,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `--update` for those packages alone, since a blanket update would
   also have raised `metrics` past its 82.0 accommodation.
   Spec: `openspec/changes/ci-coverage-ratchet-floors/specs/ci-coverage-ratchet/spec.md`
+- `vibe-check init --ci` additionally scaffolds the structural-gate caller
+  workflow into the target's `.github/workflows/vibe-check-structural-gate.yaml`,
+  rendered from a template embedded alongside the existing agent and command
+  assets. The emitted single-job caller is pinned to a vibe-check release with
+  both pins: `uses:` carries the release's commit SHA (immutable) and
+  `with: version:` carries the release tag, matching the two-pin consumer
+  guidance in the README's "Version pinning" section. Pins resolve fail-closed:
+  by default from the binary's own release identity (ldflags version, falling
+  back to build-info; a release binary reuses its embedded commit SHA fully
+  offline), overridable with `--vibe-version` (which requires `--ci`); a dev
+  build, an unparseable or below-`v0.3.0` tag, or an unresolvable commit exits
+  `2` before any files are written. The emitted file is user property —
+  skipped on rerun even under `--force` — and the run summary ends with a CI
+  next-steps section (commit the file; advisory until branch protection;
+  tighten-only threshold overrides; `branches:` for non-`main` defaults; manual
+  pin bumps). A target root without a known language manifest (`go.mod` today)
+  still gets the workflow plus an advisory notice; the manifest table is a seam
+  for the future Python/TypeScript adapters. Plain `init` without `--ci` is
+  unchanged: no `.github/` tree, byte-identical output.
+  Spec: `openspec/changes/init-scaffolds-structural-gate-caller/specs/init-ci-scaffolding/spec.md`
+
+### Changed
+
+- Renamed the repository's self-gate workflow from
+  `.github/workflows/structural-gate.yml` to
+  `.github/workflows/vibe-check-structural-gate.yaml` (pure `git mv` — the
+  `name:` field, job names, and contents are byte-identical, so branch
+  protection and Actions history are unaffected). The new name matches the
+  filename `vibe-check init --ci` scaffolds in consumer repositories, making
+  this repository's own gate the reference deployment of the emitted caller.
+  Spec: `openspec/changes/init-scaffolds-structural-gate-caller/specs/init-ci-scaffolding/spec.md`
 
 ## [0.3.0] - 2026-10-28
 

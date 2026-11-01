@@ -170,7 +170,7 @@ jobs:
           persist-credentials: false
 
       # Checkout base (task 1.3, design D2): the base snapshot as a sibling
-      # directory, mirroring structural-gate.yml. The caller's pull_request
+      # directory, mirroring vibe-check-structural-gate.yaml. The caller's pull_request
       # event context (github.event.pull_request.base.sha) propagates into
       # this called workflow, so the base revision resolves with no extra
       # caller input. Requires a pull_request-triggered caller — other event

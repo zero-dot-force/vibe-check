@@ -231,7 +231,7 @@ schema-invalid, or when a `--max-instability-delta`, `--max-distance-delta`, or
 With `--gate`, a `REQUEST_CHANGES` verdict instead exits `1` (an `APPROVE` or `COMMENT` verdict
 still exits `0`), so CI can block a PR on structural regression. The verdict and reasons are
 still written to the payload; only the exit code changes. See
-[`.github/workflows/structural-gate.yml`](.github/workflows/structural-gate.yml) for the
+[`.github/workflows/vibe-check-structural-gate.yaml`](.github/workflows/vibe-check-structural-gate.yaml) for the
 pull-request regression gate that runs `analyze` on both the PR head and base and then
 `diff --gate`; its Report step appends the `diff --markdown` report to the PR step
 summary, so the report appears in the Checks UI even when the gate fails.
@@ -240,6 +240,34 @@ This gate is advisory until a repository admin enables branch protection and mar
 `structural-gate` required — it fails the check but does not by itself block a merge.
 
 ## CI integration
+
+### Install the caller workflow
+
+`vibe-check init --ci` scaffolds the caller workflow for you — no YAML to copy:
+
+```bash
+vibe-check init --ci        # run from the repository root
+```
+
+This writes `.github/workflows/vibe-check-structural-gate.yaml`: a single
+`structural-gate` job calling the reusable workflow this section documents,
+pinned to the release the binary itself came from. Both pins are filled in —
+`uses:` carries the release's commit SHA (immutable, like SHA-pinning an
+action) and `with: version:` carries the release tag — so the emitted file
+follows the two-pin guidance in ["Version pinning"](#version-pinning) exactly.
+Pin resolution is fail-closed: the release must be `>= v0.3.0` (the first
+release containing the reusable workflow), and a dev build, an unparseable
+version, or an unresolvable commit exits `2` before any files are written.
+Pass `--vibe-version <tag>` to pin a different release than the binary's own
+(requires `--ci`).
+
+The emitted file is yours. `init --ci` never overwrites it — reruns report it
+skipped even under `--force` — so you can edit the commented tighten-only
+thresholds, the `branches:` filter, and the pins freely. To upgrade the gate,
+edit the file's pins by hand (or delete the file and rerun `init --ci`);
+reruns alone never bump the version you pinned.
+
+### Calling the workflow
 
 Any repository can run the same structural gate on its pull requests with a single SHA-pinned
 job — no build-from-source, no secrets. The called workflow
@@ -371,6 +399,7 @@ registers the `divisor-entropy` reviewer into the project's Unbound Force policy
 
 ```bash
 vibe-check init [path]     # path defaults to "."; --force to overwrite, --json for machine output
+vibe-check init --ci       # additionally scaffold the structural-gate caller workflow ("CI integration")
 ```
 
 It writes assets to two directories:
@@ -380,6 +409,16 @@ It writes assets to two directories:
   metrics interpreter with summary, detailed, and trending modes).
 - `.opencode/commands/` — the `/vibe-check` slash command, which delegates to the
   `vibe-check-reporter` agent for conversational architectural analysis.
+
+With `--ci`, `init` additionally writes a third location:
+
+- `.github/workflows/vibe-check-structural-gate.yaml` — the structural-gate
+  caller workflow, pinned to a vibe-check release with both the tag
+  (`with: version:`) and the release commit SHA (`uses:`). See
+  ["Install the caller workflow"](#install-the-caller-workflow) under
+  "CI integration" for the pinning and ownership semantics. The file is
+  skipped on rerun even under `--force`, and `--vibe-version <tag>` pins a
+  different release than the binary's own (it requires `--ci`).
 
 When the project carries Unbound Force policy files, `init` also registers the reviewer
 surgically, preserving every other line:
@@ -402,7 +441,9 @@ and triggers no registration. `--force` affects asset overwrite only, never regi
 
 Existing files are skipped unless `--force` is given. Exit code `0` on success (including
 when every asset is skipped and notice-only policy gaps), `2` on an invalid target path, a policy
-file that cannot be safely rewritten (symlinked or non-regular), or I/O failure.
+file that cannot be safely rewritten (symlinked or non-regular), I/O failure, `--vibe-version`
+without `--ci`, or — with `--ci` — a release tag or commit SHA that cannot be resolved or
+validated.
 
 When run with `--json`, `init` also emits a top-level `provenance` object with `producer` (the constant
 `"vibe-check"`), `version` (the tool version), and `generatedAt` (an RFC 3339 UTC timestamp); pass
@@ -416,6 +457,11 @@ When run with `--json`, `init` also emits a top-level `provenance` object with `
   monorepos).
 - Large-repository performance is a P2 item: `go/packages` loads full ASTs and type
   information into memory, so very large monorepos may be slow.
+- The caller workflow scaffolded by `init --ci` hardcodes `branches: [main]`: edit the
+  `on: pull_request` filter when your default branch differs, or the gate never triggers.
+- `init --ci` detects the language manifest (a `go.mod`) at the repository root only, so a Go
+  module living at a monorepo subpath gets the non-Go notice. The workflow is still emitted;
+  point the caller's `path` and `go-version-file` inputs at the subpath to fix the analysis.
 
 ## License
 

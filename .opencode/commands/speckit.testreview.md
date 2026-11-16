@@ -1,5 +1,5 @@
 ---
-description: Perform a read-only testability analysis of spec artifacts by delegating to the reviewer-testing agent in Spec Review Mode.
+description: Perform a read-only testability analysis of spec artifacts by delegating to the divisor-gaze-testing agent in Spec Review Mode.
 ---
 <!-- scaffolded by gaze dev -->
 
@@ -61,9 +61,9 @@ Load only the minimal necessary context from each artifact:
 **From constitution:**
 - Load `.specify/memory/constitution.md` — focus on Principle IV: Testability
 
-### 3. Delegate to Reviewer-Testing Agent
+### 3. Delegate to Divisor-Gaze-Testing Agent
 
-Use the Task tool to delegate the analysis to the `reviewer-testing` agent in **Spec Review Mode**:
+Use the Task tool to delegate the analysis to the `divisor-gaze-testing` agent in **Spec Review Mode**:
 
 - Instruct the agent to operate in **Spec Review Mode** (not Code Review Mode)
 - Pass the feature directory path so the agent can read all spec artifacts
@@ -79,7 +79,7 @@ Produce a Markdown report (no file writes) with the following structure:
 | ID | Category | Severity | Location | Summary | Recommendation |
 |----|----------|----------|----------|---------|----------------|
 
-Categories map to the reviewer-testing agent's Spec Review Mode audit checklist:
+Categories map to the divisor-gaze-testing agent's Spec Review Mode audit checklist:
 - **Testability**: Vague or unmeasurable acceptance criteria
 - **Strategy**: Missing or incomplete test strategy (unit/integration/e2e)
 - **Fixtures**: Infeasible or undocumented test fixture requirements
@@ -134,23 +134,6 @@ Ask the user: "Would you like me to suggest concrete remediation edits for the t
 - **Missing coverage strategy is CRITICAL** — not HIGH, not MEDIUM
 - **Report zero issues gracefully** (emit success report with testability statistics)
 </protect>
-
-## Guardrails
-
-- **NEVER modify source code** — this command updates
-  spec artifacts ONLY. Implementation changes belong in
-  `/speckit.implement`, `/unleash`, or `/cobalt-crush`.
-- **NEVER modify test files, Go source, Markdown agents,
-  convention packs, or config files** outside the
-  `specs/NNN-*/` feature directory.
-- The ONLY files this command may write are:
-  - `FEATURE_SPEC` (the spec.md file)
-  - Files within `FEATURE_DIR` (spec artifacts:
-    plan.md, tasks.md, research.md, data-model.md,
-    quickstart.md, contracts/, checklists/)
-- The user needs to review the plan before
-  implementation begins. Implementing without review
-  defeats the purpose of the spec-first workflow.
 
 ## Context
 

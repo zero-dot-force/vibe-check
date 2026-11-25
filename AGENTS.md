@@ -290,7 +290,7 @@ golangci-lint run ./...
 coverage-floors.json # Committed per-package coverage floor baseline (tighten-only; enforced by the CI Coverage ratchet step)
 .github/workflows/  # CI and release workflows
   ci.yml            # Build, test, vet, lint, and coverage-floor ratchet on PR and push; structural-gate-dogfood job dogfoods the reusable gate on PRs
-  release.yml       # Release pipeline (workflow_dispatch tag → GitHub Release)
+  release.yml       # Release pipeline (workflow_dispatch tag → jflowers/ship go-release.yml → GitHub Release)
   reusable_structural_gate.yml # Reusable workflow_call structural gate consuming the released binary
   vibe-check-structural-gate.yaml # Entropy-regression gate on pull_request; same filename `vibe-check init --ci` scaffolds
 .opencode/          # OpenCode agent configuration, skills, packs

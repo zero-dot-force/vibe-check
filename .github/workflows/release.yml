@@ -1,53 +1,43 @@
-# Release pipeline: triggered manually via workflow_dispatch with a tag
-# input. Delegates tag validation and CI checks to org-infra reusable
-# workflows, then runs GoReleaser to build and publish.
+# Release pipeline: run from main with the tag (don't push tags yourself):
+#
+#   gh workflow run release.yml -f tag=v0.4.0
+#
+# The pipeline is jflowers/ship's shared go-release.yml, the same one
+# replicator, dewey and gaze use: the run must be on main, org-infra's
+# preflight checks the tag (semver, new, newer than the last), that the CI
+# checks below passed on HEAD and that there are unreleased commits, then
+# creates the tag; GoReleaser (org-infra, through ship) builds and
+# publishes the release with checksums, cosign signatures and SBOMs. No
+# signing secrets or tap are passed, so the darwin archives ship unsigned
+# and no cask is published, as before.
 name: Release — GoReleaser
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v0.2.0)'
+        description: 'Tag to release (e.g. v0.4.0)'
         required: true
         type: string
 
 permissions: {}
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  preflight:
-    name: Preflight — Tag Validation & CI Checks
-    uses: complytime/org-infra/.github/workflows/reusable_release_preflight.yml@58194ad2d1b24803263cac6fd1b54422e3c208dd # main
+  release:
+    name: Release
+    uses: jflowers/ship/.github/workflows/go-release.yml@74ed8075d5c25389bf4d2b775fa52214bed8d5b7 # v0.7.0
     with:
       tag: ${{ inputs.tag }}
-      # Org-infra auto-discovery only recognizes its own conventions
-      # (ci_checks.yml, ci_local.yml, ci_security.yml); this repo's CI is
-      # ci.yml. Pass the job names explicitly — they must exactly match the
-      # check-run names on the HEAD commit (bare job names, no workflow
-      # prefix). Keep in sync with .github/workflows/ci.yml if job names
-      # change.
+      # The check-run names on HEAD (bare job names from ci.yml). Keep in
+      # sync with .github/workflows/ci.yml if job names change.
       ci_checks: '["lint", "test"]'
+    # The scopes go-release.yml's jobs need: contents: write (tag, release),
+    # checks: read (CI verification), id-token: write (cosign, syft).
     permissions:
-      # Mirrors the scopes reusable_release_preflight.yml declares at the pinned
-      # SHA (contents: write for tag creation, checks: read for CI verification).
-      # A called workflow cannot elevate beyond the caller's grant. When bumping
-      # the pinned SHA, re-audit these grants against the callee's declared
-      # scopes at the new SHA before merging.
       contents: write
       checks: read
-    secrets: inherit
-
-  release:
-    name: Release — GoReleaser
-    needs: preflight
-    uses: complytime/org-infra/.github/workflows/reusable_release_goreleaser.yml@58194ad2d1b24803263cac6fd1b54422e3c208dd # main
-    with:
-      tag: ${{ needs.preflight.outputs.tag }}
-    permissions:
-      # Mirrors the scopes reusable_release_goreleaser.yml declares at the pinned
-      # SHA (contents: write for the GitHub Release, id-token: write for
-      # cosign/syft). A called workflow cannot elevate beyond the caller's grant.
-      # When bumping the pinned SHA, re-audit these grants against the callee's
-      # declared scopes at the new SHA before merging.
-      contents: write
       id-token: write
-    secrets: inherit

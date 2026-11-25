@@ -40,7 +40,7 @@
 ## 6. Documentation Impact
 
 - [x] 6.1 Add a "Changed" entry to CHANGELOG.md describing the revamped reporter output format (emoji contract, legend, scorecard, full metric names)
-- [ ] 6.2 File a documentation issue in `unbound-force/website` for the user-facing `/vibe-check` report format change (per constitution Website Documentation Sync)
+- [x] 6.2 File a documentation issue in `unbound-force/website` for the user-facing `/vibe-check` report format change (per constitution Website Documentation Sync) (unbound-force/website#452)
 - [x] 6.3 Assess whether README.md needs updating (reference to new metrics guide, updated agent description) — no change needed; README describes the binary, not the reporter agent
 - [x] 6.4 Validate AGENTS.md project structure reflects `docs/metrics-guide.md` and `.opencode/references/vibe-check-example-report.md` — new files are in `docs/` and `.opencode/references/`, both documented in project structure
 

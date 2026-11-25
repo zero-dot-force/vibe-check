@@ -8,7 +8,7 @@ import (
 )
 
 // Denylist pre-check tests — openspec/changes/archive/2026-11-24-ripwire-adapter task 3.2,
-// extended by openspec/changes/bump-ripwire-pin task 4.1.
+// extended by openspec/changes/archive/2026-11-25-bump-ripwire-pin task 4.1.
 //
 // They pin the mirror of ripwire's crawl denylist: source-bearing
 // directories named build/dist/out/target/vendor/third_party/captures

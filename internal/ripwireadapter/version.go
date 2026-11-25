@@ -15,7 +15,7 @@ import (
 // exact output shape. These two constants are the only code sites naming
 // the pinned pair; documentation elsewhere refers to "the pinned ripwire
 // release". The pair is ripwire 0.7.0, the first release containing
-// redhat-et/ripwire#533 (openspec/changes/bump-ripwire-pin design D1).
+// redhat-et/ripwire#533 (openspec/changes/archive/2026-11-25-bump-ripwire-pin design D1).
 const (
 	// pinnedRipwireVersion is the validated ripwire release version.
 	pinnedRipwireVersion = "0.7.0"

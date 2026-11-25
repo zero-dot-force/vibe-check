@@ -8,7 +8,7 @@ fixtures themselves are documented in [`FIXTURES.md`](FIXTURES.md).
 
 History: first captured from ripwire 0.6.9 @ `bedc0cd` by
 `openspec/changes/archive/2026-11-24-ripwire-adapter` (tasks 1.2–1.4); re-captured for the pin
-move by `openspec/changes/bump-ripwire-pin` (tasks 1.1–1.4, 7.1–7.3); the
+move by `openspec/changes/archive/2026-11-25-bump-ripwire-pin` (tasks 1.1–1.4, 7.1–7.3); the
 Python recordings (`python`, `python-mixed`, derived `python-zero-edge`)
 re-captured for the `ring_a`/`ring_b` fixture by
 `openspec/changes/archive/2026-11-24-wide-form-cycle-edges` (task 2.2), and again for the
@@ -55,7 +55,7 @@ The recordings were captured from the published ripwire 0.7.0 release
 | Binary sha256 | `36b41c5eb6f213fd6a48f203fd29b0b1f1cb56d24d93bb4923ce12ea5a6de4d7` |
 | Platform | `macos-arm64` (AppleClang 21) |
 
-Phase A (`openspec/changes/bump-ripwire-pin` design D8) captured from a
+Phase A (`openspec/changes/archive/2026-11-25-bump-ripwire-pin` design D8) captured from a
 source build of `main` @ `1edb6fd6a`. Against it, the 0.7.0 re-capture is
 byte-identical for `typescript/` and `python-mixed/`; `python/` differs
 only because 0.7.0 indexes a `build/` directory whose files git tracks (see

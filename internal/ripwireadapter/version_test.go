@@ -9,7 +9,7 @@ import (
 )
 
 // Version-pin tests — openspec/changes/archive/2026-11-24-ripwire-adapter task 2.2, revised by
-// openspec/changes/bump-ripwire-pin tasks 6.2–6.3 to reference the pin
+// openspec/changes/archive/2026-11-25-bump-ripwire-pin tasks 6.2–6.3 to reference the pin
 // constants instead of literal versions.
 //
 // They exercise the fail-closed pin through the production path
@@ -22,7 +22,7 @@ const (
 	wrongVersionLine = "ripwire 0.6.8 (Release, AppleClang 21.0.0.21000101, emit=std::print, built_from=deadbeef00)"
 	garbageLine      = "totally not a version string"
 	// devBuildLine is the --version line of a ripwire main source build
-	// (the Phase A capture binary of openspec/changes/bump-ripwire-pin).
+	// (the Phase A capture binary of openspec/changes/archive/2026-11-25-bump-ripwire-pin).
 	devBuildLine = "ripwire 0.6.10-dev.65+g1edb6fd6a (Release, AppleClang 21.0.0.21000334, emit=std::print, built_from=1edb6fd6a)"
 )
 

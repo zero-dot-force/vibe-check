@@ -10,7 +10,7 @@ import (
 )
 
 // Directory-module mapping tests — openspec/changes/archive/2026-11-24-ripwire-adapter
-// task 4.3, extended by openspec/changes/bump-ripwire-pin tasks 2.2 and
+// task 4.3, extended by openspec/changes/archive/2026-11-25-bump-ripwire-pin tasks 2.2 and
 // 3.1–3.2. They pin D4 identity, the authoritative Ca/Ce passthrough,
 // the deduplicated directory-pair edge set, Ce-only externals, the
 // mapping warnings, both arch path forms, and coupling floors.

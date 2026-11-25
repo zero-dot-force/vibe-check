@@ -1,7 +1,16 @@
-## ADDED Requirements
+# goreleaser-config Specification
+
+## Purpose
+TBD - created by archiving change goreleaser-release-automation. Update Purpose after archive.
+
+## Requirements
 
 ### Requirement: GoReleaser schema version
 The `.goreleaser.yaml` SHALL use GoReleaser schema `version: 2`.
+
+#### Scenario: Config declares schema version 2
+- **WHEN** GoReleaser loads `.goreleaser.yaml`
+- **THEN** the file's top-level `version` key SHALL be `2`
 
 ### Requirement: Cross-platform binary builds
 The `.goreleaser.yaml` config SHALL build `cmd/vibe-check` binaries for linux (amd64, arm64), darwin (amd64, arm64), and windows (amd64, arm64). Builds SHALL use `CGO_ENABLED=0` for static linking.
@@ -34,6 +43,14 @@ The `.goreleaser.yaml` config SHALL generate a `checksums.txt` containing SHA-25
 
 ### Requirement: Archive format
 Release artifacts SHALL be packaged as `.tar.gz` archives on linux and darwin, and `.zip` archives on windows.
+
+#### Scenario: Unix platforms get tar.gz
+- **WHEN** a release builds the linux or darwin binary
+- **THEN** its archive SHALL be a `.tar.gz`
+
+#### Scenario: Windows gets zip
+- **WHEN** a release builds the windows binary
+- **THEN** its archive SHALL be a `.zip`
 
 ### Requirement: Changelog / release notes
 The `.goreleaser.yaml` config SHALL include a `changelog` section with commit groups (Features, Bug Fixes, Documentation, Others) and `prerelease: auto` for automatic pre-release detection.

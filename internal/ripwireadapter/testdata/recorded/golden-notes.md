@@ -1,6 +1,6 @@
 # Hand-Computed ModuleGraph Goldens — `ripwire-adapter` task 1.4
 
-> Revised by `openspec/changes/bump-ripwire-pin` task 6.1: recordings
+> Revised by `openspec/changes/archive/2026-11-25-bump-ripwire-pin` task 6.1: recordings
 > re-captured from the provisional Phase A binary (see `../README.md`), and
 > the Python golden regenerated for the `wide`/`alias`/`collide` fixture
 > packages. Revised again by task 7.3 for the published ripwire 0.7.0:

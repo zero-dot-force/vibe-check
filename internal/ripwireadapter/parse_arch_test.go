@@ -8,7 +8,7 @@ import (
 )
 
 // --arch metrics-table parser tests — openspec/changes/archive/2026-11-24-ripwire-adapter
-// task 4.1, revised by openspec/changes/bump-ripwire-pin task 2.1.
+// task 4.1, revised by openspec/changes/archive/2026-11-25-bump-ripwire-pin task 2.1.
 //
 // They pin the parser against the recorded outputs of the pinned ripwire
 // release, prove the 40-cap immunity (module counts come from the uncapped

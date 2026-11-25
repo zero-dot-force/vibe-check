@@ -8,9 +8,9 @@ import (
 )
 
 // Error-budget warning tests — openspec/changes/archive/2026-11-24-ripwire-adapter task 4.5,
-// revised by openspec/changes/bump-ripwire-pin task 5.3. They pin the
+// revised by openspec/changes/archive/2026-11-25-bump-ripwire-pin task 5.3. They pin the
 // measured budget text per language (figures from
-// openspec/changes/bump-ripwire-pin/measurement/results.md), that the text
+// openspec/changes/archive/2026-11-25-bump-ripwire-pin/measurement/results.md), that the text
 // names the pinned version, and the any-warning ⇒ partial status rule the
 // graph assembly applies.
 

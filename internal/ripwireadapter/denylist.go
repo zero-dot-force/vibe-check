@@ -16,7 +16,7 @@ import (
 // (validated against the pinned ripwire release). The adapter's pre-check
 // mirrors this set so users understand why source code they can see
 // contributes no metrics; ripwire's own <pruned_packages> disclosure is
-// unioned in (openspec/changes/bump-ripwire-pin design D5) so an upstream
+// unioned in (openspec/changes/archive/2026-11-25-bump-ripwire-pin design D5) so an upstream
 // denylist change the list has not caught up with still surfaces for real
 // packages. A name is a candidate, not a verdict: the pinned release indexes
 // a build/ directory whose files git tracks, so the pre-check drops any

@@ -73,7 +73,7 @@ so ripwire's `<cycles>` listing does not report it. The `rel_` prefix matches
 no layer substring in `recorded/arch-rules.txt`.
 
 `wide`, `alias`, and `collide` each sit in their own directory module so each
-upstream import fix (openspec/changes/bump-ripwire-pin design D7) shows
+upstream import fix (openspec/changes/archive/2026-11-25-bump-ripwire-pin design D7) shows
 independently at directory grain. Gap 1 imports a subpackage on purpose: at
 directory grain `pkg/__init__.py` and `pkg/mod.py` are one module, so a
 from-import of a plain module file would not show the fix.

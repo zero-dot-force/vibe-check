@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning now also lists packages ripwire itself reports as pruned, and
   states ripwire's total when its listing is partial; it no longer lists a
   git-tracked `build/` directory, which ripwire 0.7.0 indexes as source.
-  Spec: `openspec/changes/bump-ripwire-pin/specs/ripwire-release-pin/spec.md`
+  Spec: `openspec/changes/archive/2026-11-25-bump-ripwire-pin/specs/ripwire-release-pin/spec.md`
 - `vibe-check init` now registers the `divisor-entropy` reviewer into the
   project's Unbound Force policy files after deploying assets. It inserts a
   canonical `divisor-entropy` entry under `reviewers:` in
@@ -120,7 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disclosure). Python coupling is markedly more accurate — directory Ca/Ce
   exact went from 79%/77% to 100% on pip and from 94%/59% to 100% on django,
   measured against an `ast` ground truth with the same harness
-  (`openspec/changes/bump-ripwire-pin/measurement/results.md`); the
+  (`openspec/changes/archive/2026-11-25-bump-ripwire-pin/measurement/results.md`); the
   `error-budget` warning states the new figures. The pin
   stays exact and fail-closed; ripwire 0.6.9, 0.6.10, and development
   builds are refused. Snapshots taken with 0.6.9 are not comparable with
@@ -133,7 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adapter consumes, so trees mixing Python/TypeScript with files ripwire
   cannot resolve (for example Go) analyze instead of failing. The
   `cycle-approximation` warning now states ripwire's current listing cap.
-  Spec: `openspec/changes/bump-ripwire-pin/specs/ripwire-release-pin/spec.md`
+  Spec: `openspec/changes/archive/2026-11-25-bump-ripwire-pin/specs/ripwire-release-pin/spec.md`
 - Renamed the repository's self-gate workflow from
   `.github/workflows/structural-gate.yml` to
   `.github/workflows/vibe-check-structural-gate.yaml` (pure `git mv` — the
@@ -260,8 +260,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`CGO_ENABLED=0`) with stripped debug symbols (`-s -w`). Release notes are
   auto-generated with commit groups (Features, Bug Fixes, Documentation,
   Others).
-  Spec: `openspec/changes/goreleaser-release-automation/specs/goreleaser-config/`
-  Spec: `openspec/changes/goreleaser-release-automation/specs/release-workflow/`
+  Spec: `openspec/changes/archive/2026-11-25-goreleaser-release-automation/specs/goreleaser-config/`
+  Spec: `openspec/changes/archive/2026-11-25-goreleaser-release-automation/specs/release-workflow/`
 
 - `vibe-check diff --gate` adds a CI-regression gate: when `--gate` is set, a
   `REQUEST_CHANGES` verdict exits `1` (instead of `0`) so CI can block a PR on
@@ -396,7 +396,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recognizes its own workflow conventions, and with none present it verified
   an empty check name and aborted the release before creating the tag.
   Restores the ability to cut releases.
-  Spec: `openspec/changes/goreleaser-release-automation/specs/release-workflow/`
+  Spec: `openspec/changes/archive/2026-11-25-goreleaser-release-automation/specs/release-workflow/`
 
 ## [0.1.0] - 2026-08-31
 

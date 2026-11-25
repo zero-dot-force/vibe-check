@@ -1,7 +1,5 @@
 # Release Workflow
 
-[See `openspec/changes/goreleaser-release-automation/specs/goreleaser-config/spec.md` for the GoReleaser config specification.]
-
 ## ADDED Requirements
 
 ### Requirement: Release workflow trigger
@@ -41,8 +39,9 @@ The workflow SHALL include a `release` job that depends on `preflight` and calls
 - **WHEN** GoReleaser fails (config error, network error, build failure, permission denied)
 - **THEN** the workflow SHALL exit with a non-zero status and the release SHALL NOT be created
 
-### Requirement: End-to-end user accessibility
-This requirement is defined in the `goreleaser-config` specification.
-
 ### Requirement: Cross-reference
 This workflow SHALL be consistent with the release workflow pattern used by other Unbound Force repos (`unbound-force/gaze`), delegating to org-infra reusable workflows for preflight validation and GoReleaser execution.
+
+#### Scenario: Release jobs call org-infra reusable workflows
+- **WHEN** the release workflow runs
+- **THEN** its preflight and GoReleaser jobs SHALL call `complytime/org-infra` reusable workflows pinned to a commit SHA

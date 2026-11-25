@@ -13,7 +13,7 @@ const warningErrorBudget = "error-budget"
 // errorBudgetWarning returns the language's measured error-budget warning:
 // the inaccuracy of sourcing coupling data from ripwire's name-based,
 // file-level import scan, measured against the pinned ripwire release by
-// the harness in openspec/changes/bump-ripwire-pin/measurement (results.md
+// the harness in openspec/changes/archive/2026-11-25-bump-ripwire-pin/measurement (results.md
 // there). Python's budget states directory-grain Ca/Ce exactness on pip and
 // django plus count-based file-edge loss and gain (lower bounds);
 // TypeScript's budget is ripwire's disclosed unresolved-import rate on

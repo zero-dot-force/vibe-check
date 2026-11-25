@@ -73,7 +73,7 @@ func TestIntegration_PythonFixturePipeline(t *testing.T) {
 		t.Errorf("cycle_b ca/ce: got %d/%d, want 2/1", cycleB.Ca, cycleB.Ce)
 	}
 
-	// openspec/changes/bump-ripwire-pin spec "Fixtures exercise the pinned
+	// openspec/changes/archive/2026-11-25-bump-ripwire-pin spec "Fixtures exercise the pinned
 	// import fixes": each upstream fix shows at directory grain.
 	if wide := module("fixturepy.wide"); wide.Ce != 2 {
 		// gap 1: `from fixturepy import cycle_b` reaches the cycle_b

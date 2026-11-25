@@ -10,7 +10,7 @@ import (
 // archZoneUnknown is the zone value ripwire prints for a module holding a
 // file in a language it draws almost no file edges for (its no_file_edges=
 // set). Such a row's ca/ce are floors, and absent when no edge was
-// observed (openspec/changes/bump-ripwire-pin design D2/D3).
+// observed (openspec/changes/archive/2026-11-25-bump-ripwire-pin design D2/D3).
 const archZoneUnknown = "unknown"
 
 // archModuleRow is one directory-grain row of ripwire's --arch metrics

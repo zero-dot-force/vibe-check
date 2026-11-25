@@ -1,29 +1,38 @@
 import { Buffer } from "node:buffer"
-import { execFileSync } from "node:child_process"
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { lstat, readFile, readdir, writeFile } from "node:fs/promises"
+import { execFile, execFileSync } from "node:child_process"
+import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { basename, resolve } from "node:path"
 import { tool, type PluginInput, type PluginModule } from "@opencode-ai/plugin"
 import { z } from "zod"
 import {
   DEFAULT_TIMEOUT_MILLISECONDS,
+  MAX_TIMEOUT_MILLISECONDS,
   PromptSchema,
-  TimeoutSchema,
   directModelIdentity,
   executeAgentSession,
+  executePerTaskDelegation,
   resolveHostModel,
   StructuralHostModelError,
   type InvocationProvenance,
   type InvocationUsage,
   type ModelIdentity,
+  type PerTaskResumeCapture,
+  type PerTaskRetryRecord,
+  type TimeoutDetails,
 } from "../../lib/agent-executor.js"
 import { classifyBranch } from "../../lib/branch-classification.js"
+import { resolveInheritedDeadline } from "../../lib/delegation-budget.js"
 import {
   ClassifierCascade,
   createClassifierCache,
   loadModelMatrix,
+  resolveFootprintMarginTokens,
   resolveSelection,
+  resolveStormThreshold,
   type ClassifierCache,
+  type ModelLimits,
   type ModelMatrix,
   type SelectionResult,
   type SelectionSource,
@@ -31,8 +40,35 @@ import {
 import {
   DISPATCH_ARTIFACT_DIRECTORY,
   parseReviewDispatchArtifact,
+  parseReviewDispatchArtifactDetail,
   type ReviewDispatchArtifactSummary,
+  type ReviewDispatchFindingSummary,
 } from "../../lib/review-dispatch-artifact.js"
+import {
+  PREFLIGHT_MODES,
+  PreflightConfigError,
+  runDeclaredChecks,
+  type DeclaredChecksData,
+  type PreflightDeclaredDependencies,
+  type ProcessResult,
+} from "../../lib/preflight-declared.js"
+import {
+  CreateChildIssueInputSchema,
+  FeedbackOperationError,
+  FileFeedbackIssueInputSchema,
+  PostFeedbackRepliesInputSchema,
+  PostIssueCommentInputSchema,
+  WriteFeedbackTriageArtifactInputSchema,
+  createChildIssue,
+  defaultFeedbackGhExec,
+  feedbackFailure,
+  feedbackSuccess,
+  fileFeedbackIssue,
+  postFeedbackReplies,
+  postIssueComment,
+  writeFeedbackTriageArtifact,
+  type FeedbackReplyDeps,
+} from "../../lib/feedback-replies.js"
 import { createBunYamlParser, type YamlParser } from "../../lib/reviewer-manifest.js"
 import {
   BASE_REF_CANDIDATES,
@@ -40,12 +76,46 @@ import {
   type BaseRefResolution,
 } from "../../lib/review-diff.js"
 import {
+  derivePerTaskTimeoutMs,
+  type PerTaskTimeoutProvenanceRecord,
+} from "../../lib/run-timeout.js"
+import {
+  appendHumanDecisions,
+  deleteState,
+  isEnoent,
+  readHumanDecisionRecord,
+  readSpecReviewGateRecord,
+  readState,
+  reconcileSpecReviewGateState,
+  recordSpecReviewDecisionsToState,
+  writeState,
+  type PhaseCheckpointInput,
+  type PhaseFailureEntry,
+  type ProgressState,
+} from "../../lib/progress-state.js"
+import {
+  approvalFollowsApplyDecisions,
+  decisionsForLatestIteration,
   defaultGitExec,
+  evaluateSpecReviewGate,
   failure,
+  HUMAN_DECISION_ID_PATTERN,
+  HUMAN_DECISION_REF_MAX_LENGTH,
+  isEscalatedAdvisorySpecVerdict,
+  isHumanDecisionTextWithinBounds,
+  isSyntheticCompactionPromptAnswer,
+  latestSpecReviewIteration,
   normalizeModelName,
   sanitizeSlug,
   success,
+  SPEC_REVIEW_GATE_STEP_ALLOWLIST,
+  SPEC_REVIEW_STATE_COMMAND,
   type GitExec,
+  type HumanDecisionEntry,
+  type HumanDecisionSource,
+  type SpecReviewDecision,
+  type SpecReviewGateStatus,
+  type SpecReviewIterationEntry,
 } from "../../lib/uf-workflow-types.js"
 import {
   UNLEASH_EXIT_VARIANTS,
@@ -58,6 +128,17 @@ import {
 export { defaultGitExec, failure, normalizeModelName, sanitizeSlug, success } from "../../lib/uf-workflow-types.js"
 export type { GitExec, ToolFailure, ToolResult, ToolSuccess } from "../../lib/uf-workflow-types.js"
 export type { BaseRefSource } from "../../lib/review-diff.js"
+// Progress-state shape moved to the shared lib (harden-spec-review-gate,
+// HARDEN-001): review-dispatch persists the spec-review gate record through
+// the same primitives. Re-exported here so existing consumers of the plugin
+// module's public surface are unaffected.
+export type {
+  PhaseCheckpointInput,
+  PhaseCheckpointRecord,
+  PhaseFailureClassification,
+  PhaseFailureEntry,
+  ProgressState,
+} from "../../lib/progress-state.js"
 
 // ---------------------------------------------------------------------------
 // resolve_base_ref tool
@@ -102,55 +183,8 @@ export function createResolveBaseRefTool(exec: GitExec, cwd: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Checkpoint types
+// Key resolution
 // ---------------------------------------------------------------------------
-
-/** Failure classification for a phase pre-flight checkpoint. */
-export type PhaseFailureClassification =
-  | "pre-existing"
-  | "environmental"
-  | "change-caused"
-
-/** One classified failure in a phase checkpoint inventory. */
-export interface PhaseFailureEntry {
-  name: string
-  classification: PhaseFailureClassification
-}
-
-/** Phase-scoped checkpoint input accepted by the checkpoint tool. */
-export interface PhaseCheckpointInput {
-  number: number
-  verdict: "green" | "failed"
-  inventory: PhaseFailureEntry[]
-}
-
-/** Durable record of one phase's pre-flight checkpoint, keyed by phase number. */
-export interface PhaseCheckpointRecord {
-  verdict: "green" | "failed"
-  inventory: PhaseFailureEntry[]
-  recorded_at: string
-}
-
-/** Persistent workflow progress state (FR-001, FR-007). */
-export interface ProgressState {
-  command: string
-  branch: string
-  key: string
-  current_step: string
-  completed_steps: string[]
-  data: Record<string, unknown>
-  /** Phase-scoped checkpoint records keyed by phase number string. */
-  phases?: Record<string, PhaseCheckpointRecord>
-  created_at: string
-  updated_at: string
-}
-
-// ---------------------------------------------------------------------------
-// Checkpoint helpers
-// ---------------------------------------------------------------------------
-
-/** Progress state directory relative to project root. */
-const PROGRESS_DIR = ".uf/progress"
 
 /**
  * Resolve the state key from an explicit key or auto-detected git
@@ -171,109 +205,6 @@ export function resolveKey(
     )
   }
   return sanitizeSlug(branch)
-}
-
-/**
- * Compute state file path with path traversal protection (FR-005).
- * Both key and sanitizedCommand MUST be pre-sanitized by the caller.
- */
-function statePath(
-  cwd: string,
-  key: string,
-  sanitizedCommand: string,
-): string {
-  const progressRoot = resolve(cwd, PROGRESS_DIR)
-  const filePath = resolve(
-    progressRoot,
-    key,
-    `${sanitizedCommand}.json`,
-  )
-  if (!filePath.startsWith(progressRoot + "/")) {
-    throw new Error(
-      "Path traversal blocked: resolved path escapes .uf/progress/",
-    )
-  }
-  return filePath
-}
-
-/** Type guard for ENOENT filesystem errors. */
-function isEnoent(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    "code" in err &&
-    (err as NodeJS.ErrnoException).code === "ENOENT"
-  )
-}
-
-/**
- * Read state from disk. Returns null if file does not exist.
- * FR-005: Does not follow symlinks; reports I/O errors.
- */
-function readState(
-  cwd: string,
-  key: string,
-  sanitizedCommand: string,
-): ProgressState | null {
-  const fp = statePath(cwd, key, sanitizedCommand)
-  try {
-    const stats = lstatSync(fp)
-    if (stats.isSymbolicLink()) {
-      throw new Error("Refusing to read symlinked state file")
-    }
-    const raw = readFileSync(fp, "utf-8")
-    return JSON.parse(raw) as ProgressState
-  } catch (err: unknown) {
-    if (isEnoent(err)) return null
-    throw err
-  }
-}
-
-/**
- * Write state to disk with restricted permissions (FR-005).
- * Creates directories with 0o700, files with 0o600.
- * Does not follow symlinks.
- */
-function writeState(
-  cwd: string,
-  key: string,
-  sanitizedCommand: string,
-  state: ProgressState,
-): void {
-  const fp = statePath(cwd, key, sanitizedCommand)
-  const dir = resolve(fp, "..")
-  try {
-    const dirStats = lstatSync(dir)
-    if (dirStats.isSymbolicLink()) {
-      throw new Error("Refusing to write into symlinked directory")
-    }
-  } catch (err: unknown) {
-    if (!isEnoent(err)) throw err
-    // Directory does not exist yet — will be created below.
-  }
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
-  writeFileSync(fp, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 })
-}
-
-/**
- * Delete state file. Idempotent — succeeds silently when no file
- * exists (FR-003).
- */
-function deleteState(
-  cwd: string,
-  key: string,
-  sanitizedCommand: string,
-): void {
-  const fp = statePath(cwd, key, sanitizedCommand)
-  try {
-    const stat = lstatSync(fp)
-    if (stat.isSymbolicLink()) {
-      throw new Error(`Refusing to delete symlinked state file: ${fp}`)
-    }
-    rmSync(fp)
-  } catch (err: unknown) {
-    if (isEnoent(err)) return
-    throw err
-  }
 }
 
 /**
@@ -335,6 +266,10 @@ function upsertCheckpointStep(
     state.phases[String(phase.number)] = {
       verdict: phase.verdict,
       inventory: phase.inventory,
+      // PTB-FR-004: carry the remaining-budget report through to the
+      // durable record; re-checkpointing without it drops the prior
+      // value (the record is replaced, not merged).
+      ...(phase.remaining_ms !== undefined ? { remaining_ms: phase.remaining_ms } : {}),
       recorded_at: now,
     }
   }
@@ -365,8 +300,412 @@ function recordAutoCheckpoint(
 // Checkpoint tool factories (exported for testability)
 // ---------------------------------------------------------------------------
 
+/** Phase-scoped checkpoint argument shape (`implement-phase-<number>` records). */
+const PhaseCheckpointArgSchema = z.object({
+  number: z.number().int().min(1).max(1000),
+  verdict: z.enum(["green", "failed"]),
+  inventory: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(512),
+        classification: z.enum([
+          "pre-existing",
+          "environmental",
+          "change-caused",
+        ]),
+      }),
+    )
+    .max(200)
+    .default([]),
+})
+
+/** Validated phase fields the checkpoint line is rendered from. */
+export interface PhaseCheckpointLineSource {
+  readonly number: number
+  readonly verdict: "green" | "failed"
+  readonly remaining_ms?: number
+}
+
+/**
+ * Render the tool-owned phase checkpoint line (PTB-FR-004, DE-003):
+ * prescribed terminal output is rendered by the tool, never
+ * reconstructed by the executing agent from a prose template. The
+ * budget clause appears only when remaining_ms was recorded; the
+ * number, verdict, and remaining_ms come from the same payload the
+ * tool already validates.
+ */
+export function renderPhaseCheckpointLine(
+  phase: PhaseCheckpointLineSource,
+): string {
+  const base = `Phase ${phase.number} checkpoint: ${phase.verdict}`
+  return phase.remaining_ms !== undefined
+    ? `${base} (remaining budget: ~${phase.remaining_ms}ms)`
+    : base
+}
+
+/**
+ * Validation for the checkpoint tool's `phase` argument inside execute: the
+ * host does not enforce the args shape, and a bare `phase: 5` previously
+ * surfaced as "requires step implement-phase-undefined" (issue #936).
+ */
+const CheckpointPhaseInputSchema = z.object({ phase: PhaseCheckpointArgSchema.optional() })
+
+/**
+ * Render the spec-review gate refusal (HARDEN-002, task 3.1). The message
+ * names the holding iteration, its verdict, and — for missing decisions —
+ * the undecided finding ids, so the orchestrator can re-present exactly the
+ * unresolved findings.
+ */
+function specReviewGateMessage(status: SpecReviewGateStatus): string {
+  if (status.kind === "missing_decisions") {
+    return (
+      `spec-review gate holds: iteration ${status.iteration} (${status.verdict}) has ` +
+      `undecided findings [${status.undecided.join(", ")}]; record an ` +
+      "apply/override/pause decision for every finding via the checkpoint " +
+      "spec_review_decisions argument before advancing"
+    )
+  }
+  if (status.kind === "pending_approving_iteration") {
+    return (
+      `spec-review gate holds: iteration ${status.iteration} (${status.verdict}) has ` +
+      "apply decisions; a subsequent iteration must consolidate to APPROVE " +
+      "before advancing"
+    )
+  }
+  return (
+    `spec-review gate held by pause decision on findings [${status.paused.join(", ")}] ` +
+    `(iteration ${status.iteration}, ${status.verdict}); exit through the ` +
+    "spec-review paused exit path"
+  )
+}
+
+/** Refusal code for a holding gate status (lowercase per the spec's names). */
+function specReviewGateRefusalCode(status: SpecReviewGateStatus): string {
+  if (status.kind === "missing_decisions") return "missing_per_finding_decisions"
+  if (status.kind === "pending_approving_iteration") return "pending_approving_iteration"
+  return "spec_review_gate_paused"
+}
+
+// ---------------------------------------------------------------------------
+// Gate-override human-decision reference (SYNTH-001, task 2.4)
+// ---------------------------------------------------------------------------
+
+/** Substring whose presence in a data key marks a gate override (SYNTH-001). */
+const GATE_OVERRIDE_KEY_SUBSTRING = "override"
+
+/** Bound on a data-key path echoed into an error envelope (SYNTH-006 bounded identifiers). */
+const GATE_OVERRIDE_KEY_PATH_MAX_LENGTH = 256
+
+/**
+ * Maximum length of a checkpoint step name (SYNTH-006 input domain). One
+ * bound, two roles: the input bound rejects step names over 128 characters
+ * before any security-sensitive operation (checked first in the checkpoint
+ * tool's execute), and the same value caps the step-name echo in error
+ * envelopes — the oversize-rejection message names the offending step
+ * truncated to this bound, and every later rejection echoes a step name
+ * already within it. Exported so tests and the zod args schema share the
+ * single definition.
+ */
+export const CHECKPOINT_STEP_NAME_MAX_LENGTH = 128
+
+/** Bound on the record-read failure detail echoed into an error envelope. */
+const HUMAN_DECISION_READ_ERROR_DETAIL_MAX_LENGTH = 200
+
+/**
+ * Bound an identifier echoed into an error envelope. SYNTH-006 mandates that
+ * errors name bounded identifiers (decision_id, step, data key) — never raw
+ * question, answer, or justification text — and key paths or step names from
+ * caller JSON are unbounded by construction, so the echo is capped.
+ *
+ * @param value Identifier to echo (step name, key path, failure detail).
+ * @param maxLength Maximum characters the echo may occupy.
+ * @returns The identifier, truncated with an ellipsis marker when over bound.
+ */
+function boundIdentifierEcho(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`
+}
+
+/**
+ * Find the first `data` key, at any nesting depth (objects and arrays), whose
+ * name contains `override` case-insensitively — the SYNTH-001 tripwire.
+ *
+ * Design decision (defense-in-depth layering): the declared-step allowlist
+ * (SYNTH-003, task 4.1) is the authoritative gate over step names; this scan
+ * is the tripwire that catches gate overrides smuggled through `data` keys
+ * under any step name, at any depth — the incident shape quoted the synthetic
+ * continue prompt inside `data.checklist_override`. The scan matches key
+ * NAMES only (values are ordinary data); the top-level
+ * `spec_review_decisions` argument is the existing HARDEN-002 surface whose
+ * per-finding validation handles its own override justification requirements,
+ * and it is deliberately not swept into this predicate. The walk is iterative
+ * (explicit stack): JSON.parse output is a finite acyclic tree, so the scan
+ * terminates without a visited set, and iteration keeps adversarially deep
+ * nesting from overflowing the call stack.
+ *
+ * @param data Parsed checkpoint `data` value; non-objects carry no keys.
+ * @returns The dotted key path of the first override-carrying key (array
+ *   elements indexed as `[n]`), or null when no key name matches.
+ */
+export function findGateOverrideDataKey(data: unknown): string | null {
+  if (typeof data !== "object" || data === null) return null
+  const stack: Array<{ value: unknown; path: string }> = [{ value: data, path: "" }]
+  while (stack.length > 0) {
+    const node = stack.pop()
+    if (node === undefined) break
+    if (Array.isArray(node.value)) {
+      // Push in reverse so pop() visits elements in index order — the
+      // reported key path is deterministic (first match in DFS pre-order).
+      for (let index = node.value.length - 1; index >= 0; index--) {
+        stack.push({ value: node.value[index], path: `${node.path}[${index}]` })
+      }
+      continue
+    }
+    if (typeof node.value === "object" && node.value !== null) {
+      const entries = Object.entries(node.value)
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const [key, child] = entries[index]
+        const keyPath = node.path === "" ? key : `${node.path}.${key}`
+        if (key.toLowerCase().includes(GATE_OVERRIDE_KEY_SUBSTRING)) {
+          return keyPath
+        }
+        stack.push({ value: child, path: keyPath })
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Whether a `human_decision_ref` string satisfies the SYNTH-006 input domain:
+ * at most `HUMAN_DECISION_REF_MAX_LENGTH` characters and matching the UUID v4
+ * `HUMAN_DECISION_ID_PATTERN` of the `decision_id` it names. Shape is checked
+ * before any record lookup, so a non-conforming reference — free text, an
+ * oversize blob, a quoted synthetic prompt — never reaches the record read
+ * and can never be interpolated into a path (the ref is only ever compared).
+ *
+ * @param ref Caller-supplied human_decision_ref string.
+ * @returns True when the ref is within the length bound and matches the pattern.
+ */
+export function isHumanDecisionRefWithinShape(ref: string): boolean {
+  return ref.length <= HUMAN_DECISION_REF_MAX_LENGTH && HUMAN_DECISION_ID_PATTERN.test(ref)
+}
+
+// ---------------------------------------------------------------------------
+// Declared checkpoint step enforcement (SYNTH-003, task 4.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The declared step allowlist for `uf.unleash` checkpoints (SYNTH-003): the
+ * union of both writer surfaces that record steps under command `uf.unleash` —
+ * the pipeline's user-facing steps, the machinery steps the uf-workflow plugin
+ * auto-checkpoints, and the gate and budget steps the `uf.unleash` command
+ * prose records. `implement-phase-N` (N a positive integer) is matched by
+ * {@link IMPLEMENT_PHASE_STEP_PATTERN}, not listed here. A step name outside
+ * this set rejects with `undeclared_step` unless a valid `human_decision_ref`
+ * per SYNTH-001 authorizes it.
+ *
+ * Distinct from `SPEC_REVIEW_GATE_STEP_ALLOWLIST` (HARDEN-002): that list
+ * names the steps permitted WHILE the spec-review gate holds; this list names
+ * the steps `uf.unleash` may record at all. Every HARDEN-002-permitted step
+ * is also declared here, but the converse is false — `implement` is declared
+ * yet refused while the gate holds. Keep the two surfaces separate.
+ *
+ * Exported so the lockstep consistency test (task 4.2) enumerates both writer
+ * surfaces against this single definition.
+ */
+export const UNLEASH_DECLARED_STEP_ALLOWLIST: readonly string[] = [
+  // Plugin auto-checkpointed machinery steps (recordAutoCheckpoint call
+  // sites recording under command uf.unleash).
+  "branch-safety-gate",
+  "tier-routing",
+  "resumability-detection",
+  // User-facing pipeline steps (uf.unleash command prose, Steps 1-10).
+  "clarify",
+  "plan",
+  "tasks",
+  "spec-review",
+  // implement-phase-N is pattern-matched, not enumerated.
+  "implement",
+  "code-review",
+  "quick-pre-flight",
+  "quick-fix-budget",
+  "retrospective",
+  "demo",
+]
+
+/**
+ * Matches the `implement-phase-N` step family: N a positive integer (>= 1)
+ * written canonically — no leading zero, no trailing characters — because the
+ * phase machinery records `implement-phase-${phase.number}` and
+ * `String(number)` never emits a leading zero. `implement-phase-0`,
+ * `implement-phase-`, `implement-phase-01`, and `implement-phase-2x` all
+ * fail this pattern.
+ */
+const IMPLEMENT_PHASE_STEP_PATTERN = /^implement-phase-[1-9][0-9]*$/
+
+/**
+ * Whether `step` is declared for `uf.unleash` checkpoints (SYNTH-003): a
+ * member of {@link UNLEASH_DECLARED_STEP_ALLOWLIST} or an
+ * `implement-phase-N` name with N a positive integer.
+ *
+ * @param step Checkpoint step name (callers bound it to
+ *   {@link CHECKPOINT_STEP_NAME_MAX_LENGTH} before this check).
+ * @returns True when the step is in the declared set for `uf.unleash`.
+ */
+export function isDeclaredUnleashCheckpointStep(step: string): boolean {
+  return (
+    UNLEASH_DECLARED_STEP_ALLOWLIST.includes(step) || IMPLEMENT_PHASE_STEP_PATTERN.test(step)
+  )
+}
+
+/**
+ * Whether `step` is an advancement step for `uf.unleash` checkpoints
+ * (SYNTH-004): the literal `implement` step or an `implement-phase-N` name
+ * with N a positive integer. These are the steps that advance the pipeline
+ * from spec-review into implementation, so the escalated-advisory hold
+ * (task 5.2) rejects exactly this set — a hold over the advancement steps,
+ * not an allowlist of permitted ones — while every other declared step still
+ * records. Both writer surfaces reduce to this predicate: a phase checkpoint
+ * carries the literal step string, and the `phase` argument records
+ * `implement-phase-${phase.number}` directly (upsertCheckpointStep enforces
+ * the match) with no prerequisite `implement` record, so gating only
+ * `implement` would leave the phase path around the hold.
+ *
+ * @param step Checkpoint step name (callers bound it to
+ *   {@link CHECKPOINT_STEP_NAME_MAX_LENGTH} before this check).
+ * @returns True when the step advances the pipeline into implementation.
+ */
+export function isUnleashAdvancementCheckpointStep(step: string): boolean {
+  return step === "implement" || IMPLEMENT_PHASE_STEP_PATTERN.test(step)
+}
+
+/**
+ * Outcome of resolving a `human_decision_ref` against the persisted
+ * human-decision record — the shared SYNTH-001 authorization path every
+ * checkpoint gate that a reference can satisfy resolves through (the
+ * override-data-key tripwire and the declared-step escape hatch).
+ */
+export type HumanDecisionRefResolution =
+  | { outcome: "authorized"; ref: string }
+  | { outcome: "shape_failure"; requirement: string }
+  | { outcome: "record_unreadable"; detail: string }
+  | { outcome: "unrecorded_ref"; ref: string }
+
+/**
+ * Resolve a `human_decision_ref` against the persisted human-decision record
+ * for a state key (SYNTH-001). Shape is checked first (SYNTH-006): a
+ * non-conforming ref — free text, a quoted synthetic prompt, an oversize
+ * blob — never reaches the record read and never has its supplied value
+ * echoed. An absent record file is the empty-record case; every other read
+ * failure is reported as `record_unreadable` so callers fail closed rather
+ * than treating the failure as a missing reference. Envelope text is rendered
+ * by the caller so each gate names its own context; the validation sequence
+ * lives here once.
+ *
+ * @param cwd Project root holding `.uf/progress/`.
+ * @param key Sanitized state key naming the record directory.
+ * @param ref Caller-supplied `human_decision_ref`, when present.
+ * @returns The resolution outcome; `authorized`/`unrecorded_ref` carry the
+ *   shape-validated ref.
+ */
+export function resolveHumanDecisionRef(
+  cwd: string,
+  key: string,
+  ref: string | undefined,
+): HumanDecisionRefResolution {
+  if (typeof ref !== "string" || !isHumanDecisionRefWithinShape(ref)) {
+    let requirement: string
+    if (typeof ref !== "string") {
+      requirement = "requires human_decision_ref"
+    } else if (ref.length > HUMAN_DECISION_REF_MAX_LENGTH) {
+      requirement = `human_decision_ref exceeds ${HUMAN_DECISION_REF_MAX_LENGTH} characters`
+    } else {
+      requirement = "human_decision_ref does not match the UUID v4 decision_id pattern"
+    }
+    return { outcome: "shape_failure", requirement }
+  }
+  let recorded: readonly HumanDecisionEntry[]
+  try {
+    // SYNTH-006 lookup semantics: an absent record file is the empty-record
+    // case (readHumanDecisionRecord returns []), which reports unrecorded_ref
+    // below; every other failure — permission denied, corrupted JSON,
+    // malformed entries — is reported as record_unreadable so callers fail
+    // closed.
+    recorded = readHumanDecisionRecord(cwd, key)
+  } catch (err: unknown) {
+    return {
+      outcome: "record_unreadable",
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  if (!recorded.some((entry) => entry.decision_id === ref)) {
+    return { outcome: "unrecorded_ref", ref }
+  }
+  return { outcome: "authorized", ref }
+}
+
+// ---------------------------------------------------------------------------
+// Escalated-advisory advancement hold (SYNTH-004, task 5.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Render the escalated-advisory hold refusal (SYNTH-004, task 5.2). The
+ * message names the holding iteration, its verdict, correlation id, and
+ * finding count — the relay's identifying payload — plus the covering
+ * failure detail when the call supplied a reference that did not resolve,
+ * and the recovery path: relay the advisory, record the human decision,
+ * then cite its decision_id. Mirrors {@link specReviewGateMessage} (the
+ * HARDEN-002 renderer): one deterministic message per hold, built from
+ * bounded identifiers only.
+ *
+ * @param latest The holding latest iteration from
+ *   {@link latestSpecReviewIteration}.
+ * @param resolution The covering-resolution outcome for this call.
+ * @param key Sanitized state key naming the human-decision record.
+ * @returns The refusal message for the `escalated_advisory_unrelayed`
+ *   envelope.
+ */
+function escalatedAdvisoryHoldMessage(
+  latest: { iteration: number; entry: SpecReviewIterationEntry },
+  resolution: HumanDecisionRefResolution,
+  key: string,
+): string {
+  // The coverage detail distinguishes a fabricated reference (shape-valid,
+  // names no recorded entry — a bounded decision_id-shaped echo) from a
+  // malformed one (fixed requirement text) from a bare uncovered hold;
+  // SYNTH-006 bounded-identifier discipline applies to all three.
+  const coverage =
+    resolution.outcome === "unrecorded_ref"
+      ? ` — human_decision_ref ${resolution.ref} names no decision recorded for key ${key}`
+      : resolution.outcome === "shape_failure"
+        ? ` — ${resolution.requirement}`
+        : ""
+  return (
+    `escalated advisory hold: spec-review iteration ${latest.iteration} consolidated to ` +
+    `${latest.entry.verdict} (correlation ${latest.entry.correlation_id}, ` +
+    `${latest.entry.finding_count} findings) and no human-decision reference covers the ` +
+    `escalation (SYNTH-004)${coverage} — relay it via relay_spec_review_gate, record the ` +
+    "relayed human decision through the question tool or the orchestrator relay, then cite " +
+    "its decision_id as human_decision_ref; the advancement steps implement and " +
+    "implement-phase-N reject until the relayed decision is recorded"
+  )
+}
+
 /** Factory for the checkpoint tool (FR-001). */
-export function createCheckpointTool(exec: GitExec, cwd: string) {
+export function createCheckpointTool(
+  exec: GitExec,
+  cwd: string,
+  deps: {
+    /**
+     * Plugin client for the delegation-budget ancestry walk (PTB-FR-004,
+     * DE-001). Absent in tests that exercise only unbudgeted checkpoints;
+     * production always passes input.client.
+     */
+    readonly client?: PluginInput["client"]
+    /** Clock override for deterministic remaining-budget tests. */
+    readonly now?: () => number
+  } = {},
+) {
   return tool({
     description:
       "Record a completed workflow step to persistent storage. " +
@@ -374,64 +713,420 @@ export function createCheckpointTool(exec: GitExec, cwd: string) {
       "merges optional data via shallow merge, and returns the updated state. " +
       "Pass `phase` with step `implement-phase-<number>` to record a phase " +
       "pre-flight checkpoint (verdict + classified failure inventory) that " +
-      "get_progress returns under `phases`.",
+      "get_progress returns under `phases`. While the latest spec-review " +
+      "iteration consolidated to REQUEST CHANGES, only gate-machinery steps " +
+      "may be recorded until per-finding decisions adjudicate it via " +
+      "spec_review_decisions (HARDEN-002). Any data key at any nesting depth " +
+      "containing \"override\" marks a gate override and requires a " +
+      "human_decision_ref naming a recorded decision_id (SYNTH-001); free-text " +
+      "justification — including the synthetic continue prompt — never " +
+      "satisfies it. Under command uf.unleash the step name must come from " +
+      "the declared step set (the pipeline steps, the plugin's machinery " +
+      "steps, and implement-phase-<number>); an undeclared step rejects with " +
+      "undeclared_step unless a valid human_decision_ref authorizes it " +
+      "(SYNTH-003). While the latest spec-review iteration consolidated to " +
+      "APPROVE WITH ADVISORIES (persisted canonical decision ESCALATED), the " +
+      "advancement steps implement and implement-phase-<number> reject with " +
+      "escalated_advisory_unrelayed naming the correlation and finding count " +
+      "until a human_decision_ref naming a recorded decision_id covers the " +
+      "relayed advisory (SYNTH-004); every other declared step still records.",
     args: {
       command: z.string().describe("Command identifier (e.g. uf.unleash)"),
-      step: z.string().describe("Step name to record as completed"),
+      step: z
+        .string()
+        .max(CHECKPOINT_STEP_NAME_MAX_LENGTH)
+        .describe(
+          `Step name to record as completed (at most ${CHECKPOINT_STEP_NAME_MAX_LENGTH} ` +
+            "characters; under uf.unleash it must be a declared step name — SYNTH-003)",
+        ),
       data: z.string().optional().describe(
         "Optional JSON object string to merge into state data via Object.assign",
       ),
       key: z.string().optional().describe(
         "Optional state key override; defaults to sanitized current git branch",
       ),
-      phase: z
-        .object({
-          number: z.number().int().min(1).max(1000),
-          verdict: z.enum(["green", "failed"]),
-          inventory: z
-            .array(
-              z.object({
-                name: z.string().min(1).max(512),
-                classification: z.enum([
-                  "pre-existing",
-                  "environmental",
-                  "change-caused",
-                ]),
-              }),
-            )
-            .max(200)
-            .default([]),
-        })
+      phase: PhaseCheckpointArgSchema
         .optional()
         .describe(
           "Optional phase-scoped record; requires step implement-phase-<number>. " +
             "verdict is the phase pre-flight outcome; inventory lists classified " +
-            "failures (pre-existing, environmental, or change-caused)",
+            "failures (pre-existing, environmental, or change-caused). The tool " +
+            "derives the budgeted ancestor's remaining budget (remaining_ms) from " +
+            "the delegation-budget registry at record time (PTB-FR-004, DE-001) — " +
+            "it is never agent-supplied. With phase recorded, the result data " +
+            "carries the tool-rendered phase_checkpoint_line (budget clause only " +
+            "when the tool derived a positive remaining budget)",
+        ),
+      spec_review_decisions: z
+        .array(
+          z.object({
+            finding_id: z.string().describe(
+              "Finding identity from the latest iteration's finding_ids",
+            ),
+            decision: z.enum(["apply", "override", "pause"]),
+            fix_reference: z.string().optional().describe(
+              "Required with apply: reference to the applied fix",
+            ),
+            reason: z.string().optional().describe(
+              "Required with override: non-empty audit reason",
+            ),
+          }),
+        )
+        .optional()
+        .describe(
+          "Per-finding decisions adjudicating the latest spec-review iteration " +
+            "(HARDEN-002): apply requires fix_reference, override a non-empty " +
+            "reason, pause holds the gate. Validated against the latest " +
+            "iteration's finding_ids and recorded with derived overrides " +
+            "before the step is recorded.",
+        ),
+      human_decision_ref: z
+        .string()
+        .max(HUMAN_DECISION_REF_MAX_LENGTH)
+        .regex(HUMAN_DECISION_ID_PATTERN, "must match the UUID v4 decision_id pattern")
+        .optional()
+        .describe(
+          "Reference naming a decision_id recorded in the human-decision record " +
+            "(.uf/progress/<key>/human-decisions.json); required whenever any data " +
+            "key at any nesting depth contains \"override\" (SYNTH-001), and the " +
+            "covering reference that lifts the escalated-advisory hold on the " +
+            "advancement steps implement and implement-phase-<number> (SYNTH-004). " +
+            "Reference only — an inline human-decision payload is not accepted in " +
+            "place of a reference.",
         ),
     },
-    execute: async (args: {
-      command: string
-      step: string
-      data?: string
-      key?: string
-      phase?: { number: number; verdict: "green" | "failed"; inventory?: PhaseFailureEntry[] }
-    }) => {
+    execute: async (
+      args: {
+        command: string
+        step: string
+        data?: string
+        key?: string
+        phase?: {
+          number: number
+          verdict: "green" | "failed"
+          inventory?: PhaseFailureEntry[]
+        }
+        spec_review_decisions?: SpecReviewDecision[]
+        human_decision_ref?: string
+      },
+      context: { sessionID: string; abort?: AbortSignal },
+    ) => {
       try {
+        // SYNTH-006 input domain (task 4.1): step names are bounded at
+        // CHECKPOINT_STEP_NAME_MAX_LENGTH, and the bound is enforced before
+        // any security-sensitive operation — file path derivation, record
+        // lookup, state persistence — so an oversize name never reaches
+        // them. The bound is command-agnostic (an input-domain limit, not a
+        // uf.unleash-scoped predicate) and no human_decision_ref can
+        // authorize an unbounded name; the echo is capped to the same bound.
+        if (args.step.length > CHECKPOINT_STEP_NAME_MAX_LENGTH) {
+          const stepEcho = boundIdentifierEcho(args.step, CHECKPOINT_STEP_NAME_MAX_LENGTH)
+          return {
+            output: JSON.stringify(
+              failure(
+                `step name exceeds ${CHECKPOINT_STEP_NAME_MAX_LENGTH} characters (SYNTH-006): ` +
+                  `"${stepEcho}" — rejected before any security-sensitive operation; supply a ` +
+                  "step name within the bound",
+                { retryable: false, code: "oversize_step" },
+              ),
+            ),
+          }
+        }
         const key = resolveKey(exec, cwd, args.key)
+        const cmd = sanitizeSlug(args.command)
 
         let dataToMerge: Record<string, unknown> | undefined
         if (args.data) {
           dataToMerge = JSON.parse(args.data) as Record<string, unknown>
         }
 
-        const phaseRecord =
-          args.phase === undefined
-            ? undefined
-            : {
-                number: args.phase.number,
-                verdict: args.phase.verdict,
-                inventory: args.phase.inventory ?? [],
+        const parsedPhase = parseToolInput(CheckpointPhaseInputSchema, { phase: args.phase })
+        if (!parsedPhase.ok) {
+          return { output: parsedPhase.failureOutput }
+        }
+        const phaseRecord = parsedPhase.value.phase
+
+        // PTB-FR-004 (DE-001): the remaining budget is derived inside the
+        // tool from the delegation-budget registry — never an agent-
+        // supplied selection. A phase record under a budgeted ancestor
+        // carries remaining_ms = max(0, deadline - now); a lookup failure
+        // fails open (no field, no budget clause), and a derived 0 is
+        // omitted so the persisted schema stays positive-only.
+        let phaseWithBudget = phaseRecord
+        if (phaseRecord !== undefined && deps.client !== undefined && context.sessionID !== undefined) {
+          try {
+            const deadlineMs = await resolveInheritedDeadline(
+              deps.client,
+              context.sessionID,
+              cwd,
+              context.abort ?? new AbortController().signal,
+            )
+            if (deadlineMs !== null) {
+              const remaining = Math.max(0, deadlineMs - (deps.now?.() ?? Date.now()))
+              if (remaining > 0) {
+                phaseWithBudget = { ...phaseRecord, remaining_ms: remaining }
               }
+            }
+          } catch {
+            // Fail open: a budget-lookup failure records no budget field.
+          }
+        }
+
+        // SYNTH-003 (synthetic-compaction-continue-prompt-rec, task 4.1):
+        // the command-keyed declared-step predicate — the authoritative gate
+        // over step names, rejecting an undeclared step regardless of its
+        // data. Keyed on the call's command argument resolving to uf.unleash
+        // (the same HARDEN-002 command keying: every other command carries
+        // its own step vocabulary and is unaffected). The consented escape
+        // hatch is a valid human_decision_ref per SYNTH-001, resolved through
+        // the same shared path the override tripwire below uses. This check
+        // runs before the SYNTH-001 tripwire and every state write below it:
+        // a call rejected here persists nothing, including
+        // spec_review_decisions arriving on the same call. The
+        // recordAutoCheckpoint machinery path writes fixed, machinery-authored
+        // step names directly through upsertCheckpointStep and never passes
+        // through this predicate.
+        if (cmd === SPEC_REVIEW_STATE_COMMAND && !isDeclaredUnleashCheckpointStep(args.step)) {
+          const stepEcho = boundIdentifierEcho(args.step, CHECKPOINT_STEP_NAME_MAX_LENGTH)
+          const resolution = resolveHumanDecisionRef(cwd, key, args.human_decision_ref)
+          if (resolution.outcome === "record_unreadable") {
+            // Fail closed (SYNTH-006): an unreadable record must never
+            // authorize an undeclared step, and treating the failure as a
+            // missing reference would misreport it.
+            return {
+              output: JSON.stringify(
+                failure(
+                  `human-decision record for key ${key} is unreadable — failing closed (SYNTH-006; ` +
+                    `step "${stepEcho}"): ` +
+                    `${boundIdentifierEcho(resolution.detail, HUMAN_DECISION_READ_ERROR_DETAIL_MAX_LENGTH)}. ` +
+                    "A record that cannot be read must never authorize an undeclared step; inspect " +
+                    ".uf/progress/<key>/human-decisions.json, fix the condition, then retry with " +
+                    "the same human_decision_ref",
+                  { retryable: false, code: "human_decision_record_unreadable" },
+                ),
+              ),
+            }
+          }
+          if (resolution.outcome !== "authorized") {
+            const authorization =
+              resolution.outcome === "unrecorded_ref"
+                ? `human_decision_ref ${resolution.ref} names no decision recorded for key ${key}`
+                : resolution.requirement
+            return {
+              output: JSON.stringify(
+                failure(
+                  `undeclared step: step "${stepEcho}" is not in the declared step set for command ` +
+                    `${SPEC_REVIEW_STATE_COMMAND} (SYNTH-003) and ${authorization} — record the ` +
+                    "decision via the question tool or the orchestrator relay, then cite its " +
+                    "decision_id",
+                  { retryable: false, code: "undeclared_step" },
+                ),
+              ),
+            }
+          }
+          // Authorization resolved against the persisted record: stamp the
+          // reference as provenance, the same anti-spoofing spread the
+          // SYNTH-001 tripwire applies below — a smuggled caller-supplied
+          // data key of the same name cannot spoof the provenance the gate
+          // just verified. When the data also carries an override key, the
+          // tripwire re-resolves and re-stamps the same reference.
+          dataToMerge = { ...dataToMerge, human_decision_ref: resolution.ref }
+        }
+
+        // SYNTH-001 (synthetic-compaction-continue-prompt-rec, task 2.4): the
+        // data-key tripwire. Defense-in-depth layering — the declared-step
+        // allowlist (SYNTH-003, task 4.1) is the authoritative gate; this scan
+        // catches gate overrides smuggled through data keys under any step
+        // name, at any nesting depth. The check runs BEFORE the HARDEN-002
+        // decision recording and every state write below it: a call rejected
+        // here persists nothing, including spec_review_decisions arriving on
+        // the same call. The enforcement point is the tool boundary — the only
+        // surface that receives human_decision_ref; the recordAutoCheckpoint
+        // machinery path writes fixed, machinery-authored data keys and never
+        // carries an override key.
+        const overrideKeyPath = findGateOverrideDataKey(dataToMerge)
+        if (overrideKeyPath !== null) {
+          const stepEcho = boundIdentifierEcho(args.step, CHECKPOINT_STEP_NAME_MAX_LENGTH)
+          const keyEcho = boundIdentifierEcho(overrideKeyPath, GATE_OVERRIDE_KEY_PATH_MAX_LENGTH)
+          // SYNTH-001's authorization resolves through the shared
+          // resolveHumanDecisionRef path (task 4.1 extracted the sequence so
+          // the declared-step predicate resolves through the same one): shape
+          // first, then the record read with its fail-closed semantics, then
+          // membership. The envelopes below are unchanged — each names the
+          // step and the override-carrying data key.
+          const resolution = resolveHumanDecisionRef(cwd, key, args.human_decision_ref)
+          if (resolution.outcome === "shape_failure") {
+            return {
+              output: JSON.stringify(
+                failure(
+                  `missing human decision: step "${stepEcho}" data key "${keyEcho}" carries a gate ` +
+                    `override (SYNTH-001) and ${resolution.requirement} — cite the decision_id of a recorded ` +
+                    "human decision (a free-text justification, including quoting the synthetic " +
+                    "continue prompt, never satisfies the requirement, and an inline " +
+                    "human-decision payload is not accepted in place of a reference)",
+                  { retryable: false, code: "missing_human_decision" },
+                ),
+              ),
+            }
+          }
+          if (resolution.outcome === "record_unreadable") {
+            return {
+              output: JSON.stringify(
+                failure(
+                  `human-decision record for key ${key} is unreadable — failing closed (SYNTH-006; ` +
+                    `step "${stepEcho}", data key "${keyEcho}"): ` +
+                    `${boundIdentifierEcho(resolution.detail, HUMAN_DECISION_READ_ERROR_DETAIL_MAX_LENGTH)}. ` +
+                    "A record that cannot be read must never authorize a gate override; inspect " +
+                    ".uf/progress/<key>/human-decisions.json, fix the condition, then retry with " +
+                    "the same human_decision_ref",
+                  { retryable: false, code: "human_decision_record_unreadable" },
+                ),
+              ),
+            }
+          }
+          if (resolution.outcome === "unrecorded_ref") {
+            // Fabricated references and first-use empty records reject
+            // identically (SYNTH-001); the ref is shape-validated here, so
+            // echoing it names a bounded decision_id-shaped identifier.
+            return {
+              output: JSON.stringify(
+                failure(
+                  `missing human decision: human_decision_ref ${resolution.ref} names no decision recorded for ` +
+                    `key ${key} (step "${stepEcho}", data key "${keyEcho}"); record the decision via ` +
+                    "the question tool or the orchestrator relay, then cite its decision_id",
+                  { retryable: false, code: "missing_human_decision" },
+                ),
+              ),
+            }
+          }
+          // Authorization resolved against the persisted record: stamp the
+          // reference as provenance (SYNTH-001's accepted-override scenario).
+          // The machinery stamp is spread over the caller's parsed data, so a
+          // smuggled caller-supplied data key of the same name cannot spoof
+          // the provenance the gate just verified.
+          dataToMerge = { ...dataToMerge, human_decision_ref: resolution.ref }
+        }
+
+        // HARDEN-002 (harden-spec-review-gate, task 3.1): decisions are
+        // recorded before the gate evaluation, so one call can adjudicate
+        // and advance (the all-override path) while apply decisions persist
+        // even when the advancement they authorize still awaits its
+        // approving iteration.
+        if (args.spec_review_decisions !== undefined) {
+          if (cmd !== SPEC_REVIEW_STATE_COMMAND) {
+            return {
+              output: JSON.stringify(
+                failure(
+                  `spec_review_decisions requires command ${SPEC_REVIEW_STATE_COMMAND}`,
+                  { retryable: false, code: "invalid_spec_review_decisions" },
+                ),
+              ),
+            }
+          }
+          try {
+            recordSpecReviewDecisionsToState(cwd, key, args.spec_review_decisions)
+          } catch (err: unknown) {
+            return { output: failureFromError(err, "invalid_spec_review_decisions") }
+          }
+        }
+
+        // HARDEN-002: while the latest REQUEST CHANGES iteration is not yet
+        // adjudicated (or is held by a pause, or awaits its approving
+        // iteration), only gate-machinery steps may be recorded — every
+        // other step would advance the pipeline past spec-review. The gate
+        // record is read once here and shared with the SYNTH-004 hold
+        // below.
+        if (cmd === SPEC_REVIEW_STATE_COMMAND) {
+          const gateRecord = readSpecReviewGateRecord(cwd, key)
+          const status = evaluateSpecReviewGate(gateRecord)
+          if (
+            (status.kind === "missing_decisions" ||
+              status.kind === "pending_approving_iteration" ||
+              status.kind === "paused") &&
+            !SPEC_REVIEW_GATE_STEP_ALLOWLIST.includes(args.step)
+          ) {
+            return {
+              output: JSON.stringify(
+                failure(specReviewGateMessage(status), {
+                  retryable: false,
+                  code: specReviewGateRefusalCode(status),
+                }),
+              ),
+            }
+          }
+
+          // SYNTH-004 (synthetic-compaction-continue-prompt-rec, task 5.2):
+          // the escalated-advisory hold. While the latest consolidated
+          // spec-review result is APPROVE WITH ADVISORIES (persisted
+          // canonical decision ESCALATED — the finalizer maps every AWA
+          // consolidation to it), the advancement steps implement and
+          // implement-phase-N reject with escalated_advisory_unrelayed
+          // until a human-decision reference covers the escalation — a
+          // hold over the advancement steps mirroring the HARDEN-002 shape
+          // above, NOT an allowlist of permitted steps: every other
+          // declared step still records. evaluateSpecReviewGate
+          // deliberately stays open on an AWA latest (task 5.1 narrowed
+          // isApprovingSpecVerdict to plain APPROVE), so this check — not
+          // the per-finding machinery — is what holds advancement. The
+          // covering rule is per-call human_decision_ref resolution
+          // through the same shared resolveHumanDecisionRef path the
+          // SYNTH-001 tripwire and the SYNTH-003 escape hatch use: the
+          // orchestrator relays the advisory, records the human decision
+          // (question tool or delegation envelope), and the advancement
+          // checkpoint cites the stamped decision_id. The
+          // recordAutoCheckpoint machinery path bypasses this hold by
+          // design — it writes fixed, machinery-authored steps straight
+          // through upsertCheckpointStep with no gate evaluation, and the
+          // spec's MUST binds the checkpoint tool, not the plugin's own
+          // machinery writes. This hold is the last gate before the state
+          // write, so a rejection here returns
+          // escalated_advisory_unrelayed and never falls through to a
+          // different error code.
+          if (isUnleashAdvancementCheckpointStep(args.step)) {
+            const latest = gateRecord === null ? null : latestSpecReviewIteration(gateRecord)
+            if (latest !== null && isEscalatedAdvisorySpecVerdict(latest.entry.verdict)) {
+              const resolution = resolveHumanDecisionRef(cwd, key, args.human_decision_ref)
+              if (resolution.outcome === "record_unreadable") {
+                // Fail closed (SYNTH-006): an unreadable record must never
+                // cover an escalated advisory, and treating the failure as
+                // a missing reference would misreport it — the same
+                // fail-closed shape the tripwire and escape hatch apply.
+                const stepEcho = boundIdentifierEcho(args.step, CHECKPOINT_STEP_NAME_MAX_LENGTH)
+                return {
+                  output: JSON.stringify(
+                    failure(
+                      `human-decision record for key ${key} is unreadable — failing closed ` +
+                        `(SYNTH-006; escalated-advisory coverage for step "${stepEcho}"): ` +
+                        `${boundIdentifierEcho(resolution.detail, HUMAN_DECISION_READ_ERROR_DETAIL_MAX_LENGTH)}. ` +
+                        "A record that cannot be read must never cover an escalated advisory; inspect " +
+                        ".uf/progress/<key>/human-decisions.json, fix the condition, then retry with " +
+                        "the same human_decision_ref",
+                      { retryable: false, code: "human_decision_record_unreadable" },
+                    ),
+                  ),
+                }
+              }
+              if (resolution.outcome !== "authorized") {
+                return {
+                  output: JSON.stringify(
+                    failure(escalatedAdvisoryHoldMessage(latest, resolution, key), {
+                      retryable: false,
+                      code: "escalated_advisory_unrelayed",
+                    }),
+                  ),
+                }
+              }
+              // Coverage resolved against the persisted record: stamp the
+              // reference as provenance — the same anti-spoofing spread the
+              // SYNTH-003 escape hatch and SYNTH-001 tripwire apply, so the
+              // advancement checkpoint records which relayed human decision
+              // authorized passing the advisory. When the data also carries
+              // an override key, the tripwire above already re-resolved and
+              // re-stamped the same reference.
+              dataToMerge = { ...dataToMerge, human_decision_ref: resolution.ref }
+            }
+          }
+        }
 
         const state = upsertCheckpointStep(
           cwd,
@@ -439,9 +1134,23 @@ export function createCheckpointTool(exec: GitExec, cwd: string) {
           args.command,
           args.step,
           dataToMerge,
-          phaseRecord,
+          phaseWithBudget,
         )
-        return { output: JSON.stringify(success(state)) }
+        // PTB-FR-004 (DE-003): a phase-recorded checkpoint also returns the
+        // tool-rendered line so the command emits it verbatim; the
+        // response-only field never persists to the state file.
+        return {
+          output: JSON.stringify(
+            success(
+              phaseWithBudget !== undefined
+                ? {
+                    ...state,
+                    phase_checkpoint_line: renderPhaseCheckpointLine(phaseWithBudget),
+                  }
+                : state,
+            ),
+          ),
+        }
       } catch (err: unknown) {
         return { output: failureFromError(err, "CHECKPOINT_ERROR") }
       }
@@ -465,7 +1174,16 @@ export function createGetProgressTool(exec: GitExec, cwd: string) {
       try {
         const key = resolveKey(exec, cwd, args.key)
         const cmd = sanitizeSlug(args.command)
-        const state = readState(cwd, key, cmd)
+        // HARDEN-001 (harden-spec-review-gate, task 2.2): the uf.unleash
+        // state is reconciled against the dispatch artifact store before it
+        // is returned — get_progress must never report iteration N-1 while
+        // artifact N is persisted on disk. The healed record is written
+        // back so the two-store window closes durably. Other commands read
+        // their state directly.
+        const state =
+          cmd === SPEC_REVIEW_STATE_COMMAND
+            ? reconcileSpecReviewGateState(cwd, key)
+            : readState(cwd, key, cmd)
         return { output: JSON.stringify(success(state)) }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -512,6 +1230,492 @@ export function createClearProgressTool(exec: GitExec, cwd: string) {
               retryable: false,
               code: "CLEAR_PROGRESS_ERROR",
             }),
+          ),
+        }
+      }
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// record_human_decision tool (synthetic-compaction-continue-prompt-rec,
+// SYNTH-001/006, task 2.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Structured output from record_human_decision: the persisted entry
+ * exactly as the record now carries it — machine-stamped `decision_id`
+ * (UUID v4), the caller-supplied source/question/answer, and
+ * machine-stamped `recorded_at`.
+ */
+export type RecordHumanDecisionData = HumanDecisionEntry
+
+/**
+ * zod-validated input contract for record_human_decision (SYNTH-006). The
+ * object is strict: callers supply exactly source, question, and answer
+ * (plus the optional key override) — a caller-supplied `decision_id` or
+ * `recorded_at` is an unknown key and rejected, so identity and timestamp
+ * stamps stay machine-owned. Byte bounds (not zod's character counts)
+ * match HUMAN_DECISION_TEXT_MAX_BYTES; validation runs at safeParse,
+ * before any security-sensitive operation.
+ */
+const RecordHumanDecisionInputSchema = z
+  .object({
+    source: z.enum(["question-tool", "orchestrator-relay"]),
+    question: z
+      .string()
+      .min(1, "empty string is invalid -- record the actual question text")
+      .refine(isHumanDecisionTextWithinBounds, {
+        message: "question exceeds the 16 KiB UTF-8 byte limit (SYNTH-006)",
+      }),
+    answer: z
+      .string()
+      .min(1, "empty string is invalid -- record the actual answer text")
+      .refine(isHumanDecisionTextWithinBounds, {
+        message: "answer exceeds the 16 KiB UTF-8 byte limit (SYNTH-006)",
+      }),
+    key: z.string().optional(),
+  })
+  .strict()
+
+/**
+ * Factory for the record_human_decision tool (SYNTH-006, task 2.3) with
+ * injectable git executor and working directory for testability — the
+ * in-session question path, one of the exactly two write surfaces the
+ * human-decision record accepts (SYNTH-001; the other is
+ * uf_delegate_command's orchestrator-relay envelope). Callers supply only
+ * source, question, and answer: `decision_id` (UUID v4) and `recorded_at`
+ * are machine-stamped by the shared append machinery, which owns the full
+ * SYNTH-006 store discipline (traversal-checked key sanitization, symlink
+ * refusal, 0o700/0o600, atomic temp-file-plus-rename, advisory-lock
+ * serialization). Answers containing the synthetic compaction prompt up to
+ * normalization are refused before any store write; errors carry bounded
+ * identifiers only, never raw question or answer text.
+ *
+ * @param exec Git executor used to derive the auto-detected state key.
+ * @param cwd Repository root holding `.uf/progress/`.
+ * @returns The record_human_decision tool.
+ */
+export function createRecordHumanDecisionTool(
+  exec: GitExec,
+  cwd: string,
+): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Record a human decision the session actually received (SYNTH-001/006) as an " +
+      "append-only entry in the human-decision record " +
+      "(.uf/progress/<key>/human-decisions.json), so a later gate-override checkpoint " +
+      "call can cite the entry's decision_id as human_decision_ref. Callers supply only " +
+      "source, question, and answer; decision_id (UUID v4) and recorded_at are " +
+      "machine-stamped. Answers matching the synthetic compaction prompt up to " +
+      "normalization (case, whitespace, or quoting variation, or embedded in larger " +
+      "text) are refused — the synthetic continue prompt is machinery output, never " +
+      "human consent. Never compose an entry for a decision not actually received; " +
+      "compose a real question-tool call or orchestrator relay instead (SYNTH-002).",
+    args: {
+      source: RecordHumanDecisionInputSchema.shape.source.describe(
+        "The surface the decision arrived through: \"question-tool\" for an in-session " +
+          "question-tool answer, \"orchestrator-relay\" for an orchestrator-relayed decision.",
+      ),
+      question: RecordHumanDecisionInputSchema.shape.question.describe(
+        "Question text as presented to the human (non-empty, at most 16 KiB UTF-8).",
+      ),
+      answer: RecordHumanDecisionInputSchema.shape.answer.describe(
+        "Answer text as received from the human (non-empty, at most 16 KiB UTF-8). An " +
+          "answer containing the synthetic compaction prompt up to normalization is " +
+          "refused with synthetic_prompt_answer.",
+      ),
+      key: RecordHumanDecisionInputSchema.shape.key.describe(
+        "Optional state key override; defaults to sanitized current git branch.",
+      ),
+    },
+    execute: async (args: {
+      source: HumanDecisionSource
+      question: string
+      answer: string
+      key?: string
+    }) => {
+      try {
+        const parsed = RecordHumanDecisionInputSchema.safeParse(args)
+        if (!parsed.success) {
+          return { output: invalidInputOutput(parsed.error) }
+        }
+        const input = parsed.data
+
+        // SYNTH-006 deny-list: refuse before any store write. The
+        // synthetic compaction prompt is machinery output, not human
+        // input, and MUST NOT be recorded as a human decision. The
+        // refusal names the condition with bounded identifiers only —
+        // never the answer text.
+        if (isSyntheticCompactionPromptAnswer(input.answer)) {
+          return {
+            output: JSON.stringify(
+              failure(
+                "Refused: the answer matches the synthetic compaction prompt (SYNTH-006). " +
+                  "The synthetic continue prompt is machinery output, not human input, and " +
+                  "must never be recorded as a human decision. Remediation: record a " +
+                  "decision actually received from a human via the question tool or the " +
+                  "orchestrator relay; retrying with the same answer will not fix this.",
+                { retryable: false, code: "synthetic_prompt_answer" },
+              ),
+            ),
+          }
+        }
+
+        // Same key resolution as checkpoint/get_progress/clear_progress:
+        // explicit key or sanitized current git branch. Store discipline
+        // (traversal-checked sanitization, symlink refusal, 0o700/0o600,
+        // atomic temp-plus-rename, advisory-lock serialization) is owned
+        // by appendHumanDecisions — the shared machinery both write
+        // surfaces use, never duplicated here.
+        const key = resolveKey(exec, cwd, input.key)
+        let stamped: readonly HumanDecisionEntry[]
+        try {
+          stamped = await appendHumanDecisions(cwd, key, [
+            { source: input.source, question: input.question, answer: input.answer },
+          ])
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return {
+            output: JSON.stringify(
+              failure(
+                `Failed to persist the human decision to the human-decision record for key ${key}: ${msg}. ` +
+                  "Remediation: inspect .uf/progress/<key>/human-decisions.json (a corrupted record " +
+                  "fails closed); retry once the condition clears.",
+                { retryable: true, code: "HUMAN_DECISION_PERSIST_FAILED" },
+              ),
+            ),
+          }
+        }
+        const entry = stamped[0]
+        if (entry === undefined) {
+          // Defensive: a single-entry append returns one stamped entry;
+          // fail closed rather than confirming a decision that did not
+          // land.
+          return {
+            output: JSON.stringify(
+              failure(
+                "Human-decision append returned no stamped entry; nothing was confirmed as recorded",
+                { retryable: true, code: "HUMAN_DECISION_PERSIST_FAILED" },
+              ),
+            ),
+          }
+        }
+        return { output: JSON.stringify(success(entry)) }
+      } catch (err: unknown) {
+        return { output: failureFromError(err, "RECORD_HUMAN_DECISION_ERROR") }
+      }
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// relay_spec_review_gate tool (HARDEN-004)
+// ---------------------------------------------------------------------------
+
+/**
+ * Structured output from relay_spec_review_gate (HARDEN-004).
+ */
+export interface RelaySpecReviewGateData {
+  /**
+   * True only while the human's gate decision is pending presentation: the
+   * latest recorded iteration is REQUEST CHANGES with undecided findings,
+   * or a pause decision holds it. A decided gate (including apply decisions
+   * awaiting the next iteration), an approved gate, or no spec-review
+   * record reports false.
+   */
+  readonly gate_paused: boolean
+  /** Deterministic artifact-sourced relay text; null when not paused. */
+  readonly relay: string | null
+  /** Latest recorded iteration number; null when no spec-review record. */
+  readonly iteration: number | null
+  /** Latest recorded iteration verdict; null when no spec-review record. */
+  readonly verdict: string | null
+  /**
+   * Correlation ID of the dispatch artifact backing the latest iteration;
+   * null when no spec-review record.
+   */
+  readonly correlation_id: string | null
+  /** Findings the latest iteration consolidated; null when no record. */
+  readonly finding_count: number | null
+  /** Finding ids still needing a decision; empty when none or not paused. */
+  readonly undecided_finding_ids: readonly string[]
+}
+
+/** Injected filesystem dependency for relay_spec_review_gate. */
+export interface RelaySpecReviewGateDependencies {
+  /** Reads UTF-8 text from an absolute path (the dispatch artifact). */
+  readonly readText: (path: string) => Promise<string>
+}
+
+/**
+ * Hold status the relay renders for an escalated-advisory latest iteration
+ * (SYNTH-004): APPROVE WITH ADVISORIES, which the review-dispatch
+ * finalizer maps to the canonical decision ESCALATED. The HARDEN-002 gate
+ * status evaluates these open — the hold is relay-purposes-only — so the
+ * renderer carries its own shape rather than a SpecReviewGateStatus
+ * member, and the relay tool synthesizes it from the latest iteration.
+ */
+export interface SpecReviewEscalatedAdvisoryStatus {
+  /** Discriminator: always "escalated_advisory". */
+  readonly kind: "escalated_advisory"
+  /** 1-based number of the escalated (latest) iteration. */
+  readonly iteration: number
+  /** The escalated iteration's verdict ("APPROVE WITH ADVISORIES"). */
+  readonly verdict: string
+}
+
+/** Input to the pure gate-relay renderer. */
+export interface SpecReviewRelayInput {
+  /**
+   * The holding gate status: undecided findings, a pause decision, or an
+   * escalated advisory (SYNTH-004).
+   */
+  readonly status:
+    | Extract<SpecReviewGateStatus, { kind: "missing_decisions" | "paused" }>
+    | SpecReviewEscalatedAdvisoryStatus
+  /** Correlation ID of the artifact backing the latest iteration. */
+  readonly correlationId: string
+  /** Findings the latest iteration consolidated. */
+  readonly findingCount: number
+  /** Recorded decision set for the latest iteration; empty while undecided. */
+  readonly decisions: readonly SpecReviewDecision[]
+  /** Parsed artifact findings; null when the artifact is unreadable. */
+  readonly findings: readonly ReviewDispatchFindingSummary[] | null
+}
+
+/**
+ * Deterministic relay text for a holding spec-review gate (HARDEN-004).
+ *
+ * The relay is artifact-sourced by construction: `findings` comes from the
+ * parsed dispatch artifact (parseReviewDispatchArtifactDetail), never from
+ * child session text, so a compaction summary, empty text, or an
+ * "addressed" claim cannot change it. A null `findings` (unreadable or
+ * malformed artifact) renders the fail-safe relay from the record's own
+ * metadata — a missing artifact can never silently un-pause the gate.
+ * Finding identity is the 1-based index into the artifact's findings
+ * array, the same identity the gate record's finding_ids and per-finding
+ * decisions carry. Escalated advisories (SYNTH-004) render through the
+ * same artifact-sourced path: the advisories surface as findings exactly
+ * as REQUEST CHANGES findings do, with an escalation-specific hold line.
+ */
+export function renderSpecReviewGateRelay(input: SpecReviewRelayInput): string {
+  const { status, correlationId, findingCount, decisions, findings } = input
+  const lines: string[] = []
+  if (status.kind === "paused") {
+    lines.push(
+      `Spec-review gate paused: iteration ${status.iteration} (${status.verdict}), correlation ${correlationId}.`,
+    )
+    lines.push(
+      `The human paused findings [${status.paused.join(", ")}]. Exit through the spec-review paused exit path; the gate re-opens only through recorded decisions (checkpoint spec_review_decisions) — the recorded iteration is sealed (re-dispatch refused with iteration_already_recorded).`,
+    )
+  } else if (status.kind === "escalated_advisory") {
+    lines.push(
+      `Spec-review gate holds: iteration ${status.iteration} (${status.verdict}), correlation ${correlationId}.`,
+    )
+    lines.push(
+      `${findingCount} advisories consolidated — escalated advisory (SYNTH-004): every APPROVE WITH ADVISORIES consolidation persists as the canonical decision ESCALATED, so the result must be relayed before implementation continues. Record the human decision covering the escalation (question tool or orchestrator relay) and cite it via the checkpoint human_decision_ref argument; advancement is refused until the relayed decision is recorded.`,
+    )
+  } else {
+    lines.push(
+      `Spec-review gate holds: iteration ${status.iteration} (${status.verdict}), correlation ${correlationId}.`,
+    )
+    lines.push(
+      `${findingCount} findings consolidated; undecided finding ids: [${status.undecided.join(", ")}]. Record an apply/override/pause decision for every finding via the checkpoint tool's spec_review_decisions argument; the recorded iteration is sealed (re-dispatch refused with iteration_already_recorded).`,
+    )
+  }
+  if (findings === null) {
+    lines.push(
+      `The dispatch artifact ${DISPATCH_ARTIFACT_DIRECTORY}/${correlationId}.json could not be read — finding details are unavailable; decide from the recorded finding ids.`,
+    )
+    return lines.join("\n")
+  }
+  lines.push(`Findings from the dispatch artifact:`)
+  const decisionById = new Map(decisions.map((decision) => [decision.finding_id, decision.decision]))
+  findings.forEach((finding, index) => {
+    const id = String(index + 1)
+    const loc =
+      finding.file === null
+        ? ""
+        : finding.line === null
+          ? ` (${finding.file})`
+          : ` (${finding.file}:${finding.line})`
+    const mark = decisionById.get(id) ?? "undecided"
+    lines.push(`${id}. [${finding.severity}] ${finding.description}${loc} — ${mark}`)
+  })
+  return lines.join("\n")
+}
+
+/**
+ * Factory that creates the relay_spec_review_gate tool with injectable git
+ * executor, working directory, and artifact reader for testability.
+ *
+ * HARDEN-004 (harden-spec-review-gate): the orchestrator
+ * (/uf.run-pipeline-plan) calls this tool unconditionally after a
+ * /uf.unleash child returns. The tool — not command prose — reads the
+ * healed spec-review gate record (same path get_progress uses) and the
+ * dispatch artifact and computes the pause state: an undecided
+ * non-APPROVE iteration, a pause decision, or an escalated-advisory
+ * latest iteration (APPROVE WITH ADVISORIES — SYNTH-004 treats it like
+ * REQUEST CHANGES for relay purposes) returns {gate_paused: true} with
+ * the rendered relay; a decided gate, a plain-APPROVE gate, or no
+ * spec-review record returns {gate_paused: false}. The orchestrator
+ * presents the relay when paused and proceeds only when not — the child's
+ * returned text is never decision input.
+ *
+ * @param exec Git executor used for the state-key branch read.
+ * @param cwd Repository root used to resolve the state store and the
+ *   dispatch artifact store.
+ * @param deps Dispatch-artifact reader.
+ * @returns The relay_spec_review_gate tool.
+ */
+export function createRelaySpecReviewGateTool(
+  exec: GitExec,
+  cwd: string,
+  deps: RelaySpecReviewGateDependencies,
+): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Spec-review gate relay for /uf.run-pipeline-plan (HARDEN-004): reads the " +
+      "healed uf.unleash spec-review gate record and the dispatch artifact " +
+      "(.uf/artifacts/dispatch/<correlation>.json) and computes the pause state — " +
+      "an undecided non-APPROVE spec-review iteration, a pause decision, or an " +
+      "escalated-advisory latest iteration (APPROVE WITH ADVISORIES, persisted " +
+      "canonical decision ESCALATED — SYNTH-004 relays it like REQUEST CHANGES) " +
+      "returns {gate_paused: true, relay} with the deterministic artifact-sourced " +
+      "finding list (severity, description, file:line, correlation id); a decided " +
+      "gate, a plain-APPROVE gate, or no spec-review record returns " +
+      "{gate_paused: false}. Call unconditionally after a /uf.unleash child " +
+      "returns; present the relay when paused, proceed only when not. Returns " +
+      "{gate_paused, relay, iteration, verdict, correlation_id, finding_count, " +
+      "undecided_finding_ids}.",
+    args: {
+      command: z.string().describe("Command identifier (e.g. uf.unleash)"),
+      key: z.string().optional().describe(
+        "Optional state key override; defaults to sanitized current git branch",
+      ),
+    },
+    execute: async (args: { command: string; key?: string }) => {
+      try {
+        // The spec-review gate record lives in the uf.unleash state only;
+        // any other command carries none.
+        if (sanitizeSlug(args.command) !== SPEC_REVIEW_STATE_COMMAND) {
+          return {
+            output: JSON.stringify(
+              failure(
+                `relay_spec_review_gate reads the ${SPEC_REVIEW_STATE_COMMAND} spec-review gate record; command '${args.command}' carries none`,
+                { retryable: false, code: "RELAY_SPEC_REVIEW_COMMAND" },
+              ),
+            ),
+          }
+        }
+        const key = resolveKey(exec, cwd, args.key)
+        const record = readSpecReviewGateRecord(cwd, key)
+        const latest = record === null ? null : latestSpecReviewIteration(record)
+        if (record === null || latest === null) {
+          // No spec-review record: nothing holds the pipeline (HARDEN-004
+          // no-record scenario) — the orchestrator proceeds by its other
+          // state checks.
+          return {
+            output: JSON.stringify(
+              success({
+                gate_paused: false,
+                relay: null,
+                iteration: null,
+                verdict: null,
+                correlation_id: null,
+                finding_count: null,
+                undecided_finding_ids: [],
+              } satisfies RelaySpecReviewGateData),
+            ),
+          }
+        }
+        const status = evaluateSpecReviewGate(record)
+        // SYNTH-004: treat an escalated-advisory latest iteration (APPROVE
+        // WITH ADVISORIES — the finalizer maps every AWA consolidation to
+        // the canonical decision ESCALATED, so the marker is not a
+        // distinguishing subset) the same as REQUEST CHANGES for relay
+        // purposes. The HARDEN-002 gate status evaluates it open because
+        // the per-finding machinery does not adjudicate advisories; the
+        // widened relay predicate checks the verdict itself.
+        const escalatedAdvisory = isEscalatedAdvisorySpecVerdict(latest.entry.verdict)
+        const holdingStatus: SpecReviewRelayInput["status"] | null =
+          status.kind === "missing_decisions" || status.kind === "paused"
+            ? status
+            : escalatedAdvisory
+              ? {
+                  kind: "escalated_advisory",
+                  iteration: latest.iteration,
+                  verdict: latest.entry.verdict,
+                }
+              : null
+        if (holdingStatus === null) {
+          // A decided or approved gate does not pause the orchestrator
+          // (HARDEN-004): apply decisions continue the fix loop inside the
+          // child, and an all-override or approving outcome closed the
+          // gate. Step completeness is the resume probe's job (HARDEN-006).
+          return {
+            output: JSON.stringify(
+              success({
+                gate_paused: false,
+                relay: null,
+                iteration: latest.iteration,
+                verdict: latest.entry.verdict,
+                correlation_id: latest.entry.correlation_id,
+                finding_count: latest.entry.finding_count,
+                undecided_finding_ids: [],
+              } satisfies RelaySpecReviewGateData),
+            ),
+          }
+        }
+        // gate_paused: render the relay from the dispatch artifact —
+        // artifact-sourced, never child-text sourced (HARDEN-004). The
+        // escalated-advisory hold renders through the same path (SYNTH-004).
+        let findings: readonly ReviewDispatchFindingSummary[] | null = null
+        const correlationId = latest.entry.correlation_id
+        // Defense-in-depth: the record is tool-written, but a crafted
+        // correlation id containing a path separator would resolve outside
+        // the artifact store (same guard readDispatchArtifacts applies to
+        // store entry names).
+        const artifactNameSafe = !correlationId.includes("/") && !correlationId.includes("\\")
+        if (artifactNameSafe) {
+          try {
+            const raw = await deps.readText(
+              resolve(cwd, DISPATCH_ARTIFACT_DIRECTORY, `${correlationId}.json`),
+            )
+            const detail = parseReviewDispatchArtifactDetail(raw, `${correlationId}.json`)
+            if (detail !== null) findings = detail.findings
+          } catch {
+            // Unreadable artifact — the fail-safe relay below renders from
+            // the record metadata; a missing artifact never un-pauses.
+          }
+        }
+        const relay = renderSpecReviewGateRelay({
+          status: holdingStatus,
+          correlationId,
+          findingCount: latest.entry.finding_count,
+          decisions: decisionsForLatestIteration(record),
+          findings,
+        })
+        return {
+          output: JSON.stringify(
+            success({
+              gate_paused: true,
+              relay,
+              iteration: latest.iteration,
+              verdict: latest.entry.verdict,
+              correlation_id: correlationId,
+              finding_count: latest.entry.finding_count,
+              undecided_finding_ids:
+                holdingStatus.kind === "missing_decisions" ? holdingStatus.undecided : [],
+            } satisfies RelaySpecReviewGateData),
+          ),
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return {
+          output: JSON.stringify(
+            failure(msg, { retryable: false, code: "RELAY_SPEC_REVIEW_GATE_ERROR" }),
           ),
         }
       }
@@ -608,28 +1812,207 @@ export function createGitFetchTool(exec: GitExec, cwd: string) {
   })
 }
 
+/**
+ * Git ref-name argument guard for the push tools: non-empty, no leading
+ * `-` (option injection), no whitespace, no `:` (refspec separator), and
+ * not `HEAD` (which would create refs/heads/HEAD on the remote).
+ */
+const PushRefNameSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((value) => !value.startsWith("-") && !/[\s:]/.test(value) && value !== "HEAD", {
+    message: "must not be HEAD, start with '-', or contain whitespace or ':'",
+  })
+
+/**
+ * Remote-name argument guard for the push tools: a remote is a git
+ * config nickname, and git's remote-name validation rejects `/`, so a
+ * slash-bearing push target would be treated as a local repository
+ * path instead of a configured remote. `.` and `..` are rejected for
+ * the same reason: git resolves them as local repository paths (the
+ * working directory and its parent), so a push with such a "remote"
+ * would target a different local repository and execute its hooks.
+ */
+const RemoteNameSchema = PushRefNameSchema.refine(
+  (value) => !value.includes("/") && value !== "." && value !== "..",
+  {
+    message: "must not be '.', '..', or contain '/'",
+  },
+)
+
+const GitPushInputSchema = z.object({
+  branch: PushRefNameSchema,
+  remote: RemoteNameSchema.optional(),
+  setUpstream: z.boolean().optional(),
+})
+
+const GitPushForceWithLeaseInputSchema = z.object({
+  branch: PushRefNameSchema,
+  remote: RemoteNameSchema.optional(),
+  expected_sha: z
+    .string()
+    .regex(/^[0-9a-fA-F]{7,64}$/, "must be a 7-64 character hex commit SHA")
+    .optional(),
+})
+
+/**
+ * Structured output shared by git_push and git_push_force_with_lease.
+ * `old_sha` is the remote ref's value before the push (null when the
+ * push created the branch); `updated` is false when the remote already
+ * held `new_sha`, so a no-op push is distinguishable from an update.
+ * `warning` (git_push only) is set when the push landed but a
+ * follow-up step such as tracking configuration failed.
+ */
+export interface GitPushData {
+  readonly remote: string
+  readonly ref: string
+  readonly old_sha: string | null
+  readonly new_sha: string
+  readonly updated: boolean
+  readonly warning?: string
+}
+
+/**
+ * Refuse a push whose `branch` is not the checked-out branch: the push
+ * source is the HEAD commit, so a checkout switched underneath the
+ * caller would otherwise push the wrong commits under the named ref.
+ * Compares full ref names (`symbolic-ref`, which fails on a detached
+ * HEAD) so a same-name tag cannot make the check ambiguous. When the
+ * symbolic-ref probe itself fails, a second `rev-parse --git-dir` probe
+ * distinguishes a detached HEAD from a git-level failure so the error
+ * names the real cause. Returns the failure-output JSON, or null when
+ * HEAD is on `branch`.
+ */
+function pushBranchMismatchOutput(exec: GitExec, cwd: string, branch: string): string | null {
+  let current: string | null
+  let branchProbeFailed = false
+  try {
+    current = exec(["symbolic-ref", "-q", "HEAD"], cwd)
+  } catch {
+    current = null
+    try {
+      exec(["rev-parse", "--git-dir"], cwd)
+    } catch {
+      branchProbeFailed = true
+    }
+  }
+  if (current === `refs/heads/${branch}`) {
+    return null
+  }
+  const detail = branchProbeFailed
+    ? "the current branch could not be determined (git error)"
+    : current === null || current === ""
+      ? "the checkout is on a detached HEAD"
+      : `the checkout is on branch "${current.replace(/^refs\/heads\//, "")}"`
+  return JSON.stringify(
+    failure(`Refusing to push "${branch}": ${detail}`, {
+      retryable: false,
+      code: "BRANCH_MISMATCH",
+    }),
+  )
+}
+
+/**
+ * Porcelain status flag and summary for `ref` from `git push
+ * --porcelain` output, or null when no status line names the ref.
+ */
+function pushStatusLine(output: string, ref: string): { flag: string; summary: string } | null {
+  for (const line of output.split("\n")) {
+    const fields = line.split("\t")
+    if (fields.length >= 3 && fields[1].endsWith(`:${ref}`)) {
+      return { flag: fields[0].trim(), summary: fields[2] }
+    }
+  }
+  return null
+}
+
+/**
+ * Build the push report from porcelain output. `=` means the remote
+ * already held HEAD (no-op), `*` means the push created the ref, and any
+ * other accepted status updated it from `oldSha(summary)`.
+ */
+function pushReport(
+  remote: string,
+  ref: string,
+  newSha: string,
+  output: string,
+  oldSha: (summary: string) => string | null,
+): GitPushData {
+  const status = pushStatusLine(output, ref)
+  if (status?.flag === "=") {
+    return { remote, ref, old_sha: newSha, new_sha: newSha, updated: false }
+  }
+  if (status?.flag === "*") {
+    return { remote, ref, old_sha: null, new_sha: newSha, updated: true }
+  }
+  const old = oldSha(status?.summary ?? "")
+  return { remote, ref, old_sha: old, new_sha: newSha, updated: old !== newSha }
+}
+
 /** Factory for the git_push tool. */
 export function createGitPushTool(exec: GitExec, cwd: string) {
   return tool({
     description:
-      "Push commits to the remote repository. " +
-      "Optionally set upstream tracking for a branch.",
+      "Push the checked-out branch to the remote with an explicit refspec " +
+      "(<HEAD sha>:refs/heads/<branch>). Refuses with BRANCH_MISMATCH when the " +
+      "checkout is not on `branch`. Returns {remote, ref, old_sha, new_sha, " +
+      "updated}; updated is false when the remote was already up to date. When " +
+      "setUpstream is set and the push lands but the tracking configuration " +
+      "fails, the result is still success with a warning field describing it.",
     args: {
-      setUpstream: z.boolean().optional().describe(
-        "Set upstream tracking (--set-upstream origin <branch>)",
+      branch: z.string().describe(
+        "Branch to push; MUST be the currently checked-out branch",
       ),
-      branch: z.string().optional().describe(
-        "Branch name (required when setUpstream is true)",
+      remote: z.string().optional().describe("Remote name (default: origin)"),
+      setUpstream: z.boolean().optional().describe(
+        "Set upstream tracking to <remote>/<branch> after the push",
       ),
     },
-    execute: async (args: { setUpstream?: boolean; branch?: string }) => {
+    async execute(args) {
+      const parsed = parseToolInput(GitPushInputSchema, args)
+      if (!parsed.ok) {
+        return { output: parsed.failureOutput }
+      }
+      const { branch, setUpstream } = parsed.value
+      const remote = parsed.value.remote ?? "origin"
+      const ref = `refs/heads/${branch}`
       try {
-        const gitArgs =
-          args.setUpstream && args.branch
-            ? ["push", "--set-upstream", "origin", args.branch]
-            : ["push"]
-        exec(gitArgs, cwd)
-        return { output: JSON.stringify(success({ success: true })) }
+        const mismatch = pushBranchMismatchOutput(exec, cwd, branch)
+        if (mismatch !== null) {
+          return { output: mismatch }
+        }
+        const newSha = exec(["rev-parse", "HEAD"], cwd)
+        // Push the verified commit, not HEAD, so a checkout switched
+        // after the branch check cannot change what is pushed.
+        const output = exec(["push", "--porcelain", remote, `${newSha}:${ref}`], cwd)
+        // The push has already landed, so a tracking-configuration failure
+        // must not surface as a push error; report it as a warning instead.
+        let warning: string | undefined
+        if (setUpstream) {
+          try {
+            exec(["branch", `--set-upstream-to=${remote}/${branch}`, branch], cwd)
+          } catch {
+            warning =
+              `the push landed but setting the upstream tracking to ${remote}/${branch} failed; ` +
+              `run git branch --set-upstream-to=${remote}/${branch} ${branch} manually`
+          }
+        }
+        // A fast-forward summary is "<old>..<new>"; the old commit is an
+        // ancestor of HEAD, so it resolves locally to its full SHA.
+        const data = pushReport(remote, ref, newSha, output, (summary) => {
+          const abbrev = summary.split("..")[0]
+          if (!/^[0-9a-f]+$/i.test(abbrev)) {
+            return null
+          }
+          try {
+            return exec(["rev-parse", "--verify", `${abbrev}^{commit}`], cwd)
+          } catch {
+            return null
+          }
+        })
+        const payload: GitPushData = warning === undefined ? data : { ...data, warning }
+        return { output: JSON.stringify(success(payload)) }
       } catch (err: unknown) {
         return { output: failureFromError(err, "GIT_PUSH_ERROR", true) }
       }
@@ -641,22 +2024,76 @@ export function createGitPushTool(exec: GitExec, cwd: string) {
 export function createGitPushForceWithLeaseTool(exec: GitExec, cwd: string) {
   return tool({
     description:
-      "Force-push with lease safety. Pushes to the remote using " +
-      "--force-with-lease to prevent overwriting others' work.",
-    execute: async () => {
+      "Force-push the checked-out branch under a lease: runs git push " +
+      "--force-with-lease=refs/heads/<branch>:<expected_sha> <remote> " +
+      "<HEAD sha>:refs/heads/<branch>. Without expected_sha the lease is the " +
+      "remote-tracking ref plus --force-if-includes, so a fetch that moved " +
+      "it to a commit never integrated locally is rejected. Refuses with " +
+      "BRANCH_MISMATCH when the checkout is not on `branch`, and with " +
+      "EXPECTED_SHA_UNKNOWN when expected_sha is not a local commit. Returns " +
+      "{remote, ref, old_sha, new_sha, updated}; updated is false when the " +
+      "remote was already up to date.",
+    args: {
+      branch: z.string().describe(
+        "Branch to push; MUST be the currently checked-out branch",
+      ),
+      remote: z.string().optional().describe("Remote name (default: origin)"),
+      expected_sha: z.string().optional().describe(
+        "Commit SHA the remote branch is expected to hold (the lease); " +
+          "record it before any fetch. Default: the remote-tracking ref " +
+          "<remote>/<branch> with --force-if-includes, or \"must not exist\" " +
+          "when there is none",
+      ),
+    },
+    async execute(args) {
+      const parsed = parseToolInput(GitPushForceWithLeaseInputSchema, args)
+      if (!parsed.ok) {
+        return { output: parsed.failureOutput }
+      }
+      const { branch } = parsed.value
+      const remote = parsed.value.remote ?? "origin"
+      const ref = `refs/heads/${branch}`
       try {
-        exec(["push", "--force-with-lease"], cwd)
-        return { output: JSON.stringify(success({ success: true })) }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err)
-        return {
-          output: JSON.stringify(
-            failure(msg, {
-              retryable: false,
-              code: "GIT_PUSH_FORCE_ERROR",
-            }),
-          ),
+        const mismatch = pushBranchMismatchOutput(exec, cwd, branch)
+        if (mismatch !== null) {
+          return { output: mismatch }
         }
+        let expected = ""
+        let leaseArgs: string[]
+        if (parsed.value.expected_sha !== undefined) {
+          try {
+            expected = exec(["rev-parse", "--verify", `${parsed.value.expected_sha}^{commit}`], cwd)
+          } catch {
+            return {
+              output: JSON.stringify(
+                failure(
+                  `expected_sha "${parsed.value.expected_sha}" is not a commit in the local ` +
+                    "repository; fetch it or pass the full SHA of a known commit. Nothing was pushed.",
+                  { retryable: false, code: "EXPECTED_SHA_UNKNOWN" },
+                ),
+              ),
+            }
+          }
+          leaseArgs = [`--force-with-lease=${ref}:${expected}`]
+        } else {
+          try {
+            expected = exec(["rev-parse", "--verify", `refs/remotes/${remote}/${branch}`], cwd)
+            // git ignores --force-if-includes with an explicit expect
+            // value, so the default lease names only the ref.
+            leaseArgs = [`--force-with-lease=${ref}`, "--force-if-includes"]
+          } catch {
+            // No remote-tracking ref: lease on the branch not existing yet.
+            expected = ""
+            leaseArgs = [`--force-with-lease=${ref}:`]
+          }
+        }
+        const newSha = exec(["rev-parse", "HEAD"], cwd)
+        const output = exec(["push", "--porcelain", ...leaseArgs, remote, `${newSha}:${ref}`], cwd)
+        // An accepted leased push replaced exactly the expected value.
+        const data = pushReport(remote, ref, newSha, output, () => expected || null)
+        return { output: JSON.stringify(success(data)) }
+      } catch (err: unknown) {
+        return { output: failureFromError(err, "GIT_PUSH_FORCE_ERROR") }
       }
     },
   })
@@ -1572,6 +3009,506 @@ export function createUnleashResolveIssueTool(runner: GhRunner, cwd: string): Re
 }
 
 // ---------------------------------------------------------------------------
+// checkout_pr_head tool
+// ---------------------------------------------------------------------------
+
+/**
+ * Failure codes checkout_pr_head returns (OpenSpec change checkout-pr-head,
+ * issue #965). Each maps to one STOP condition the /uf.address-feedback
+ * Section 1.2.1 prose carried before the extraction.
+ */
+export const CHECKOUT_PR_HEAD_ERROR_CODES = [
+  "DIRTY_TREE",
+  "CHECKOUT_FAILED",
+  "UNRELATED_BRANCH",
+  "READ_ONLY_MERGE_REF",
+  "NO_PUSH_TARGET",
+  "UNSAFE_PUSH_TARGET",
+] as const
+
+/** One checkout_pr_head failure code. */
+export type CheckoutPrHeadErrorCode = (typeof CHECKOUT_PR_HEAD_ERROR_CODES)[number]
+
+/** Structured output from checkout_pr_head. */
+export interface CheckoutPrHeadData {
+  /**
+   * The actual checked-out branch name. It may differ from head_ref: a
+   * cross-repo PR whose head is the fork's default branch checks out as
+   * `<owner>/<branch>` (for example `contrib/main`).
+   */
+  branch: string
+  /** `branch.<branch>.remote`: a remote name or an https URL. */
+  head_remote: string
+  /** `branch.<branch>.merge`: always `refs/heads/<head_ref>` on success. */
+  merge_ref: string
+  /**
+   * True when HEAD is a strict descendant of head_sha (unpushed commits
+   * from a prior run, for example a failed-push retry).
+   */
+  ahead_of_head_sha: boolean
+  /** True when the tool ran `gh pr checkout` to reach the PR head. */
+  checked_out: boolean
+}
+
+/**
+ * Conservative refname charset for PR-derived values that later reach a
+ * rendered shell template (Section 4.4 push/fetch): `$`, backtick, and `"`
+ * are legal git refname characters that stay active inside double quotes,
+ * so quoting alone does not neutralize them.
+ */
+const SAFE_REFNAME_PATTERN = /^[A-Za-z0-9._/-]+$/
+
+/** A push remote is a plain remote name or an https URL without userinfo. */
+const SAFE_REMOTE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/
+const SAFE_REMOTE_URL_PATTERN = /^https:\/\/[A-Za-z0-9._/-]+$/
+
+/** git's message when untracked files collide with tracked files on checkout. */
+const UNTRACKED_COLLISION_PATTERN = /untracked working tree files would be overwritten/i
+
+/**
+ * Whether a remote value is safe to render into the Section 4.4 templates.
+ * `.` and `..` match the name charset but resolve as local repository
+ * paths, so they are rejected like RemoteNameSchema rejects them.
+ */
+function isSafePushRemote(remote: string): boolean {
+  if (remote === "." || remote === "..") return false
+  return SAFE_REMOTE_NAME_PATTERN.test(remote) || SAFE_REMOTE_URL_PATTERN.test(remote)
+}
+
+/**
+ * Extract the most specific error text from a thrown exec error: the
+ * child's stderr when execFileSync captured it, else the error message.
+ */
+function execErrorDetail(err: unknown): string {
+  if (typeof err === "object" && err !== null && "stderr" in err) {
+    const stderr = (err as { stderr?: unknown }).stderr
+    const text = typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString("utf8") : ""
+    if (text.trim() !== "") return text.trim()
+  }
+  return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Read a git config value; an unset key (git exits 1) reads as "".
+ * The key is passed as one argv element, so no branch character can
+ * reach a shell.
+ */
+function readGitConfig(exec: GitExec, cwd: string, key: string): string {
+  try {
+    return exec(["config", "--get", key], cwd).trim()
+  } catch {
+    return ""
+  }
+}
+
+/**
+ * Classify HEAD against the frozen head SHA: `equal`, `descendant`
+ * (`git merge-base --is-ancestor <head_sha> HEAD` exits 0), or
+ * `unrelated` (any non-zero exit, including an unknown head_sha object).
+ */
+function classifyHeadIdentity(
+  exec: GitExec,
+  cwd: string,
+  head: string,
+  headSha: string,
+): "equal" | "descendant" | "unrelated" {
+  if (head === headSha) return "equal"
+  try {
+    exec(["merge-base", "--is-ancestor", headSha, "HEAD"], cwd)
+    return "descendant"
+  } catch {
+    return "unrelated"
+  }
+}
+
+/** Build a checkout_pr_head failure output. */
+function checkoutFailure(code: CheckoutPrHeadErrorCode, message: string, retryable = false): { output: string } {
+  return { output: JSON.stringify(failure(message, { retryable, code })) }
+}
+
+/**
+ * Factory that creates the checkout_pr_head tool with injectable git and
+ * gh executors (argument arrays, no shell) for testability.
+ *
+ * Decision sequence (the /uf.address-feedback Section 1.2.1 contract):
+ * 1. Identity is keyed on HEAD, not the branch name: HEAD equal to or
+ *    descending from head_sha continues without a checkout.
+ * 2. Otherwise a dirty tracked tree (`git status --porcelain
+ *    --untracked-files=no`) fails DIRTY_TREE; else `gh pr checkout <N>`
+ *    runs. A failed checkout (including its implicit fetch) fails
+ *    CHECKOUT_FAILED with the specific git/gh error, and names the
+ *    `git stash -u` remediation for the untracked-file collision.
+ * 3. After a checkout, HEAD is re-verified; a branch unrelated to
+ *    head_sha fails UNRELATED_BRANCH with both SHAs.
+ * 4. The push target is read from the actual checked-out branch:
+ *    detached HEAD or an unset remote/merge fails NO_PUSH_TARGET; a
+ *    `refs/pull/` merge ref fails READ_ONLY_MERGE_REF; a merge ref other
+ *    than `refs/heads/<head_ref>` fails UNRELATED_BRANCH (ancestry alone
+ *    cannot reject a `main` that absorbed the merged PR); values outside
+ *    the conservative charsets fail UNSAFE_PUSH_TARGET.
+ *
+ * Local commits are never reset or discarded.
+ *
+ * @param exec Git executor (argument array).
+ * @param gh gh executor (argument array).
+ * @param cwd Repository root.
+ * @returns The checkout_pr_head tool.
+ */
+export function createCheckoutPrHeadTool(exec: GitExec, gh: GhRunner, cwd: string): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Put the working tree on a PR's head branch and resolve its push target. " +
+      "Verifies HEAD identity against the frozen head SHA (equal or descendant), " +
+      "gates on a dirty tree, runs gh pr checkout when needed, and reads the push " +
+      "remote/merge ref from the actual checked-out branch name. Returns " +
+      "{branch, head_remote, merge_ref, ahead_of_head_sha, checked_out}; failure " +
+      "codes DIRTY_TREE, CHECKOUT_FAILED, UNRELATED_BRANCH, READ_ONLY_MERGE_REF, " +
+      "NO_PUSH_TARGET, UNSAFE_PUSH_TARGET. Never resets or discards local commits.",
+    args: {
+      pr_number: z.number().int().positive().describe("PR number from the frozen input context"),
+      head_ref: z.string().min(1).describe("Frozen PR head branch name (headRefName)"),
+      head_sha: z
+        .string()
+        .regex(/^[0-9a-f]{40}$/, "must be a 40-character lowercase commit SHA")
+        .describe("Frozen PR head commit SHA (headRefOid)"),
+    },
+    execute: async (args: { pr_number: number; head_ref: string; head_sha: string }) => {
+      try {
+        let head = exec(["rev-parse", "HEAD"], cwd).trim()
+        let identity = classifyHeadIdentity(exec, cwd, head, args.head_sha)
+        let checkedOut = false
+
+        if (identity === "unrelated") {
+          const dirty = exec(["status", "--porcelain", "--untracked-files=no"], cwd).trim()
+          if (dirty !== "") {
+            return checkoutFailure(
+              "DIRTY_TREE",
+              `Working tree has uncommitted changes. Commit or stash them, then rerun \`/uf.address-feedback ${args.pr_number}\`.`,
+            )
+          }
+          try {
+            gh(["pr", "checkout", String(args.pr_number)], cwd)
+          } catch (err: unknown) {
+            const detail = execErrorDetail(err)
+            if (UNTRACKED_COLLISION_PATTERN.test(detail)) {
+              return checkoutFailure(
+                "CHECKOUT_FAILED",
+                `gh pr checkout ${args.pr_number} failed: untracked working tree files would be overwritten ` +
+                  "by tracked files on the PR branch (the dirty check excludes untracked files). Remove, " +
+                  "rename, or stash them (`git stash -u` includes untracked files; plain `git stash` " +
+                  `skips them), then rerun \`/uf.address-feedback ${args.pr_number}\`. Git error: ${detail}`,
+              )
+            }
+            return checkoutFailure(
+              "CHECKOUT_FAILED",
+              `gh pr checkout ${args.pr_number} failed (fetch or checkout error): ${detail}`,
+              true,
+            )
+          }
+          checkedOut = true
+          head = exec(["rev-parse", "HEAD"], cwd).trim()
+          identity = classifyHeadIdentity(exec, cwd, head, args.head_sha)
+          if (identity === "unrelated") {
+            return checkoutFailure(
+              "UNRELATED_BRANCH",
+              `After gh pr checkout ${args.pr_number}, HEAD ${head} is neither equal to nor a descendant of ` +
+                `the PR head ${args.head_sha}: the branch is unrelated to the PR head. Local commits were not ` +
+                "reset or discarded.",
+            )
+          }
+        }
+
+        const branch = exec(["branch", "--show-current"], cwd).trim()
+        if (branch === "") {
+          return checkoutFailure(
+            "NO_PUSH_TARGET",
+            `HEAD ${head} is detached: the PR head has no configured push target. Run ` +
+              `\`gh pr checkout ${args.pr_number}\` to check out the PR head branch.`,
+          )
+        }
+        if (!SAFE_REFNAME_PATTERN.test(branch)) {
+          return checkoutFailure(
+            "UNSAFE_PUSH_TARGET",
+            "Checked-out branch name contains characters outside the conservative set A-Za-z0-9._/- " +
+              "and cannot be rendered into the push templates.",
+          )
+        }
+
+        const headRemote = readGitConfig(exec, cwd, `branch.${branch}.remote`)
+        const mergeRef = readGitConfig(exec, cwd, `branch.${branch}.merge`)
+        if (headRemote === "" || mergeRef === "") {
+          return checkoutFailure(
+            "NO_PUSH_TARGET",
+            `The PR head has no configured push target: branch.${branch}.remote or ` +
+              `branch.${branch}.merge is unset.`,
+          )
+        }
+        if (mergeRef.startsWith("refs/pull/")) {
+          return checkoutFailure(
+            "READ_ONLY_MERGE_REF",
+            `Branch ${branch} merges from the read-only ref ${mergeRef} (a fork PR with maintainer edits ` +
+              "disabled), so a push would always be rejected: the PR head cannot be pushed to from this clone.",
+          )
+        }
+        const expectedMergeRef = `refs/heads/${args.head_ref}`
+        if (mergeRef !== expectedMergeRef) {
+          return checkoutFailure(
+            "UNRELATED_BRANCH",
+            `The working tree is on branch ${branch} whose push target is ${mergeRef}, not the PR head ` +
+              `branch ${args.head_ref} (${expectedMergeRef}). Never push this PR's commits to a different ` +
+              "branch: ancestry alone cannot make this distinction, since any branch that merely contains " +
+              "head_sha passes the descendant check.",
+          )
+        }
+        if (!SAFE_REFNAME_PATTERN.test(mergeRef) || !isSafePushRemote(headRemote)) {
+          return checkoutFailure(
+            "UNSAFE_PUSH_TARGET",
+            "The push target contains characters outside the conservative sets (merge ref A-Za-z0-9._/-; " +
+              "remote a plain name A-Za-z0-9._- or an https URL without userinfo) and cannot be rendered " +
+              "into the push templates.",
+          )
+        }
+
+        const data: CheckoutPrHeadData = {
+          branch,
+          head_remote: headRemote,
+          merge_ref: mergeRef,
+          ahead_of_head_sha: identity === "descendant",
+          checked_out: checkedOut,
+        }
+        return { output: JSON.stringify(success(data)) }
+      } catch (err: unknown) {
+        return { output: failureFromError(err, "CHECKOUT_PR_HEAD_ERROR") }
+      }
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// post_feedback_replies and file_feedback_issue tools (feedback-reply-tools)
+// ---------------------------------------------------------------------------
+
+/** Render a zod validation failure as the feedback tools' invalid_input envelope. */
+function feedbackInvalidInput(error: z.ZodError): string {
+  const details = error.issues
+    .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+    .join("; ")
+  return JSON.stringify(feedbackFailure("invalid_input", details))
+}
+
+/** Render a thrown error as the feedback tools' failure envelope. */
+function feedbackErrorOutput(err: unknown): string {
+  if (err instanceof FeedbackOperationError) {
+    return JSON.stringify(feedbackFailure(err.code, err.message, err.retryable))
+  }
+  const message = err instanceof Error ? err.message : String(err)
+  return JSON.stringify(feedbackFailure("internal_error", message))
+}
+
+/**
+ * Factory for the post_feedback_replies tool (issue #966): files each
+ * FILE item's issue, posts every confirmed reply, and resolves the
+ * approved review threads in one call. Judgment products (reply text,
+ * decisions, the resolve decision) arrive as parameters; the chain runs
+ * in lib/feedback-replies.ts. Failures use the fetch-tool error
+ * contract (`error: true`, code, message, retryable) alongside
+ * `status: "error"`.
+ *
+ * @param deps gh executor, repository root, and checkpoint recorder.
+ * @returns The post_feedback_replies tool.
+ */
+export function createPostFeedbackRepliesTool(deps: FeedbackReplyDeps): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Post /uf.address-feedback replies and resolve addressed review threads in one call. " +
+      "Files each file item's issue first (one retry, cached so a re-run never files twice), " +
+      "posts each reply through a temp-file request body to the review-thread or PR-conversation " +
+      "endpoint, stops posting at the first failed post, maps review comments to GraphQL thread " +
+      "IDs, and, when resolve_threads is true, resolves the threads of accept, modify, file, and " +
+      "reply review items whose replies are posted. Progress is recorded per item in " +
+      ".uf/feedback/pr-<N>/state.json, so re-running with the same items resumes. Records the " +
+      "reply-comments checkpoint when nothing is left to do. Returns per-item outcomes and a " +
+      "rendered summary line.",
+    args: PostFeedbackRepliesInputSchema.shape,
+    async execute(args) {
+      const parsed = PostFeedbackRepliesInputSchema.safeParse(args)
+      if (!parsed.success) {
+        return { output: feedbackInvalidInput(parsed.error) }
+      }
+      try {
+        return { output: JSON.stringify(feedbackSuccess(postFeedbackReplies(parsed.data, deps))) }
+      } catch (err: unknown) {
+        return { output: feedbackErrorOutput(err) }
+      }
+    },
+  })
+}
+
+/**
+ * Factory for the file_feedback_issue tool (issue #998): files one
+ * finding as a GitHub issue with one retry, returning the issue number
+ * and URL. A finding already filed for the same comment (per the
+ * feedback cache) is returned without filing again.
+ *
+ * @param deps gh executor and repository root.
+ * @returns The file_feedback_issue tool.
+ */
+export function createFileFeedbackIssueTool(deps: FeedbackReplyDeps): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "File one /uf.address-feedback finding as a GitHub issue. The title and body reach gh " +
+      "as an argument-array element and a temp file, never shell text. Retries gh issue create " +
+      "once; if the feedback cache already records an issue for the same comment, returns it " +
+      "with deduplicated true instead of filing again. Returns issue_number and issue_url and " +
+      "records them in .uf/feedback/pr-<N>/state.json.",
+    args: FileFeedbackIssueInputSchema.shape,
+    async execute(args) {
+      const parsed = FileFeedbackIssueInputSchema.safeParse(args)
+      if (!parsed.success) {
+        return { output: feedbackInvalidInput(parsed.error) }
+      }
+      try {
+        return { output: JSON.stringify(feedbackSuccess(fileFeedbackIssue(parsed.data, deps))) }
+      } catch (err: unknown) {
+        return { output: feedbackErrorOutput(err) }
+      }
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// post_issue_comment and create_child_issue tools (feedback-reply-tools)
+// ---------------------------------------------------------------------------
+
+/**
+ * Factory for the post_issue_comment tool (the /uf.triage-issue 4.3 DE-005
+ * extraction, PR #1024 review): posts one author-confirmed comment on a
+ * GitHub issue. The confirmed body arrives as a validated parameter; the
+ * tool owns temp-file creation, 0o600 permissions, JSON serialization,
+ * `gh api --input`, failure-stop, and all-paths cleanup.
+ *
+ * @param deps gh executor and repository root.
+ * @returns The post_issue_comment tool.
+ */
+export function createPostIssueCommentTool(deps: FeedbackReplyDeps): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Post one confirmed comment on a GitHub issue (/uf.triage-issue step 4.3). The body reaches gh " +
+      "as a JSON-serialized temp-file request body, never shell text. The comment body MUST be the " +
+      "exact text the author confirmed; the human-confirmation gate stays in the calling command. " +
+      "Returns the issue's repo, issue_number, and the posted comment_id and comment_url (null only " +
+      "when gh printed unparseable output after a successful POST).",
+    args: PostIssueCommentInputSchema.shape,
+    async execute(args) {
+      const parsed = PostIssueCommentInputSchema.safeParse(args)
+      if (!parsed.success) {
+        return { output: feedbackInvalidInput(parsed.error) }
+      }
+      try {
+        return { output: JSON.stringify(feedbackSuccess(postIssueComment(parsed.data, deps))) }
+      } catch (err: unknown) {
+        return { output: feedbackErrorOutput(err) }
+      }
+    },
+  })
+}
+
+/**
+ * Factory for the create_child_issue tool (the /uf.triage-issue 4.4 DE-005
+ * extraction, PR #1024 review): creates one author-confirmed GitHub issue.
+ * The confirmed title and body arrive as validated parameters; the tool
+ * owns temp-file creation, 0o600 permissions, `gh issue create
+ * --body-file`, one retry, and all-paths cleanup.
+ *
+ * @param deps gh executor and repository root.
+ * @returns The create_child_issue tool.
+ */
+export function createCreateChildIssueTool(deps: FeedbackReplyDeps): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Create one confirmed GitHub issue (/uf.triage-issue step 4.4). The title and body reach gh " +
+      "as an argument-array element and a temp body file, never shell text. Retries gh issue create " +
+      "once and fails with a structured error when it still fails. The title and body MUST be the " +
+      "exact text the author confirmed; the human-confirmation gate stays in the calling command. " +
+      "Returns the repo, issue_number, issue_url, and attempt count.",
+    args: CreateChildIssueInputSchema.shape,
+    async execute(args) {
+      const parsed = CreateChildIssueInputSchema.safeParse(args)
+      if (!parsed.success) {
+        return { output: feedbackInvalidInput(parsed.error) }
+      }
+      try {
+        return { output: JSON.stringify(feedbackSuccess(createChildIssue(parsed.data, deps))) }
+      } catch (err: unknown) {
+        return { output: feedbackErrorOutput(err) }
+      }
+    },
+  })
+}
+
+/**
+ * Factory for the write_feedback_triage_artifact tool (issue #1022, the
+ * extract-feedback-triage-artifact-tool change): renders and writes the
+ * feedback-triage 1.1.0 artifact for /uf.address-feedback in one call.
+ * Judgment products (PR identity, artifact context, the per-item triage
+ * records carrying their Section 4.6 comment identity, and the
+ * post_feedback_replies success data when replies were posted) arrive as
+ * validated parameters; the mechanical chain — the FILE/REPLY join, the
+ * summary counts, the round scan, the render, the 1.1.0 payload
+ * validation, the atomic write, and the terminal progress clear — runs
+ * in lib/feedback-replies.ts. Failures use the fetch-tool error contract
+ * (`error: true`, code, message, retryable) alongside `status: "error"`.
+ *
+ * @param deps Repository root, clock, and the clear-progress hook.
+ * @returns The write_feedback_triage_artifact tool.
+ */
+export function createWriteFeedbackTriageArtifactTool(deps: FeedbackReplyDeps): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Render and write the /uf.address-feedback feedback-triage 1.1.0 artifact in one call. " +
+      "Joins FILE items to their filed issues from the post_feedback_replies success data by " +
+      "comment identity (cross-checking the decisions; a mismatch fails invalid_input with " +
+      "nothing written), derives the summary counts, scans the next round number, renders the " +
+      "envelope, validates the payload against the 1.1.0 shape, and writes it atomically to " +
+      ".uf/artifacts/feedback-triage/pr-<N>-round-<M>.json (0o600 files under 0o700 directories, " +
+      "symlink refusal). On success clears the uf.address-feedback progress state through the " +
+      "same branch-keyed path clear_progress uses — a clear failure is a warning, not a failed " +
+      "call, because the artifact is already durable. Returns pr_number, path, round, bytes, the " +
+      "derived counts, progress_cleared, warnings, and a summary line to print verbatim.",
+    args: WriteFeedbackTriageArtifactInputSchema.shape,
+    async execute(args) {
+      const parsed = WriteFeedbackTriageArtifactInputSchema.safeParse(args)
+      if (!parsed.success) {
+        return { output: feedbackInvalidInput(parsed.error) }
+      }
+      try {
+        return { output: JSON.stringify(feedbackSuccess(writeFeedbackTriageArtifact(parsed.data, deps))) }
+      } catch (err: unknown) {
+        return { output: feedbackErrorOutput(err) }
+      }
+    },
+  })
+}
+
+/**
+ * Production dependencies for the feedback reply tools. The clearProgress
+ * hook (extract-feedback-triage-artifact-tool design D6) removes the
+ * uf.address-feedback progress state through the same branch-keyed state
+ * path the clear_progress tool uses: resolveKey derives the sanitized
+ * branch key, and deleteState is idempotent when no state exists.
+ */
+function feedbackReplyDeps(cwd: string): FeedbackReplyDeps {
+  return {
+    gh: defaultFeedbackGhExec,
+    cwd,
+    recordCheckpoint: (step, data) =>
+      recordAutoCheckpoint(cwd, resolveKey(defaultGitExec, cwd), "uf.address-feedback", step, data),
+    clearProgress: () =>
+      deleteState(cwd, resolveKey(defaultGitExec, cwd), sanitizeSlug("uf.address-feedback")),
+  }
+}
+
+// ---------------------------------------------------------------------------
 // uf_delegate_command tool
 // ---------------------------------------------------------------------------
 
@@ -1580,6 +3517,64 @@ export function createUnleashResolveIssueTool(runner: GhRunner, cwd: string): Re
  * matching the review-dispatch string-input bound.
  */
 const MAX_COMMAND_FILE_BYTES = 1 * 1024 * 1024 // 1 MiB
+
+/**
+ * Delegation footprint estimation (DELEG-FR-001, compaction-storm design
+ * D1). The cached-prefix constant is the parent-context material every
+ * delegated child session re-receives: the #1079 incident measured ~76.5k
+ * tokens of cached prefix including the ~20k-token uf.unleash.md body, so
+ * 56k is the prompt-material share with the largest command body removed
+ * — command-path calls measure that body directly from disk.
+ */
+export const DELEGATION_CACHED_PREFIX_TOKENS = 56_000
+
+/**
+ * Byte-per-token divisor for footprint estimation (D1): 4 approximates
+ * the observed plain-English ratio. An exact tokenizer was rejected as a
+ * dependency — the estimate feeds a conservative gate, not billing.
+ */
+export const DELEGATION_BYTES_PER_TOKEN = 4
+
+/**
+ * Conservative command-body default when a guarded read fails
+ * (fail-closed): the accepted 1 MiB command-file cap over the
+ * byte-per-token divisor, so a read failure can never understate the
+ * delegation's prompt material.
+ */
+export const CONSERVATIVE_COMMAND_BODY_TOKENS = MAX_COMMAND_FILE_BYTES / DELEGATION_BYTES_PER_TOKEN
+
+/**
+ * Estimates the token count of UTF-8 text using the D1 byte-per-token
+ * divisor, rounding up so a partial token never understates.
+ */
+export function estimateTokensFromText(text: string): number {
+  return Math.ceil(Buffer.byteLength(text, "utf8") / DELEGATION_BYTES_PER_TOKEN)
+}
+
+/** Result of a delegation footprint estimate (DELEG-FR-001). */
+export interface DelegationFootprint {
+  /** Estimated token count of the delegation's base prompt material. */
+  readonly tokens: number
+  /**
+   * Why the conservative default was used, when it was — a rejected
+   * command path (traversal or symlink escape) or an unreadable file;
+   * null when the command body was measured from disk or no command
+   * path applied. Recorded in the selection audit.
+   */
+  readonly fallback: string | null
+}
+
+/**
+ * Footprint estimator seams (DELEG-FR-001): deliberately separate from
+ * the tool-level readText seam, whose failures fail the call — estimator
+ * reads are best-effort and absorb into the conservative default.
+ */
+export interface FootprintEstimatorDependencies {
+  /** Reads UTF-8 text from an absolute path (command-body measurement). */
+  readonly readText: (path: string) => Promise<string>
+  /** Resolves the real (symlink-free) absolute path; null on failure. */
+  readonly realpath: (path: string) => string | null
+}
 
 /**
  * Exact /uf.unleash Step 2 STOP message when a delegated plan generation
@@ -1595,6 +3590,43 @@ const PLAN_ARTIFACT_STOP_MESSAGE =
 const TASKS_ARTIFACT_STOP_MESSAGE =
   "Task generation failed -- tasks.md was not created. Check the agent output for errors."
 
+/**
+ * Wall-clock ceiling for prompt-only delegations, derived from the
+ * executor TimeoutSchema bound shared with invoke_agent so the two
+ * cannot drift apart.
+ */
+export const MAX_PROMPT_DELEGATION_TIMEOUT_MS = MAX_TIMEOUT_MILLISECONDS
+
+/**
+ * Wall-clock ceiling for command-path delegations (4 hours;
+ * delegation-timeout-budgets D3). Command files own durable checkpoints,
+ * so the idle timeout is the primary stall detector and the wall clock
+ * is a backstop.
+ */
+export const MAX_COMMAND_DELEGATION_TIMEOUT_MS = 14_400_000
+
+/** Default idle (no-progress) window for every delegation (design D2). */
+export const DEFAULT_DELEGATE_IDLE_TIMEOUT_MS = 600_000
+
+/** Bounds accepted for idle_timeout. */
+export const MIN_DELEGATE_IDLE_TIMEOUT_MS = 60_000
+export const MAX_DELEGATE_IDLE_TIMEOUT_MS = 1_800_000
+
+/**
+ * Durable progress a timed-out command-path delegation left behind
+ * (design D4), read through the same readState path get_progress uses.
+ */
+export interface DelegateResumeState {
+  /** State command name (command file basename without .md). */
+  command: string
+  /** Progress state key (sanitized current branch). */
+  key: string
+  /** The state's current_step, or null when no state exists. */
+  last_checkpoint_step: string | null
+  /** Recorded steps, empty when no state exists. */
+  completed_steps: string[]
+}
+
 /** Structured output from uf_delegate_command. */
 export interface DelegateCommandData {
   /** Agent the command or task was delegated to. */
@@ -1607,6 +3639,14 @@ export interface DelegateCommandData {
   artifact_created: boolean
   /** Whether checkpoint_step was recorded through the progress state store. */
   checkpoint_recorded: boolean
+  /**
+   * Decision ids (UUID v4) machine-stamped for the orchestrator-relayed
+   * human decisions this call persisted to the human-decision record at
+   * spawn time (SYNTH-001/006, task 2.2) — the values a child session's
+   * `checkpoint` calls cite as `human_decision_ref`. Null when the call
+   * supplied no envelope.
+   */
+  human_decision_ids: string[] | null
   /**
    * Task classification declared by the caller (delegation-skill-enforcement
    * D5); null when a command-path call omitted it. Judgment-classified and
@@ -1654,6 +3694,71 @@ export interface DelegateCommandData {
    * failure), when the matrix recorded one; null otherwise.
    */
   selection_fallback_reason: string | null
+  /**
+   * Caller-computed delegation footprint in tokens (DELEG-FR-001,
+   * compaction-storm task 1.1): cached prefix plus command body plus
+   * in-memory prompt material, estimated by the delegating caller and
+   * supplied to selection via SelectionInputs. Every delegation records
+   * this field, even when the estimate fell back to the conservative
+   * default (see selection_footprint_fallback).
+   */
+  selection_footprint: number
+  /**
+   * Why the footprint estimator fell back to the conservative default —
+   * a rejected command path (traversal or symlink escape) or a read
+   * failure; null when the command body was measured from disk or no
+   * command path applied. The fallback never understates the
+   * delegation's prompt material (fail-closed).
+   */
+  selection_footprint_fallback: string | null
+  /**
+   * Effective selection headroom working margin in tokens
+   * (selection.footprint_margin_tokens, DELEG-FR-001): the configured
+   * value or the documented default after D4 substitution.
+   */
+  selection_margin_tokens: number
+  /**
+   * The D4 substitution warning for an invalid
+   * selection.footprint_margin_tokens value — naming the key, the
+   * invalid value, and the default applied; null when the configured
+   * value was valid or absent.
+   */
+  selection_margin_warning: string | null
+  /**
+   * Effective compaction-storm threshold (delegation.storm_threshold,
+   * DELEG-FR-002): the configured value or the documented default after
+   * D4 substitution — the threshold the detector enforced for the run.
+   */
+  storm_threshold: number
+  /**
+   * The D4 substitution warning for an invalid
+   * delegation.storm_threshold value — naming the key, the invalid
+   * value, and the default applied; null when the configured value was
+   * valid or absent.
+   */
+  storm_threshold_warning: string | null
+  /**
+   * Per-task timeout derivation provenance (PTB-FR-001): every
+   * derivation input, the unclamped derived value, the ceiling, and
+   * the clamp outcome — present on every per-task delegation result,
+   * success or failure; null for command-path and other non-per-task
+   * delegations.
+   */
+  timeout_provenance: PerTaskTimeoutProvenanceRecord | null
+  /**
+   * Remaining budgeted-ancestor budget in milliseconds at result time
+   * (PTB-FR-004); null when the delegation ran unbudgeted.
+   */
+  remaining_ms: number | null
+  /**
+   * Executor-owned bounded-retry provenance (PTB-FR-003, DE-005): set
+   * when the per-task executor re-issued a retryable timeout termination
+   * once with the resume context tool-rendered into the retry prompt —
+   * the success envelope only ever carries it after a retry that
+   * finished the task. Null for first-attempt successes, failures that
+   * never retried, and non-per-task delegations.
+   */
+  retry: PerTaskRetryRecord | null
   /** Child session usage, when the executor reported step-finish parts. */
   usage: InvocationUsage | null
   /** Request, host-resolution, and child-report provenance. */
@@ -1673,6 +3778,11 @@ export interface DelegateCommandDependencies {
   readonly readText: (path: string) => Promise<string>
   /** File-existence checker for expected-artifact verification. */
   readonly fileExists: FileExists
+  /**
+   * Directory checker for skill references naming a path (#934 review):
+   * an existing directory is not a script. Default: statSync-backed.
+   */
+  readonly isDirectory?: (path: string) => boolean
   /**
    * Model-matrix selection dependencies (model-matrix-delegation designs
    * D1/D2/D5, tasks 5.1-5.4). Grouped so existing test sites extend with
@@ -1725,6 +3835,26 @@ export interface ModelMatrixSelectionDependencies {
    * instance (never module-level, design D5).
    */
   readonly classifierCache?: ClassifierCache
+  /**
+   * Footprint estimator seams (DELEG-FR-001, compaction-storm task 1.1).
+   * Optional so existing test sites stay green; production defaults
+   * read through node:fs/promises readFile and node:fs realpathSync.
+   * The estimator's guarded reads are best-effort — a failure falls
+   * back to the conservative default — so they deliberately do not
+   * share the tool-level readText seam, whose failures fail the call.
+   */
+  readonly footprint?: FootprintEstimatorDependencies
+  /**
+   * Declared model-limits lookup for the selection headroom gate
+   * (DELEG-FR-001, compaction-storm task 2.1). Optional so existing test
+   * sites stay green; production defaults to reading the configured
+   * providers through the OpenCode client and indexing each model's
+   * declared limit block by its combined `provider/model` identity. The
+   * lookup fails OPEN — any failure yields an empty map, so the gate
+   * passes candidates it cannot read limits for and never blocks or
+   * stalls delegation.
+   */
+  readonly modelLimits?: (directory: string) => Promise<Readonly<Record<string, ModelLimits>>>
 }
 
 /**
@@ -1741,6 +3871,15 @@ const DelegateAgentSchema = z
       "reviewer agents (divisor-*) are dispatched via invoke_agent; uf_delegate_command is for content delegation",
   })
 
+/**
+ * Defensive bound on the human_decisions envelope (SYNTH-001/006, task
+ * 2.2): at most 32 relayed decisions per delegation. Not a spec-mandated
+ * number — SYNTH-006 bounds each entry's question and answer at 16 KiB,
+ * and 32 entries x 32 KiB matches the 1 MiB command-file ceiling the
+ * rest of the envelope material obeys.
+ */
+const HUMAN_DECISIONS_ENVELOPE_MAX_ENTRIES = 32
+
 /** zod-validated input contract for uf_delegate_command. */
 const DelegateCommandInputSchema = z
   .object({
@@ -1749,9 +3888,18 @@ const DelegateCommandInputSchema = z
     prompt: PromptSchema.optional(),
     feature_dir: z.string().min(1).max(1024).optional(),
     expected_artifact: z.string().min(1).max(1024).optional(),
-    checkpoint_step: z.string().min(1).max(128).optional(),
+    checkpoint_step: z.string().min(1).max(CHECKPOINT_STEP_NAME_MAX_LENGTH).optional(),
     phase: z.number().int().min(1).max(1000).optional(),
-    timeout: TimeoutSchema.optional(),
+    // Delegation-timeout-budgets D3: the ceiling depends on delegation
+    // kind, so the shared bound is the command-path ceiling and the
+    // superRefine below holds prompt-only calls to the executor bound.
+    timeout: z.number().int().positive().max(MAX_COMMAND_DELEGATION_TIMEOUT_MS).optional(),
+    idle_timeout: z
+      .number()
+      .int()
+      .min(MIN_DELEGATE_IDLE_TIMEOUT_MS)
+      .max(MAX_DELEGATE_IDLE_TIMEOUT_MS)
+      .optional(),
     // Delegation-skill-enforcement D1: the caller classifies the delegated
     // work and the tool validates the declared answer's consequences.
     // Absence of a skill reference is expressed by omitting the field or
@@ -1799,6 +3947,36 @@ const DelegateCommandInputSchema = z
       .min(1, "empty string is invalid -- omit the parameter when no pack applies")
       .max(128)
       .optional(),
+    // SYNTH-001/006 (synthetic-compaction-continue-prompt-rec task 2.2):
+    // the orchestrator-relay envelope. Callers supply question and answer
+    // only -- source is structural (this surface IS the orchestrator
+    // relay), and decision_id/recorded_at are machine-stamped at append
+    // time, which is why the entry object is strict: a caller cannot
+    // smuggle provenance or identity. Byte bounds (not zod's character
+    // counts) match HUMAN_DECISION_TEXT_MAX_BYTES; validation runs at
+    // safeParse, before any security-sensitive operation.
+    human_decisions: z
+      .array(
+        z
+          .object({
+            question: z
+              .string()
+              .min(1, "empty string is invalid -- relay the actual question text")
+              .refine(isHumanDecisionTextWithinBounds, {
+                message: "question exceeds the 16 KiB UTF-8 byte limit (SYNTH-006)",
+              }),
+            answer: z
+              .string()
+              .min(1, "empty string is invalid -- relay the actual answer text")
+              .refine(isHumanDecisionTextWithinBounds, {
+                message: "answer exceeds the 16 KiB UTF-8 byte limit (SYNTH-006)",
+              }),
+          })
+          .strict(),
+      )
+      .min(1, "empty array is invalid -- omit human_decisions when no decisions are relayed")
+      .max(HUMAN_DECISIONS_ENVELOPE_MAX_ENTRIES)
+      .optional(),
   })
   .strict()
   .superRefine((input, context) => {
@@ -1821,6 +3999,21 @@ const DelegateCommandInputSchema = z
         message:
           "prompt-only delegation (no command_path) must declare task_classification -- " +
           "classify the work as deterministic or judgment before delegating",
+      })
+    }
+    // Delegation-timeout-budgets D3: only command-path delegations, whose
+    // command files own durable checkpoints, may exceed the executor bound.
+    if (
+      input.command_path === undefined &&
+      input.timeout !== undefined &&
+      input.timeout > MAX_PROMPT_DELEGATION_TIMEOUT_MS
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["timeout"],
+        message:
+          `prompt-only delegation timeout must not exceed ${MAX_PROMPT_DELEGATION_TIMEOUT_MS} ms -- ` +
+          "only command-path delegations may run longer",
       })
     }
     // D1: name the skill, or record why none exists -- never both.
@@ -1920,19 +4113,34 @@ function resolveToolParam(
   return { ok: true, abs }
 }
 
+/** Default directory checker: true only for an existing directory. */
+function defaultIsDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 /**
  * Repo skill roots searched for a `skill` value carrying no path
  * separator, in resolution order (delegation-skill-enforcement D2).
- * Both roots exist in this repository; a name present in both resolves
- * to the first root. A future layout change is a one-constant edit.
+ * The legacy `.opencode/skill` root is not searched: `uf init` migrates
+ * it into `.opencode/skills` (#933), so a stale legacy copy can never be
+ * what a reference resolves to. A future layout change is a one-constant
+ * edit.
  */
-const SKILL_ROOTS = [".opencode/skills", ".opencode/skill"] as const
+const SKILL_ROOTS = [".opencode/skills"] as const
 
 /**
  * Resolve a deterministic delegation's skill reference (design D2): a
  * value without `/` is a skill name probed under each repo skill root in
- * order — first root wins on collision; a value containing `/` is a
- * repo-relative script path under the standard traversal guard.
+ * order — first root wins on collision — and, when no root holds it, a
+ * repo-root file (`Makefile`, `build-all.sh`); a value containing `/` is
+ * a repo-relative script path (`./Makefile` names a root file
+ * explicitly). Both path forms use the standard traversal guard. A
+ * command string such as `make plugin-test` is never a reference: it
+ * fails SKILL_NOT_FOUND with a pointer to skill_absent_reason.
  * Resolution is an existence check on the injected fileExists dependency
  * — no content is read (the child loads the skill or runs the script
  * through its own tooling). Returns the resolved repo-relative reference
@@ -1944,10 +4152,28 @@ function resolveSkillReference(
   cwd: string,
   skill: string,
   fileExists: FileExists,
+  isDirectory: (path: string) => boolean = defaultIsDirectory,
 ): { ok: true; resolved: string } | { ok: false; failureOutput: string } {
+  // A path-form reference must name a file: a directory is not a script.
+  const isFileReference = (abs: string): boolean => fileExists(abs) && !isDirectory(abs)
   const remediation =
     "Remediation: pass an existing skill name or a repo-relative script path, " +
     "or record skill_absent_reason when no repo skill applies; retrying will not fix this."
+  if (/\s/.test(skill)) {
+    // A command or make target ("make plugin-test") is not a file
+    // reference; name the file that defines it or record the reason.
+    return {
+      ok: false,
+      failureOutput: JSON.stringify(
+        failure(
+          `Skill reference "${skill}" does not resolve: commands and make targets are not ` +
+            "skill references. Reference the script file that defines the procedure " +
+            `(e.g. Makefile) or record skill_absent_reason naming the command. ${remediation}`,
+          { retryable: false, code: "SKILL_NOT_FOUND" },
+        ),
+      ),
+    }
+  }
   if (!skill.includes("/")) {
     // Skill name: probe each root in order; the first existing entry wins
     // (spec scenario: skill-root collision resolves to the first root).
@@ -1957,7 +4183,15 @@ function resolveSkillReference(
         return { ok: true, resolved: candidate }
       }
     }
-    const searchedLocations = SKILL_ROOTS.map((root) => `${root}/${skill}/SKILL.md`).join(", ")
+    // No skill by that name: fall back to a repo-root file (#934).
+    const rootFile = resolveRepoRelative(cwd, skill)
+    if (rootFile !== null && isFileReference(rootFile)) {
+      return { ok: true, resolved: skill }
+    }
+    const searchedLocations = [
+      ...SKILL_ROOTS.map((root) => `${root}/${skill}/SKILL.md`),
+      `${skill} (repo-root file)`,
+    ].join(", ")
     return {
       ok: false,
       failureOutput: JSON.stringify(
@@ -1974,7 +4208,7 @@ function resolveSkillReference(
   if (!pathParam.ok) {
     return { ok: false, failureOutput: pathParam.failureOutput }
   }
-  if (!fileExists(pathParam.abs)) {
+  if (!isFileReference(pathParam.abs)) {
     return {
       ok: false,
       failureOutput: JSON.stringify(
@@ -2078,6 +4312,138 @@ function expectedArtifactStopMessage(expectedArtifact: string): string {
 }
 
 /**
+ * Read the durable progress a timed-out command-path delegation left
+ * behind (delegation-timeout-budgets D4): the state command is the
+ * command file's basename without `.md`, keyed by the current branch
+ * exactly as get_progress derives it. Any read failure yields null so
+ * the timeout itself is never masked.
+ */
+function readDelegateResumeState(exec: GitExec, cwd: string, commandPath: string): DelegateResumeState | null {
+  try {
+    const command = basename(commandPath).replace(/\.md$/, "")
+    const key = resolveKey(exec, cwd)
+    const state = readState(cwd, key, sanitizeSlug(command))
+    return {
+      command,
+      key,
+      last_checkpoint_step: state?.current_step ?? null,
+      completed_steps: state?.completed_steps ?? [],
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Production resume-capture seams for a per-task implement delegation
+ * (per-task-delegation-budgets design D3, PTB-FR-003): the worktree's
+ * modified paths through the injected git executor, and the completed
+ * top-level task ids in feature_dir/tasks.md through the shared
+ * parse_tasks grammar (matchTaskLine) and the injected readText seam.
+ * The per-task executor snapshots both at delegation start and diffs
+ * them at abort time, so the hint reports only what the child changed.
+ *
+ * Both seams fail closed: any error, an absent feature_dir, or a
+ * tasks.md path escaping the repository root yields null, so an
+ * unreadable hint never masks the timeout it annotates (D4 of #950).
+ * The hint carries repository-relative paths and task ids only —
+ * never command output or message content (Constitution V).
+ *
+ * @param exec Git executor used to read the worktree status.
+ * @param cwd Repository root used for repo-relative path resolution.
+ * @param featureDir Optional feature directory holding tasks.md.
+ * @param readText Reads UTF-8 text from an absolute path (tasks.md).
+ * @returns The capture seams the per-task executor diffs.
+ */
+function delegateResumeCapture(
+  exec: GitExec,
+  cwd: string,
+  featureDir: string | undefined,
+  readText: (path: string) => Promise<string>,
+): PerTaskResumeCapture {
+  return {
+    captureModifiedFiles: async (): Promise<readonly string[] | null> => {
+      try {
+        // -z keeps paths NUL-separated: no C-quoting to unescape, and a
+        // rename/copy entry carries its original path in the next field.
+        const fields = exec(["status", "--porcelain", "-z"], cwd).split("\0")
+        const files: string[] = []
+        for (let index = 0; index < fields.length; index++) {
+          const entry = fields[index]
+          if (entry === "") continue
+          const status = entry.slice(0, 2)
+          const path = entry.slice(3)
+          if (path !== "") files.push(path)
+          if (status.includes("R") || status.includes("C")) {
+            index++
+            const original = fields[index]
+            if (original !== undefined && original !== "") files.push(original)
+          }
+        }
+        return files
+      } catch {
+        return null
+      }
+    },
+    captureCompletedTasks: async (): Promise<readonly string[] | null> => {
+      if (featureDir === undefined) return null
+      const tasksAbs = resolveRepoRelative(cwd, `${featureDir}/tasks.md`)
+      if (tasksAbs === null) return null
+      try {
+        const contents = await readText(tasksAbs)
+        const completed: string[] = []
+        for (const line of contents.split("\n")) {
+          const match = matchTaskLine(line)
+          // Top-level checked tasks only: indented checkbox lines are
+          // continuation detail, not tasks — the classification the
+          // parse_tasks tool itself applies.
+          if (match !== null && match.indent === "" && match.checked) {
+            completed.push(match.id)
+          }
+        }
+        return completed
+      } catch {
+        return null
+      }
+    },
+  }
+}
+
+/**
+ * Count the tasks in one `## Phase N` heading of feature_dir/tasks.md
+ * (per-task-delegation-budgets D1, PTB-FR-001): the enclosing phase's
+ * task count is the phase-scope signal the timeout derivation charges
+ * sibling overhead against. Reads through the same injected readText
+ * seam and parse_tasks grammar the resume capture uses, and fails
+ * closed to zero — an unreadable or absent tasks.md, a path escaping
+ * the repository root, or a missing phase heading never blocks the
+ * delegation itself.
+ *
+ * @param readText Reads UTF-8 text from an absolute path (tasks.md).
+ * @param cwd Repository root used for repo-relative path resolution.
+ * @param featureDir Optional feature directory holding tasks.md.
+ * @param phase One-based phase number the delegation targets.
+ * @returns The phase's task count, or zero when unavailable.
+ */
+async function phaseTaskCountForDelegation(
+  readText: (path: string) => Promise<string>,
+  cwd: string,
+  featureDir: string | undefined,
+  phase: number,
+): Promise<number> {
+  if (featureDir === undefined) return 0
+  const tasksAbs = resolveRepoRelative(cwd, `${featureDir}/tasks.md`)
+  if (tasksAbs === null) return 0
+  try {
+    const contents = await readText(tasksAbs)
+    const parsed = parseTasksText(contents)
+    return parsed.phases[phase - 1]?.tasks.length ?? 0
+  } catch {
+    return 0
+  }
+}
+
+/**
  * Production classifier agent-engine spawn (model-matrix-delegation design
  * D5, MM-FR-005): runs the hidden model-matrix-classifier subagent through
  * the shared executeAgentSession session path with the invocation's
@@ -2138,6 +4504,133 @@ async function spawnClassifierAgentSession(
 }
 
 /**
+ * Default realpath seam for the footprint estimator: resolves the real
+ * (symlink-free) absolute path, returning null on any failure so the
+ * estimator treats an unresolvable path as a rejection, never a crash.
+ */
+function defaultRealpath(path: string): string | null {
+  try {
+    return realpathSync(path)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Estimates a delegation's base prompt-material footprint in tokens
+ * (DELEG-FR-001, compaction-storm task 1.1, design D1): the cached
+ * prefix every child session re-receives, plus the command body measured
+ * from disk through its own guarded read, plus the caller-supplied
+ * in-memory prompt material (feature-dir context, skill directive, and
+ * extra prompt — everything except the command body, which the disk read
+ * already counted).
+ *
+ * The guarded read is fail-closed: a command path that escapes the
+ * repository root lexically (traversal) or through a symlink, or a file
+ * that cannot be read, yields the conservative default command body
+ * (the 1 MiB cap over the byte-per-token divisor), so a read failure can
+ * never understate the delegation's prompt material. The fallback reason
+ * is recorded in the selection audit. Prompt-only delegations (no
+ * command path) never touch the filesystem.
+ *
+ * @param cwd Repository root used for repo-relative path resolution.
+ * @param commandPath Optional repo-relative command-file path.
+ * @param promptMaterial In-memory prompt material beyond the command body.
+ * @param seams Read and realpath seams (best-effort, see
+ *   FootprintEstimatorDependencies).
+ * @returns The estimated footprint plus its fallback reason, when one fired.
+ */
+export async function estimateDelegationFootprint(
+  cwd: string,
+  commandPath: string | undefined,
+  promptMaterial: string,
+  seams: FootprintEstimatorDependencies,
+): Promise<DelegationFootprint> {
+  const materialTokens = estimateTokensFromText(promptMaterial)
+  if (commandPath === undefined) {
+    return { tokens: DELEGATION_CACHED_PREFIX_TOKENS + materialTokens, fallback: null }
+  }
+  const conservative = DELEGATION_CACHED_PREFIX_TOKENS + CONSERVATIVE_COMMAND_BODY_TOKENS + materialTokens
+  // Lexical traversal guard: the command path must resolve inside the
+  // repository root (the same guard the tool-level command read applies).
+  const abs = resolveRepoRelative(cwd, commandPath)
+  if (abs === null) {
+    return {
+      tokens: conservative,
+      fallback: `command path "${commandPath}" escapes the repository root; using the conservative default command-body footprint`,
+    }
+  }
+  // Symlink guard: the resolved real paths of both the repository root
+  // and the target must keep the target inside the root — a symlinked
+  // escape is rejected exactly like a lexical one.
+  const realRoot = seams.realpath(cwd)
+  const realAbs = realRoot === null ? null : seams.realpath(abs)
+  if (realRoot === null || realAbs === null || !realAbs.startsWith(`${realRoot}/`)) {
+    return {
+      tokens: conservative,
+      fallback: `command path "${commandPath}" resolves outside the repository root (symlink or unresolvable path); using the conservative default command-body footprint`,
+    }
+  }
+  try {
+    const text = await seams.readText(abs)
+    return {
+      tokens: DELEGATION_CACHED_PREFIX_TOKENS + estimateTokensFromText(text) + materialTokens,
+      fallback: null,
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return {
+      tokens: conservative,
+      fallback: `cannot read command body for footprint estimation: ${msg}; using the conservative default command-body footprint`,
+    }
+  }
+}
+
+/**
+ * Production declared-limits lookup for the selection headroom gate
+ * (DELEG-FR-001, compaction-storm task 2.1): reads the configured
+ * providers through the OpenCode client and indexes each model's
+ * declared limit block by its combined `provider/model` identity — the
+ * same identity construction the selection chain and host introspection
+ * use. Entries with malformed limit values (non-finite, non-positive
+ * context, or negative output) are skipped: a garbage declaration is
+ * treated as no declaration, so the gate passes rather than rejecting on
+ * data it cannot interpret. Any lookup failure fails OPEN (empty map) —
+ * the gate can never block or stall delegation on an unavailable
+ * provider config.
+ * @param client The parent session's OpenCode client.
+ * @param directory The delegation's working directory.
+ * @returns Declared model limits keyed by `provider/model` identity.
+ */
+async function defaultModelLimits(
+  client: PluginInput["client"],
+  directory: string,
+): Promise<Readonly<Record<string, ModelLimits>>> {
+  try {
+    const response = await client.config.providers({ query: { directory } })
+    const limits: Record<string, ModelLimits> = {}
+    for (const provider of response.data?.providers ?? []) {
+      for (const [modelID, model] of Object.entries(provider.models ?? {})) {
+        const limit = model?.limit
+        if (
+          limit === undefined ||
+          !Number.isFinite(limit.context) ||
+          !Number.isFinite(limit.output) ||
+          limit.context <= 0 ||
+          limit.output < 0
+        ) {
+          continue
+        }
+        limits[`${provider.id}/${modelID}`] = { context: limit.context, output: limit.output }
+      }
+    }
+    return limits
+  } catch {
+    return {}
+  }
+}
+
+/**
  * Factory that creates the uf_delegate_command tool with injectable git
  * executor, working directory, and session/I/O dependencies for
  * testability.
@@ -2177,7 +4670,12 @@ async function spawnClassifierAgentSession(
  *   variant-fallback and structural-failure semantics verbatim
  * - the child session runs through the shared executeAgentSession executor
  *   (host model resolution via parent introspection, parenting, abort
- *   linkage, timeout — default 600,000 ms) and expected_artifact is
+ *   linkage, timeout — default 600,000 ms, up to 14,400,000 ms for
+ *   command-path calls, clamped to any inherited parent budget; idle
+ *   timeout default 600,000 ms; storm threshold resolved from the
+ *   matrix delegation.storm_threshold knob — DELEG-FR-002, design D4:
+ *   documented default 3, invalid values substituted with the default
+ *   and the substitution surfaced as a warning) and expected_artifact is
  *   verified after the run; a missing artifact returns the command's exact
  *   STOP message (EXPECTED_ARTIFACT_MISSING)
  * - on success (child completed and artifact verified when supplied) the
@@ -2189,7 +4687,23 @@ async function spawnClassifierAgentSession(
  *   and the model-matrix selection audit trail (model-matrix-delegation
  *   D7, MM-FR-007): selection_source always, plus pack, capability,
  *   model, confidence, and fallback_reason when non-null -- both also
- *   surfaced in the success envelope
+ *   surfaced in the success envelope, together with the DELEG-FR-001
+ *   headroom provenance (footprint and effective margin always in the
+ *   envelope; estimator fallback and margin-substitution warning when
+ *   non-null in both surfaces), and the DELEG-FR-002 storm provenance
+ *   (effective threshold always in the envelope, and in the checkpoint
+ *   when the operator configured the knob; substitution warning when
+ *   non-null in both surfaces)
+ * - limit-ended runs (delegation-timeout-budgets D4) return
+ *   DELEGATE_FAILED with the executor's `timeout` details and, for
+ *   command-path calls, `resume` (state key, last checkpoint step,
+ *   completed steps) so callers resume instead of restarting;
+ *   per-task implement delegations (checkpoint_step "implement" plus
+ *   phase) run through the per-task executor wrapper
+ *   (per-task-delegation-budgets D2/D3), whose wall-clock, idle, and
+ *   budget terminations carry the advisory `timeout.resume` hint —
+ *   files_modified and tasks_completed since delegation start, null
+ *   when unreadable (PTB-FR-003)
  *
  * @param exec Git executor used to derive the auto-checkpoint state key.
  * @param cwd Repository root used for repo-relative path resolution.
@@ -2209,6 +4723,18 @@ export function createDelegateCommandTool(
   // cache, so cache semantics match a per-instance cascade while the
   // spawn seam stays context-correct for concurrent invocations.
   const classifierCache = deps.modelMatrix.classifierCache ?? createClassifierCache()
+  // DELEG-FR-001 (compaction-storm task 1.1): footprint estimator seams,
+  // optional with production defaults (node:fs/promises readFile and the
+  // null-on-failure realpathSync wrapper above).
+  const footprintSeams: FootprintEstimatorDependencies = deps.modelMatrix.footprint ?? {
+    readText: (path) => readFile(path, "utf8"),
+    realpath: defaultRealpath,
+  }
+  // DELEG-FR-001 (compaction-storm task 2.1): declared-limits lookup seam,
+  // optional with the fail-open production default above (client provider
+  // config through the OpenCode client).
+  const fetchModelLimits: (directory: string) => Promise<Readonly<Record<string, ModelLimits>>> =
+    deps.modelMatrix.modelLimits ?? ((directory) => defaultModelLimits(deps.client, directory))
   return tool({
     description:
       "Delegate a command or task to a content agent (default cobalt-crush-dev) in a " +
@@ -2220,7 +4746,10 @@ export function createDelegateCommandTool(
       "resolves through the model-matrix precedence chain (explicit model > profile > " +
       "pack > agent pin > task-kind default > classifier cascade > host model) and every " +
       "selection is recorded in the audit trail. Reviewer agents (divisor-*) are " +
-      "rejected — use invoke_agent for review invocations.",
+      "rejected — use invoke_agent for review invocations. Orchestrator-relayed " +
+      "human decisions (human_decisions) are appended to the human-decision record " +
+      "at spawn time, before the child session runs; the stamped decision_ids " +
+      "return in the success envelope's human_decision_ids.",
     args: {
       agent: DelegateCommandInputSchema.shape.agent.describe(
         "Content agent to delegate to (default cobalt-crush-dev). Reviewer agents (divisor-*) are rejected; dispatch them via invoke_agent.",
@@ -2245,7 +4774,13 @@ export function createDelegateCommandTool(
           "for per-task delegation (same numbering as the implement exit variants).",
       ),
       timeout: DelegateCommandInputSchema.shape.timeout.describe(
-        "Optional run timeout in milliseconds (bounded to 1_800_000; default 600_000).",
+        "Optional wall-clock run timeout in milliseconds (default 600_000). Bounded to 14_400_000 " +
+          "for command-path delegations and 1_800_000 for prompt-only delegations. Inside another " +
+          "delegation the timeout is clamped to the parent's remaining budget.",
+      ),
+      idle_timeout: DelegateCommandInputSchema.shape.idle_timeout.describe(
+        "Optional idle (no-progress) timeout in milliseconds (60_000-1_800_000; default 600_000). " +
+          "The run aborts only when no session in the child's subtree changed for this long.",
       ),
       task_classification: DelegateCommandInputSchema.shape.task_classification.describe(
         "Optional classification of the delegated work: \"deterministic\" or \"judgment\". " +
@@ -2253,7 +4788,8 @@ export function createDelegateCommandTool(
       ),
       skill: DelegateCommandInputSchema.shape.skill.describe(
         "Optional repo skill or script reference named for deterministic-classified work " +
-          "(1-256 chars). Mutually exclusive with skill_absent_reason and valid only with " +
+          "(1-256 chars): a skill name, a repo-root file (Makefile), or a repo-relative " +
+          "script path (scripts/build.sh). Commands and make targets are not references. Mutually exclusive with skill_absent_reason and valid only with " +
           "task_classification \"deterministic\".",
       ),
       skill_absent_reason: DelegateCommandInputSchema.shape.skill_absent_reason.describe(
@@ -2281,6 +4817,15 @@ export function createDelegateCommandTool(
           "resolves the mapped profile's model AND renders a tool-authored directive instructing the " +
           "child to load .opencode/uf/packs/<pack>.md before writing. Must be a packs key of the " +
           "loaded matrix; fails closed otherwise.",
+      ),
+      human_decisions: DelegateCommandInputSchema.shape.human_decisions.describe(
+        "Optional orchestrator-relayed human decisions (SYNTH-001/006): entries of {question, answer} " +
+          "(each non-empty, at most 16 KiB UTF-8) relaying a human decision the orchestrator actually " +
+          "received. Machine-stamped with source orchestrator-relay, decision_id (UUID v4), and " +
+          "recorded_at, then appended to the human-decision record " +
+          "(.uf/progress/<key>/human-decisions.json) at spawn time, before the child session runs. " +
+          "The stamped decision_ids are returned in the success envelope (human_decision_ids) so the " +
+          "child's checkpoint calls can cite them as human_decision_ref values.",
       ),
     },
     async execute(args, context) {
@@ -2337,7 +4882,7 @@ export function createDelegateCommandTool(
         // audit trail (task 1.5).
         let resolvedSkill: string | null = null
         if (input.skill !== undefined) {
-          const skillRef = resolveSkillReference(cwd, input.skill, deps.fileExists)
+          const skillRef = resolveSkillReference(cwd, input.skill, deps.fileExists, deps.isDirectory)
           if (!skillRef.ok) {
             return { output: skillRef.failureOutput }
           }
@@ -2410,14 +4955,24 @@ export function createDelegateCommandTool(
         // prompt), then extra instructions. The directive renders only on
         // calls carrying a resolved skill reference.
         const sections: string[] = []
+        // DELEG-FR-001 (compaction-storm task 1.1): the parallel
+        // contextSections array tracks the in-memory prompt material
+        // beyond the command body (feature-dir context, skill directive,
+        // extra prompt) so the footprint estimator counts it without
+        // double-counting the command text.
+        const contextSections: string[] = []
         if (commandText !== undefined) {
           sections.push(commandText)
         }
         if (input.feature_dir !== undefined) {
-          sections.push(`Feature directory: ${input.feature_dir}`)
+          const featureContext = `Feature directory: ${input.feature_dir}`
+          sections.push(featureContext)
+          contextSections.push(featureContext)
         }
         if (resolvedSkill !== null) {
-          sections.push(renderSkillDirective(resolvedSkill))
+          const skillDirective = renderSkillDirective(resolvedSkill)
+          sections.push(skillDirective)
+          contextSections.push(skillDirective)
         }
 
         // ── Model-matrix selection (model-matrix-delegation D2/D8, task
@@ -2482,6 +5037,38 @@ export function createDelegateCommandTool(
           readEnv: deps.modelMatrix.classifierReadEnv,
           cache: classifierCache,
         })
+        // DELEG-FR-001 (compaction-storm task 1.1): the caller-computed
+        // base footprint and the resolved headroom margin. The estimator
+        // measures the command body through its own fail-closed guarded
+        // read and the in-memory context sections plus the extra prompt
+        // make up the rest of the material; the margin resolves with D4
+        // substitution semantics (invalid value -> documented default
+        // plus a warning, never a load failure). Both are supplied to
+        // selection via SelectionInputs (consumed by the headroom gate,
+        // task 2.1) and recorded in the audit trail.
+        const footprint = await estimateDelegationFootprint(
+          cwd,
+          input.command_path,
+          input.prompt !== undefined ? [...contextSections, input.prompt].join("\n\n") : contextSections.join("\n\n"),
+          footprintSeams,
+        )
+        const margin = resolveFootprintMarginTokens(matrix)
+        // DELEG-FR-002 (compaction-storm): the storm-detector threshold
+        // resolved from the same loaded matrix (design D4) and threaded
+        // into the executor below — without this the knob validates but
+        // never configures the detector, leaving dead config behind.
+        const storm = resolveStormThreshold(matrix)
+        // DELEG-FR-001 (compaction-storm task 2.1): declared model limits
+        // for the headroom gate. Fetched only when a gated candidate can
+        // arise — a configured matrix (non-empty profiles) and no explicit
+        // model, which bypasses the gate — so the zero-config and
+        // explicit-model paths never pay the provider round trip. The
+        // lookup itself fails open (empty map), never blocking delegation.
+        const gatePossible =
+          matrix !== null && Object.keys(matrix.profiles).length > 0 && input.model === undefined
+        const modelLimits: Readonly<Record<string, ModelLimits>> = gatePossible
+          ? await fetchModelLimits(context.directory)
+          : {}
         const selectionInputs = {
           model: input.model,
           variant: input.variant,
@@ -2489,6 +5076,8 @@ export function createDelegateCommandTool(
           pack: input.pack,
           checkpoint_step: input.checkpoint_step,
           agent: input.agent,
+          footprint: footprint.tokens,
+          model_limits: modelLimits,
         }
         const outcome = await cascade.classify(matrix, {
           inputs: selectionInputs,
@@ -2592,22 +5181,140 @@ export function createDelegateCommandTool(
           read_only: false,
         }
 
+        // SYNTH-001/006 (synthetic-compaction-continue-prompt-rec task
+        // 2.2): persist orchestrator-relayed human decisions at spawn
+        // time, BEFORE the delegated child session runs — a machinery
+        // write the child never authors. Placement is after every
+        // validation that can still reject the call (schema bounds, skill
+        // contract, command file, artifact path, model selection), so
+        // entries record exactly when the spawn commits; a failed child
+        // run leaves them in place (a relayed decision was actually
+        // received — the record is an audit trail, not a
+        // delegation-outcome log). A persist failure fails the delegation
+        // fail-closed: authorization that never reached the record does
+        // not exist, and the child's human_decision_ref citations would
+        // otherwise be rejected with no diagnosable cause.
+        let humanDecisionIds: string[] | null = null
+        if (input.human_decisions !== undefined) {
+          const relayKey = resolveKey(exec, cwd)
+          try {
+            const stamped = await appendHumanDecisions(
+              cwd,
+              relayKey,
+              input.human_decisions.map((entry) => ({
+                source: "orchestrator-relay" as const,
+                question: entry.question,
+                answer: entry.answer,
+              })),
+            )
+            humanDecisionIds = stamped.map((entry) => entry.decision_id)
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err)
+            return {
+              output: JSON.stringify(
+                failure(
+                  `Failed to persist human_decisions to the human-decision record for key ${relayKey}: ${msg}. ` +
+                    "Remediation: inspect .uf/progress/<key>/human-decisions.json (a corrupted record " +
+                    "fails closed); retry once the condition clears.",
+                  { retryable: true, code: "HUMAN_DECISION_PERSIST_FAILED" },
+                ),
+              ),
+            }
+          }
+        }
+
         // Delegate the child session lifecycle to the shared executor.
-        const result = await executeAgentSession(
-          {
-            client: deps.client,
-            sessionID: context.sessionID,
-            directory: context.directory,
-            parentAbort: context.abort,
-            timeoutMilliseconds: input.timeout ?? DEFAULT_TIMEOUT_MILLISECONDS,
-          },
-          input.agent,
-          promptText,
-          childModel,
-          childVariant,
-          false,
-          provenance,
-        )
+        // Per-task implement delegations (checkpoint_step "implement"
+        // plus a phase number — the /uf.unleash implement call shape,
+        // per-task-delegation-budgets D2/D3) route through the per-task
+        // wrapper so a timeout termination carries the advisory resume
+        // hint (PTB-FR-003): it resolves the inherited budget and idle
+        // window through the delegation-budget registry, fails fast
+        // budget_exhausted before spawning (PTB-FR-002), and attaches
+        // files_modified / tasks_completed — diffed from the
+        // delegation-start snapshot through the capture seams — to the
+        // timeout envelope. Unbudgeted callers keep the shared
+        // executor's semantics: an explicit idle_timeout still wins,
+        // and fallbackIdleMs preserves the delegation default.
+        const perTaskDelegation =
+          input.checkpoint_step === "implement" && input.phase !== undefined
+            ? {
+                phase: input.phase,
+                checkpointStep: input.checkpoint_step,
+                fallbackIdleMs: DEFAULT_DELEGATE_IDLE_TIMEOUT_MS,
+                resumeCapture: delegateResumeCapture(exec, cwd, input.feature_dir, deps.readText),
+                // PTB-FR-001 (per-task-delegation-budgets D1): derive the
+                // wall clock from this phase's work signals — the
+                // tasks.md phase task count and the measured prompt
+                // bytes — unless the caller's explicit timeout wins
+                // outright. The configured ceiling is the schema-level
+                // bound for this call's delegation kind, so the
+                // derivation can never request a window validation
+                // would reject.
+                derivation: derivePerTaskTimeoutMs({
+                  baseMs: DEFAULT_TIMEOUT_MILLISECONDS,
+                  phaseTaskCount: await phaseTaskCountForDelegation(
+                    deps.readText,
+                    cwd,
+                    input.feature_dir,
+                    input.phase,
+                  ),
+                  // tasks.md records task ids and descriptions only —
+                  // no per-task file set exists to count, so the file
+                  // term contributes nothing for per-task delegations.
+                  phaseFileCount: 0,
+                  promptBytes: Buffer.byteLength(promptText, "utf8"),
+                  tier: null,
+                  maxParallelRuns: 1,
+                  configuredCeilingMs:
+                    input.command_path !== undefined
+                      ? MAX_COMMAND_DELEGATION_TIMEOUT_MS
+                      : MAX_PROMPT_DELEGATION_TIMEOUT_MS,
+                  explicitTimeoutMs: input.timeout,
+                }),
+              }
+            : null
+        const result = await (perTaskDelegation === null
+          ? executeAgentSession(
+              {
+                client: deps.client,
+                sessionID: context.sessionID,
+                directory: context.directory,
+                parentAbort: context.abort,
+                timeoutMilliseconds: input.timeout ?? DEFAULT_TIMEOUT_MILLISECONDS,
+                idleTimeoutMilliseconds: input.idle_timeout ?? DEFAULT_DELEGATE_IDLE_TIMEOUT_MS,
+                stormThreshold: storm.threshold,
+              },
+              input.agent,
+              promptText,
+              childModel,
+              childVariant,
+              false,
+              provenance,
+            )
+          : executePerTaskDelegation(
+              {
+                client: deps.client,
+                sessionID: context.sessionID,
+                directory: context.directory,
+                parentAbort: context.abort,
+                timeoutMilliseconds: input.timeout ?? DEFAULT_TIMEOUT_MILLISECONDS,
+                // The wrapper owns idle precedence (PTB-FR-002): an
+                // explicit window wins, else the budgeted ancestor's
+                // registered window, else the fallback above — so the
+                // delegation default is passed as fallbackIdleMs, not
+                // baked in here.
+                idleTimeoutMilliseconds: input.idle_timeout,
+                stormThreshold: storm.threshold,
+              },
+              input.agent,
+              promptText,
+              childModel,
+              childVariant,
+              false,
+              provenance,
+              perTaskDelegation,
+            ))
 
         if (result.status !== "success" || result.error !== null) {
           const code = result.status === "cancelled" ? "DELEGATE_CANCELLED" : "DELEGATE_FAILED"
@@ -2621,12 +5328,35 @@ export function createDelegateCommandTool(
           // executor created one, so callers can inspect the failed or
           // wedged child subtree directly from the delegation result
           // (the field is omitted when no child session ever existed).
+          // Limit-ended runs also carry the timeout classification and,
+          // for command-path delegations, the durable resume state
+          // (delegation-timeout-budgets D4). Per-task implement
+          // delegations carry the executor's advisory hint inside the
+          // timeout details — timeout.resume with files_modified and
+          // tasks_completed, null when unreadable
+          // (per-task-delegation-budgets D3, PTB-FR-003).
           return {
-            output: JSON.stringify(
-              result.childSessionID !== undefined
-                ? { ...envelope, child_session_id: result.childSessionID }
-                : envelope,
-            ),
+            output: JSON.stringify({
+              ...envelope,
+              ...(result.childSessionID !== undefined ? { child_session_id: result.childSessionID } : {}),
+              ...(result.timeout !== undefined
+                ? {
+                    timeout: result.timeout satisfies TimeoutDetails,
+                    ...(input.command_path !== undefined
+                      ? { resume: readDelegateResumeState(exec, cwd, input.command_path) }
+                      : {}),
+                  }
+                : {}),
+              // PTB-FR-001/PTB-FR-004: per-task results carry their
+              // derivation provenance and — under a budgeted ancestor —
+              // the remaining budget, machine-parseably on failure too.
+              ...(result.timeout_provenance !== undefined ? { timeout_provenance: result.timeout_provenance } : {}),
+              ...(result.remaining_ms !== undefined ? { remaining_ms: result.remaining_ms } : {}),
+              // PTB-FR-003 (DE-005): executor-owned bounded-retry
+              // provenance — a failure carrying it already consumed the
+              // single retry, so it is final for that termination kind.
+              ...(result.retry !== undefined ? { retry: result.retry } : {}),
+            }),
           }
         }
 
@@ -2705,6 +5435,27 @@ export function createDelegateCommandTool(
           if (selection.fallback_reason !== null) {
             checkpointData.selection_fallback_reason = selection.fallback_reason
           }
+          // DELEG-FR-001 (compaction-storm task 1.1): headroom provenance.
+          // The estimator fallback and the margin-substitution warning
+          // ride along only when they occur, so calls that measure cleanly
+          // with a valid knob keep the pre-change checkpoint shape.
+          if (footprint.fallback !== null) {
+            checkpointData.selection_footprint_fallback = footprint.fallback
+          }
+          if (margin.warning !== null) {
+            checkpointData.selection_margin_warning = margin.warning
+          }
+          // DELEG-FR-002 (compaction-storm): the effective storm
+          // threshold rides the checkpoint when the operator configured
+          // the knob, plus the D4 substitution warning when it fired —
+          // the write side of the config-key round-trip seam. Calls
+          // without a delegation block keep the pre-change shape.
+          if (matrix?.delegation?.storm_threshold !== undefined) {
+            checkpointData.storm_threshold = storm.threshold
+          }
+          if (storm.warning !== null) {
+            checkpointData.storm_threshold_warning = storm.warning
+          }
           recordAutoCheckpoint(cwd, key, "uf.unleash", input.checkpoint_step, checkpointData)
           checkpointRecorded = true
         }
@@ -2715,6 +5466,10 @@ export function createDelegateCommandTool(
           child_session_id: result.childSessionID ?? null,
           artifact_created: artifactCreated,
           checkpoint_recorded: checkpointRecorded,
+          // SYNTH-001/006 (task 2.2): stamped decision ids for the relayed
+          // envelope — null when the call supplied none, so pre-change
+          // consumers see no new key on that path.
+          human_decision_ids: humanDecisionIds,
           // Delegation-skill-enforcement D5 (task 1.5): the same audit
           // fields the checkpoint records, surfaced machine-parseably in
           // the success envelope (null when the call supplied none).
@@ -2732,6 +5487,29 @@ export function createDelegateCommandTool(
           selection_model: selection.model,
           selection_confidence: selection.confidence,
           selection_fallback_reason: selection.fallback_reason,
+          // DELEG-FR-001 (compaction-storm task 1.1): headroom provenance,
+          // machine-parseable like the rest of the selection audit. The
+          // footprint and effective margin are always present; the
+          // fallback and warning are null when the estimate measured
+          // cleanly and the configured knob value was valid.
+          selection_footprint: footprint.tokens,
+          selection_footprint_fallback: footprint.fallback,
+          selection_margin_tokens: margin.tokens,
+          selection_margin_warning: margin.warning,
+          // DELEG-FR-002 (compaction-storm): effective storm threshold
+          // and D4 substitution warning, machine-parseable like the rest
+          // of the audit trail.
+          storm_threshold: storm.threshold,
+          storm_threshold_warning: storm.warning,
+          // PTB-FR-001/PTB-FR-004: per-task derivation provenance and —
+          // under a budgeted ancestor — the remaining budget, surfaced
+          // machine-parseably like the rest of the delegation audit.
+          timeout_provenance: result.timeout_provenance ?? null,
+          remaining_ms: result.remaining_ms ?? null,
+          // PTB-FR-003 (DE-005): retry provenance rides success only
+          // when a retry actually finished the task; first-attempt
+          // successes stay null.
+          retry: result.retry ?? null,
           usage: result.usage,
           provenance: result.provenance,
           text: result.text,
@@ -2805,6 +5583,19 @@ export interface UnleashDetectResumeData {
     readonly code_review: boolean
     readonly implement?: boolean
     readonly quick_pre_flight?: boolean
+  }
+  /**
+   * HARDEN-006 (Decision 6): present when the recorded spec-review gate
+   * holds the step open — undecided findings, a pause decision, or apply
+   * decisions awaiting the subsequent APPROVE iteration. Names the
+   * iteration and verdict so a resumed run re-enters the gate instead of
+   * re-dispatching a sealed iteration. Absent when no record exists or
+   * the gate does not hold.
+   */
+  readonly spec_review_gate_holds?: {
+    readonly status: "missing_decisions" | "paused" | "pending_approving_iteration"
+    readonly iteration: number
+    readonly verdict: string
   }
 }
 
@@ -3083,7 +5874,12 @@ function specArtifactsDirty(exec: GitExec, cwd: string, featureDir: string): boo
  *   dispatch artifact under .uf/artifacts/dispatch/ records an approving
  *   verdict AND its recorded head SHA is an ancestor of or equal to the
  *   current HEAD AND the spec artifacts have no uncommitted modifications
- *   (tasks.md checkbox edits excluded)
+ *   (tasks.md checkbox edits excluded) — except under a recorded
+ *   adjudication (HARDEN-006): all-override decisions complete the step
+ *   with no approving artifact; apply decisions complete it once the
+ *   subsequent APPROVE iteration is recorded, with the spec-artifact dirt
+ *   the applied fixes caused waived; undecided findings hold it open
+ *   (reported as spec_review_gate_holds)
  * - code_review: done only when the most recent current-branch code-mode
  *   dispatch artifact records an approving verdict AND its recorded head
  *   SHA equals the current HEAD — the review must cover the exact code
@@ -3120,6 +5916,11 @@ export function createUnleashDetectResumeTool(
       "freshness (code requires the recorded head SHA to equal current HEAD; specs " +
       "accepts ancestor-or-equal when the spec artifacts are clean, tasks.md checkbox " +
       "edits excluded) — reconciled with checkpoint state (artifacts authoritative). " +
+      "Spec-review completion honors the recorded adjudication (HARDEN-006): " +
+      "all-override decisions complete the step; apply decisions complete only " +
+      "with the subsequent APPROVE iteration recorded (spec-artifact dirt from " +
+      "applied fixes does not re-fail); undecided findings hold the step open, " +
+      "reported as spec_review_gate_holds naming the iteration. " +
       "Returns {step_statuses, resume_from, all_complete, unchecked_count, " +
       "checkpoint_claims}. OpenSpec forces clarify, plan, and tasks done. " +
       "Quick forces clarify, plan, tasks, and spec review done (no spec " +
@@ -3260,13 +6061,52 @@ export function createUnleashDetectResumeTool(
         // The quick tier skips the spec review by definition (D2) — no
         // spec artifacts exist to review. The code review stays
         // artifact-authoritative for every tier.
+        //
+        // HARDEN-006 (Decision 6): the recorded decision set is the latest
+        // iteration's adjudication — checkpoint data is authoritative for
+        // adjudication while artifacts stay authoritative for verdicts. The
+        // record is read through the same healing path get_progress uses,
+        // so a crash-window artifact is visible here too. The quick tier
+        // carries no spec review, so it never reads one.
+        const gateRecord =
+          input.workflow_tier === "quick" ? null : readSpecReviewGateRecord(cwd, key)
+        const gateStatus = evaluateSpecReviewGate(gateRecord)
+        let specReviewGateHolds: UnleashDetectResumeData["spec_review_gate_holds"]
+        if (
+          gateStatus.kind === "missing_decisions" ||
+          gateStatus.kind === "paused" ||
+          gateStatus.kind === "pending_approving_iteration"
+        ) {
+          specReviewGateHolds = {
+            status: gateStatus.kind,
+            iteration: gateStatus.iteration,
+            verdict: gateStatus.verdict,
+          }
+        }
         let specReviewDone = input.workflow_tier === "quick"
         if (!specReviewDone) {
-          const specArtifact = mostRecentArtifact(artifacts, "specs", branch)
-          if (specArtifact !== null && isApprovingVerdict(specArtifact.verdict)) {
-            specReviewDone =
-              isAncestorOrEqual(exec, cwd, specArtifact.headSha, headSha) &&
-              !specArtifactsDirty(exec, cwd, featureDir)
+          if (specReviewGateHolds !== undefined) {
+            // Undecided findings, a pause decision, or apply decisions
+            // awaiting the subsequent APPROVE iteration: the gate holds —
+            // a resumed run re-enters it (the recorded iteration is
+            // sealed; re-dispatch is refused).
+            specReviewDone = false
+          } else if (gateStatus.kind === "advanceable") {
+            // All-override adjudication closed the gate without an
+            // approving artifact — the record is authoritative (Decision 6).
+            specReviewDone = true
+          } else {
+            // open: the artifact-authoritative path (D4). HARDEN-006: when
+            // the approving iteration was reached through applied fixes,
+            // the spec-artifact dirt those fixes caused must not re-fail
+            // the probe — only the ancestry rule still applies.
+            const specArtifact = mostRecentArtifact(artifacts, "specs", branch)
+            if (specArtifact !== null && isApprovingVerdict(specArtifact.verdict)) {
+              specReviewDone =
+                isAncestorOrEqual(exec, cwd, specArtifact.headSha, headSha) &&
+                (approvalFollowsApplyDecisions(gateRecord) ||
+                  !specArtifactsDirty(exec, cwd, featureDir))
+            }
           }
         }
 
@@ -3315,6 +6155,9 @@ export function createUnleashDetectResumeTool(
           all_complete: allComplete,
           unchecked_count: uncheckedCount,
           checkpoint_claims: checkpointClaims,
+          ...(specReviewGateHolds === undefined
+            ? {}
+            : { spec_review_gate_holds: specReviewGateHolds }),
         }
         return { output: JSON.stringify(success(data)) }
       } catch (err: unknown) {
@@ -5318,6 +8161,144 @@ export function createPersistUnleashSummaryTool(exec: GitExec, cwd: string): Ret
 }
 
 // ---------------------------------------------------------------------------
+// uf_preflight_declared_checks tool
+// ---------------------------------------------------------------------------
+
+export type { DeclaredChecksData } from "../../lib/preflight-declared.js"
+
+/** True when the path is an executable regular file. */
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) {
+      return false
+    }
+    accessSync(path, fsConstants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** True when the path is a regular file (follows symlinks). */
+function isRegularFile(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+/** Output budget for one declared check before execFile kills it. */
+export const PREFLIGHT_MAX_BUFFER_BYTES = 64 * 1024 * 1024
+
+/**
+ * Map an execFile completion onto a ProcessResult. stdout and stderr are
+ * concatenated (stdout first). Three failure classes:
+ * - timeout: execFile killed the child (`killed` + a signal) -> exit 124,
+ *   timedOut true;
+ * - output limit: `code` is ERR_CHILD_PROCESS_STDIO_MAXBUFFER (Node and
+ *   Bun; `killed` is not set) -> exit 1 with an annotation, timedOut false;
+ * - ordinary exit: numeric `code` passes through.
+ */
+export function processResultFromExecFile(error: Error | null, stdout: string, stderr: string): ProcessResult {
+  const output = [stdout, stderr].filter((part) => part.length > 0).join("\n")
+  if (error === null) {
+    return { exitCode: 0, output, timedOut: false }
+  }
+  const failed = error as NodeJS.ErrnoException & { code?: number | string | null; killed?: boolean; signal?: string | null }
+  if (failed.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+    return { exitCode: 1, output: `${output}\n[output limit exceeded: ${failed.message}]`, timedOut: false }
+  }
+  const timedOut = failed.killed === true && failed.signal !== undefined && failed.signal !== null
+  const exitCode = typeof failed.code === "number" ? failed.code : 1
+  return { exitCode: timedOut ? 124 : exitCode, output: output || failed.message, timedOut }
+}
+
+/** Run an executable with an argv list and no shell; see processResultFromExecFile. */
+export function runProcessNoShell(
+  file: string,
+  args: readonly string[],
+  cwd: string,
+  timeoutMs: number,
+  env: Readonly<Record<string, string>>,
+  maxBuffer: number = PREFLIGHT_MAX_BUFFER_BYTES,
+): Promise<ProcessResult> {
+  return new Promise((resolvePromise) => {
+    execFile(
+      file,
+      [...args],
+      { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer, encoding: "utf8", shell: false },
+      (error, stdout, stderr) => resolvePromise(processResultFromExecFile(error, stdout, stderr)),
+    )
+  })
+}
+
+/** Production dependencies for uf_preflight_declared_checks. */
+export function createPreflightDeclaredDependencies(): PreflightDeclaredDependencies {
+  return {
+    readText: (path: string) => readFile(path, "utf8"),
+    fileExists: isRegularFile,
+    isExecutable: isExecutableFile,
+    // Resolved at registration, like uf_delegate_command's matrix parser.
+    parseYaml: createBunYamlParser(),
+    pathEnv: process.env.PATH ?? "",
+    git: defaultGitExec,
+    runProcess: runProcessNoShell,
+    makeTempDir: () => mkdtemp(resolve(tmpdir(), "uf-preflight-baseline-")),
+    removeDir: (path: string) => rm(path, { recursive: true, force: true }),
+  }
+}
+
+/**
+ * Factory for uf_preflight_declared_checks: the pre-flight skill's
+ * Phase 2b as one deterministic call (determinism pack DE-001/DE-003/
+ * DE-005). Parses and validates `.uf/preflight.yaml`, probes `requires`
+ * binaries on PATH and the `run` executable, applies the diff-scope
+ * filter, runs each in-scope check as an argv list without a shell, maps
+ * `required`/`advisory` onto statuses, and returns structured results
+ * plus tool-rendered Execution Results rows and per-check output blocks.
+ *
+ * Failure codes: INVALID_PREFLIGHT_CONFIG (no check ran),
+ * PREFLIGHT_DECLARED_FAILED (unexpected error).
+ */
+export function createPreflightDeclaredChecksTool(cwd: string, deps: PreflightDeclaredDependencies): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Pre-flight Phase 2b: run the project-declared checks in .uf/preflight.yaml. " +
+      "Validates the file, skips checks whose requires/run are unavailable or whose " +
+      "paths miss the branch diff, runs the rest without a shell, and returns " +
+      "{mode, config_present, scope, checks[], required_failures[], verdict, " +
+      "baseline_method, rendered, rendered_output}. In soft-gate mode required " +
+      "failures are re-run in a merge-base worktree and classified branch-caused / " +
+      "pre-existing / unknown. `rendered` holds the Execution Results rows to " +
+      "insert verbatim; `rendered_output` holds one fenced, untrusted-labelled " +
+      "output block per check that ran with output, to insert verbatim under " +
+      "\"Project-declared check output\"; `verdict` is the declared checks' " +
+      "contribution to the pre-flight verdict; advisory rows never affect it. Failure " +
+      "code INVALID_PREFLIGHT_CONFIG means the file is invalid and no check ran.",
+    args: {
+      mode: z.enum(PREFLIGHT_MODES).describe("Pre-flight execution policy chosen by the consuming command."),
+    },
+    execute: async (args: { mode: (typeof PREFLIGHT_MODES)[number] }) => {
+      try {
+        const data: DeclaredChecksData = await runDeclaredChecks(cwd, deps, args.mode)
+        return { output: JSON.stringify(success(data)) }
+      } catch (error) {
+        if (error instanceof PreflightConfigError) {
+          return { output: JSON.stringify(failure(error.message, { retryable: false, code: "INVALID_PREFLIGHT_CONFIG" })) }
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        return {
+          output: JSON.stringify(
+            failure(`Project-declared pre-flight checks failed: ${message}`, { retryable: false, code: "PREFLIGHT_DECLARED_FAILED" }),
+          ),
+        }
+      }
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Plugin entry point
 // ---------------------------------------------------------------------------
 
@@ -5329,9 +8310,10 @@ const UfWorkflowPlugin = {
     return {
       tool: {
         resolve_base_ref: createResolveBaseRefTool(defaultGitExec, cwd),
-        checkpoint: createCheckpointTool(defaultGitExec, cwd),
+        checkpoint: createCheckpointTool(defaultGitExec, cwd, { client: input.client }),
         get_progress: createGetProgressTool(defaultGitExec, cwd),
         clear_progress: createClearProgressTool(defaultGitExec, cwd),
+        record_human_decision: createRecordHumanDecisionTool(defaultGitExec, cwd),
         normalize_model_name: createNormalizeModelNameTool(),
         git_fetch: createGitFetchTool(defaultGitExec, cwd),
         git_push: createGitPushTool(defaultGitExec, cwd),
@@ -5343,8 +8325,15 @@ const UfWorkflowPlugin = {
         git_conflict_files: createGitConflictFilesTool(defaultGitExec, cwd),
         git_commit_no_edit: createGitCommitNoEditTool(defaultGitExec, cwd),
         uf_unleash_branch_gate: createUnleashBranchGateTool(defaultGitExec, cwd, defaultFileExists),
+        uf_preflight_declared_checks: createPreflightDeclaredChecksTool(cwd, createPreflightDeclaredDependencies()),
         uf_unleash_route_decision: createUnleashRouteDecisionTool(defaultGitExec, cwd),
         uf_unleash_resolve_issue: createUnleashResolveIssueTool(defaultGhRunner, cwd),
+        checkout_pr_head: createCheckoutPrHeadTool(defaultGitExec, defaultGhRunner, cwd),
+        post_feedback_replies: createPostFeedbackRepliesTool(feedbackReplyDeps(cwd)),
+        file_feedback_issue: createFileFeedbackIssueTool(feedbackReplyDeps(cwd)),
+        post_issue_comment: createPostIssueCommentTool({ gh: defaultFeedbackGhExec, cwd }),
+        create_child_issue: createCreateChildIssueTool({ gh: defaultFeedbackGhExec, cwd }),
+        write_feedback_triage_artifact: createWriteFeedbackTriageArtifactTool(feedbackReplyDeps(cwd)),
         uf_delegate_command: createDelegateCommandTool(defaultGitExec, cwd, {
           client: input.client,
           readText: (path: string) => readFile(path, "utf8"),
@@ -5365,6 +8354,9 @@ const UfWorkflowPlugin = {
           readText: (path: string) => readFile(path, "utf8"),
           fileExists: defaultFileExists,
           readDir: (path: string) => readdir(path),
+        }),
+        relay_spec_review_gate: createRelaySpecReviewGateTool(defaultGitExec, cwd, {
+          readText: (path: string) => readFile(path, "utf8"),
         }),
         scan_clarifications: createScanClarificationsTool(cwd, {
           readText: (path: string) => readFile(path, "utf8"),

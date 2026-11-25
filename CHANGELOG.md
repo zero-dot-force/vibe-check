@@ -145,6 +145,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `totalLines` description in `metrics/modulegraph.schema.json` now
+  matches its GoDoc: zero is a measured count (a config-only module reports
+  0), not a sentinel for an unknown count. Description only; the schema's
+  constraints are unchanged (#85).
 - Python cycle detection no longer misses cycles closed through a wide-form
   subpackage import (`from pkg import subpkg`). ripwire's `--deps` records
   such an import as `pkg` alone, so the adapter's directory edge set (the

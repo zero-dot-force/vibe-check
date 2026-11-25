@@ -81,7 +81,7 @@
           "totalLines": {
             "type": "integer",
             "minimum": 0,
-            "description": "Total number of lines across all source files in this module. Zero indicates the line count could not be determined."
+            "description": "Total number of lines across all source files in this module. The counting basis is adapter-specific: the Go adapter counts significant lines, the ripwire adapter counts the physical lines of the files it indexes. Zero is a measured count (for example, a config-only module), not a sentinel for an unknown count."
           },
           "duplications": {
             "type": "array",

@@ -526,8 +526,7 @@ type dupBlockKey struct {
 // blocks in all modules, deduplicated by [dupBlockKey], divided by the
 // [metrics.ModuleResult.TotalLines] summed across all modules, times 100. It
 // returns 0.0 when the summed total lines are zero (an empty module set,
-// or line counts that could not be determined) rather than dividing by
-// zero.
+// or modules that measured no lines) rather than dividing by zero.
 //
 // When the same block identity is reported with conflicting LineCount
 // values — malformed input; well-formed graphs report one count per file

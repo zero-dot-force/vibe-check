@@ -3,7 +3,7 @@
 - [x] 1.1 Create `docs/metrics-guide.md` with ELI5 explanations for every metric (Instability, Abstractness, Distance from Main Sequence, LCOM4, Afferent Coupling, Efferent Coupling, Circular Dependencies, Code Duplication)
 - [x] 1.2 Each metric section includes: "What it is" (plain-language definition), "Scale" (range + extremes meaning), "Why care" (practical impact), and emoji severity ranges
 - [x] 1.3 Include at least one link to external Martin metrics reference
-- [ ] 1.4 Verify the guide renders correctly on GitHub: `https://github.com/zero-dot-force/vibe-check/blob/main/docs/metrics-guide.md`
+- [x] 1.4 Verify the guide renders correctly on GitHub: `https://github.com/zero-dot-force/vibe-check/blob/main/docs/metrics-guide.md`
 
 ## 2. Example Report Reference
 
@@ -30,10 +30,10 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Run `/vibe-check` (summary mode) and confirm output includes 🏗️ title, 📖 legend, and guide link
-- [ ] 5.2 Run `/vibe-check detailed` and confirm output includes full metric names, emoji zone indicators, 🏥 Health Scorecard, and prioritized recommendations
-- [ ] 5.3 Run `/vibe-check detailed` and confirm emoji section markers appear in the agent's natural language interpretation
-- [ ] 5.4 Verify no single-letter column headers (I, A, D) appear in report output
+- [x] 5.1 Run `/vibe-check` (summary mode) and confirm output includes 🏗️ title, 📖 legend, and guide link
+- [x] 5.2 Run `/vibe-check detailed` and confirm output includes full metric names, emoji zone indicators, 🏥 Health Scorecard, and prioritized recommendations
+- [x] 5.3 Run `/vibe-check detailed` and confirm emoji section markers appear in the agent's natural language interpretation
+- [x] 5.4 Verify no single-letter column headers (I, A, D) appear in report output
 - [x] 5.5 Run CI: `go test -race -count=1 ./...` and `go vet ./...` — all SHALL pass
 - [x] 5.6 Run scaffold tests: `go test -race -count=1 ./internal/scaffold/...` — all SHALL pass
 

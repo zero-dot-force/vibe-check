@@ -165,7 +165,7 @@ jobs:
       # code over this directory, which could read it. The token is needed
       # only for the clone; nothing later in the job touches a git remote.
       - name: Checkout head
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -177,7 +177,7 @@ jobs:
       # shapes are the caller's problem (design non-goal). Same
       # persist-credentials: false hardening as the head checkout.
       - name: Checkout base
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: base

@@ -1,8 +1,9 @@
 import { Buffer } from "node:buffer"
 import { createHash, randomUUID } from "node:crypto"
-import { chmod, link, mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises"
+import { constants } from "node:fs"
+import { chmod, link, mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile, type FileHandle } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 
 import { tool, type PluginInput, type PluginModule, type ToolContext } from "@opencode-ai/plugin"
 import { z } from "zod"
@@ -19,12 +20,14 @@ import {
   failedResult,
   resolveHostModel,
   sanitizeInvocationError,
+  StructuralHostModelError,
   validateTimeout,
   type ExecutorDependencies,
   type InvocationProvenance,
   type InvokeAgentResult,
   type ModelIdentity,
 } from "../../lib/agent-executor.js"
+import { classifyGhFailure } from "../../lib/gh-error.js"
 import {
   DEFAULT_CEILING_MS,
   MAX_TIMEOUT_MS,
@@ -102,6 +105,16 @@ import {
   type ReviewerManifest,
   type YamlParser,
 } from "../../lib/reviewer-manifest.js"
+import {
+  appendSpecReviewIterationToState,
+  readSpecReviewGateRecord,
+} from "../../lib/progress-state.js"
+import {
+  evaluateSpecReviewGate,
+  nextSpecReviewIteration,
+  specReviewFindingIds,
+  SPEC_REVIEW_ITERATION_CAP,
+} from "../../lib/uf-workflow-types.js"
 export { createBunYamlParser, parseReviewerManifest, type YamlParser } from "../../lib/reviewer-manifest.js"
 
 const MATRIX_PATH = ".uf/review-matrix.yaml"
@@ -110,6 +123,12 @@ const MANIFEST_PATH = ".uf/reviewer-capabilities.yaml"
 const PLAN_VERSION = 1
 const REVIEW_DISPATCH_SCHEMA_VERSION = "1.0.0"
 const REVIEW_VERDICT_SCHEMA_VERSION = "2.0.0"
+const REVIEW_DISPATCH_FAILURE_SCHEMA_VERSION = "1.0.0"
+// Distinct from REVIEW_DISPATCH_ARTIFACT_TYPE ("review-dispatch") so
+// consumers that select success envelopes — resume detection's
+// parseReviewDispatchArtifact is fail-open on foreign types — keep
+// ignoring failure records (RD-FR-066, design D3).
+const REVIEW_DISPATCH_FAILURE_ARTIFACT_TYPE = "review-dispatch-failure"
 const PRODUCER_VERSION = "1.0.0"
 const MAX_CORRELATION_ATTEMPTS = 32
 
@@ -589,6 +608,21 @@ const DispatchRunSchema = z
   })
   .strict()
 
+/**
+ * Finalization-input view of a run (issue #931). Run files and invocation
+ * provenance carry `read_only`, and hosts assembling a finalization payload
+ * copy it into each run, but DispatchRunSchema is strict and the artifact run
+ * shape has no such field. Drop exactly that plugin-emitted key before strict
+ * validation; every other unknown run key is still rejected.
+ */
+const FinalizationRunSchema = z.preprocess((value) => {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || !("read_only" in value)) {
+    return value
+  }
+  const { read_only: _readOnly, ...rest } = value as Record<string, unknown>
+  return rest
+}, DispatchRunSchema)
+
 const ConsolidatedFindingSchema = RunFindingSchema.extend({
   run_ids: uniqueArray(UUIDSchema, 64).min(1),
 }).strict()
@@ -612,7 +646,7 @@ const CoverageSchema = z
 interface LessonProposal {
   readonly information: string
   readonly tag: string
-  readonly category?: string
+  readonly category?: (typeof LESSON_CATEGORY_VALUES)[number]
 }
 
 /** Data accumulated from child tool calls during a single dispatch_agent_run. */
@@ -738,6 +772,15 @@ interface PersistedRunData {
   readonly findings: z.infer<typeof RunFindingSchema>[]
   readonly proposals: LessonProposal[]
   readonly text: string
+  /**
+   * Finish reason reported by the child's final step-finish part
+   * (RD-FR-060), null when unreported or when the executor failed the
+   * run before a final response. Run-file only: DispatchRunSchema is
+   * strict and the consolidate_dispatch dispatchRuns mapping deliberately
+   * omits this field. Older run files that predate the field remain
+   * valid (undefined reads as not length-terminated).
+   */
+  readonly finish_reason?: string | null
   readonly read_only: boolean
   /**
    * Full resolved prompt text (inline prompt or promptFile contents) used to
@@ -831,6 +874,40 @@ const WorkflowResultSchema = z.discriminatedUnion("kind", [
   TestReviewResultSchema,
 ])
 
+/**
+ * Cardinality bound of the persisted payload.proposals array (RD-FR-054).
+ * consolidate_dispatch keeps the first MAX_PAYLOAD_PROPOSALS deduplicated
+ * proposals and reports the rest as a proposals_overflow warning, so the
+ * bound can never strand finalization.
+ */
+const MAX_PAYLOAD_PROPOSALS = 512
+
+/**
+ * Lesson proposal persisted in the dispatch artifact (RD-FR-054): the
+ * submit_lesson_proposal shape plus the submitting agent, kept at full length
+ * so consumers store complete lessons from the artifact rather than from the
+ * capped tool-result preview.
+ */
+// Single source for the five lesson-category values shared by the
+// payload and submission schemas; both z.enum declarations reference
+// this constant so the two surfaces cannot drift apart.
+const LESSON_CATEGORY_VALUES = [
+  "decision",
+  "pattern",
+  "gotcha",
+  "context",
+  "reference",
+] as const
+
+const PayloadLessonProposalSchema = z
+  .object({
+    agent: AgentNameSchema,
+    information: z.string().min(1).max(16_384),
+    tag: z.string().min(1).max(128),
+    category: z.enum(LESSON_CATEGORY_VALUES).optional(),
+  })
+  .strict()
+
 const ReviewDispatchPayloadSchema = z
   .object({
     command: z.enum(["review-council", "triage-issue", "address-feedback", "speckit-testreview"]),
@@ -840,10 +917,11 @@ const ReviewDispatchPayloadSchema = z
     change_profile: ChangeProfileSchema,
     plan_version: z.literal(1),
     plan: z.array(DispatchPlanEntrySchema).max(512),
-    runs: z.array(DispatchRunSchema).max(64),
+    runs: z.array(FinalizationRunSchema).max(64),
     coverage: CoverageSchema,
     findings: z.array(ConsolidatedFindingSchema).max(512),
     advisories: z.array(AdvisorySchema).max(512),
+    proposals: z.array(PayloadLessonProposalSchema).max(MAX_PAYLOAD_PROPOSALS).optional(),
     verdict: GenericVerdictSchema,
     verdict_reason: z.string().min(1).max(4096),
     run_counts: RunCountsSchema,
@@ -889,6 +967,43 @@ const FinalizeInputSchema = z
   .object({
     payload: ReviewDispatchPayloadSchema,
     provenance: ArtifactProvenanceSchema,
+  })
+  .strict()
+
+// Sanity bounds of the failure-record payload (RD-FR-066, design D3),
+// sized above the natural error-composition ceilings so no real failure is
+// refused: the structural ceiling is roughly 100 KiB of composed
+// formatValidationError text (one issue per invalid field path over a
+// schema of bounded arrays, each Zod message short), the semantic ceiling
+// is roughly 34,000 short strings (contributor/consolidated cross-checks
+// at the payload's 64-run/512-finding maxima). The bounds fail closed and
+// never truncate: a composition beyond them leaves no record (design D4
+// degradation) rather than a silently damaged one.
+const FAILURE_RECORD_ERROR_CHARS = 131_072
+const FAILURE_RECORD_ERROR_ENTRIES = 65_536
+
+/**
+ * Strict payload persisted inside a review-dispatch-failure record
+ * (RD-FR-066, design D3). `dispatch_correlation_id` is the dispatch's
+ * correlation id when one was UUID-usable at failure time and null
+ * otherwise (a structural rejection of a garbage input has no usable id);
+ * `command` and `mode` ride along only when the failed input knew them.
+ * `errors` carries the finalizer's complete array verbatim, bounded by the
+ * sanity limits above. `status` is fixed to "failed" — the record exists
+ * only on failure paths — and unknown keys are rejected so a tampered
+ * record fails closed when read back.
+ */
+export const ReviewDispatchFailurePayloadSchema = z
+  .object({
+    dispatch_correlation_id: UUIDSchema.nullable(),
+    command: ReviewDispatchPayloadSchema.shape.command.optional(),
+    mode: ReviewDispatchPayloadSchema.shape.mode.optional(),
+    status: z.literal("failed"),
+    operation_verdict: GenericVerdictSchema,
+    errors: z
+      .array(z.string().min(1).max(FAILURE_RECORD_ERROR_CHARS))
+      .min(1)
+      .max(FAILURE_RECORD_ERROR_ENTRIES),
   })
   .strict()
 
@@ -980,6 +1095,34 @@ export interface ReviewDispatchEnvelope {
   readonly payload: ReviewDispatchPayload
 }
 
+/** Payload of a review-dispatch-failure record (RD-FR-066, design D3). */
+export type ReviewDispatchFailurePayload = z.output<typeof ReviewDispatchFailurePayloadSchema>
+
+/**
+ * Hero Interface Contract envelope emitted for a failed finalization
+ * (RD-FR-066, design D3): the same shape as the success artifact's
+ * envelope, distinguished by `artifact_type` `review-dispatch-failure` so
+ * consumers that select `review-dispatch` envelopes keep ignoring it. The
+ * context carries best-effort provenance — a field the failed input could
+ * not supply reads as "unknown" — keyed by the record's own correlation
+ * id, which is the dispatch's when UUID-usable and freshly minted
+ * otherwise.
+ */
+export interface ReviewDispatchFailureEnvelope {
+  readonly hero: "the-divisor"
+  readonly version: "1.0.0"
+  readonly timestamp: string
+  readonly artifact_type: "review-dispatch-failure"
+  readonly schema_version: "1.0.0"
+  readonly context: {
+    readonly branch: string
+    readonly commit: string
+    readonly correlation_id: string
+    readonly workflow_id: string
+  }
+  readonly payload: ReviewDispatchFailurePayload
+}
+
 /** Canonical review-verdict version 2 decision projection returned for dual emission. */
 export interface ReviewVerdictDecisionData {
   readonly schema_version: "2.0.0"
@@ -1012,12 +1155,28 @@ export interface CalculatedAssessment {
   readonly review_verdict: ReviewVerdictDecisionData
 }
 
+/**
+ * Locator of the failure record persisted for a failed finalization
+ * (RD-FR-066, design D3). The record's correlation id is its own — a
+ * re-failed dispatch appends a new record rather than overwriting, so
+ * it can differ from the dispatch's — and the path points under
+ * `.uf/artifacts/dispatch/`. Null when no record was written: success
+ * results persist none, and a record write that itself failed must not
+ * mask the finalization failure (design D4).
+ */
+export interface FailureRecordReference {
+  readonly correlation_id: string
+  readonly path: string
+}
+
 /** Deterministic structured response returned by finalize_review_dispatch. */
 export interface FinalizeReviewDispatchResult {
   readonly status: "success" | "failed"
   readonly operation_verdict: GenericVerdict
   readonly correlation_id: string | null
   readonly artifact_path: string | null
+  /** Failure-record locator (RD-FR-066, design D3); null when none was written. */
+  readonly failure_record: FailureRecordReference | null
   readonly review_dispatch: ReviewDispatchEnvelope | null
   readonly review_verdict: ReviewVerdictDecisionData | null
   readonly calculated_assessment: CalculatedAssessment | null
@@ -1469,11 +1628,23 @@ interface ResolvedRun {
   readonly tier: Tier | null
   readonly model: string | null
   readonly variant: string | null
+  /** Internal profile-name provenance for advisory emission; never emitted into PlanEntry. */
+  readonly profileName: string | null
   readonly reasonCode: string
   readonly reason: string
   readonly validationErrors: readonly string[]
 }
 
+/**
+ * Resolves authoritative `runs.<mode>.<agent>` matrix entries. The profile
+ * form threads the named profile as internal provenance (consumed when the
+ * planner emits the D1 advisory for advisor destinations on the same
+ * profile); the direct-model form carries no profile. D2 (RD-FR-064): a
+ * profile with no configured model makes an explicit-source run
+ * unexecutable — explicit runs never inherit the host model — so the run
+ * records a validation error, its entry flips to skip, and the plan returns
+ * INCONCLUSIVE.
+ */
 function explicitRuns(matrix: ReviewMatrix, mode: MatrixMode, agent: string): ResolvedRun[] | null {
   const configured = matrix.runs?.[mode]?.[agent]
   if (configured === undefined) {
@@ -1486,6 +1657,7 @@ function explicitRuns(matrix: ReviewMatrix, mode: MatrixMode, agent: string): Re
         tier: null,
         model: run.model,
         variant: run.variant ?? null,
+        profileName: null,
         reasonCode: "explicit-run",
         reason: "authoritative matrix run",
         validationErrors: [],
@@ -1493,12 +1665,28 @@ function explicitRuns(matrix: ReviewMatrix, mode: MatrixMode, agent: string): Re
     }
     try {
       const resolved = profilePair(matrix, run.profile, run.variant)
+      // D2 (RD-FR-064): an explicit-source run never reaches host-model
+      // inheritance — execution rejects it with non-retryable
+      // tier_model_unavailable before any child session exists — so a
+      // model-less profile makes the run unexecutable as written. Fail
+      // closed at plan time rather than emit a doomed ready plan. This
+      // also closes the model-less non-tier variant, where execution
+      // would silently resolve the standard profile. Advisor and host
+      // destinations on the same profile are governed by RD-FR-063.
+      const unexecutable = resolved.model === null
       return {
         source: "explicit",
         ...resolved,
-        reasonCode: "explicit-run",
-        reason: "authoritative matrix run",
-        validationErrors: [],
+        profileName: run.profile,
+        reasonCode: unexecutable ? "invalid-explicit-run" : "explicit-run",
+        reason: unexecutable ? "explicit run failed validation" : "authoritative matrix run",
+        validationErrors: unexecutable
+          ? [
+              `profile "${run.profile}" has no model configured in the review matrix; ` +
+                `explicit-source runs cannot inherit the host model; ` +
+                `configure profiles.${run.profile}.model in .uf/review-matrix.yaml or the gitignored override`,
+            ]
+          : [],
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "invalid explicit run"
@@ -1507,6 +1695,7 @@ function explicitRuns(matrix: ReviewMatrix, mode: MatrixMode, agent: string): Re
         tier: null,
         model: null,
         variant: null,
+        profileName: null,
         reasonCode: "invalid-explicit-run",
         reason: "explicit run failed validation",
         validationErrors: [message],
@@ -1515,6 +1704,15 @@ function explicitRuns(matrix: ReviewMatrix, mode: MatrixMode, agent: string): Re
   })
 }
 
+/**
+ * Resolves an agent's runs by matrix precedence: explicit runs (validated
+ * per D2/RD-FR-064 in explicitRuns), advisor-selected profile runs, then the
+ * host fallback. Advisor runs thread the selected profile as internal
+ * provenance so the planner can emit the D1 advisory (RD-FR-063) when that
+ * profile has no model — the run stays includable and inherits the parent
+ * session's active model at execution (#693). Host-fallback runs carry no
+ * profile and emit no advisory.
+ */
 function baseRuns(matrix: ReviewMatrix, mode: MatrixMode, agent: string): ResolvedRun[] {
   const explicit = explicitRuns(matrix, mode, agent)
   if (explicit !== null) {
@@ -1527,6 +1725,7 @@ function baseRuns(matrix: ReviewMatrix, mode: MatrixMode, agent: string): Resolv
       {
         source: "advisor",
         ...resolved,
+        profileName: selectedProfile,
         reasonCode: "advisor-run",
         reason: `advisor selected ${selectedProfile} profile`,
         validationErrors: [],
@@ -1539,6 +1738,7 @@ function baseRuns(matrix: ReviewMatrix, mode: MatrixMode, agent: string): Resolv
       tier: null,
       model: null,
       variant: null,
+      profileName: null,
       reasonCode: "host-fallback",
       reason: "no explicit or advisor run; use the active host model",
       validationErrors: [],
@@ -1581,6 +1781,7 @@ function addAugmentation(
     {
       source: "advisor",
       ...resolved,
+      profileName: tier,
       reasonCode: "risk-augmentation",
       reason: `opt-in risk augmentation selected adjacent ${tier} profile`,
       validationErrors: [],
@@ -1622,6 +1823,7 @@ function fullPanelRuns(matrix: ReviewMatrix): ResolvedRun[] {
     {
       source: "advisor",
       ...resolved,
+      profileName: "standard",
       reasonCode: "full-panel",
       reason: "full panel forces one standard-profile run",
       validationErrors: [],
@@ -1903,6 +2105,10 @@ function buildPlan(
   const omissions: PlanOmission[] = []
   const errors: string[] = []
   const includedAgents = new Set<string>()
+  // D1 (RD-FR-063): advisor-destination agents per model-less profile,
+  // accumulated during Pass 2 so the planner emits one advisory per distinct
+  // profile after the pass completes.
+  const modellessAdvisorAgents = new Map<string, string[]>()
 
   // Pass 1: Evaluate relevance for all agents.
   const relevanceIncluded = new Map<string, string>() // agent → reason_code
@@ -1965,6 +2171,23 @@ function buildPlan(
     deduplicated.runs.forEach((run, index) => {
       if (run.validationErrors.length > 0) {
         errors.push(`${agent} run ${index + 1}: ${run.validationErrors.join("; ")}`)
+      }
+      // D1 (RD-FR-063): an advisor-destination include-entry on a model-less
+      // profile inherits the parent session's active model at execution
+      // (#693) — the sanctioned fallback — so it stays includable; track it
+      // per profile for the post-Pass-2 advisory. Host-source entries carry
+      // no profile; explicit-source entries fail closed in explicitRuns (D2).
+      if (
+        run.source === "advisor" &&
+        run.model === null &&
+        run.profileName !== null &&
+        run.validationErrors.length === 0
+      ) {
+        const affected = modellessAdvisorAgents.get(run.profileName) ?? []
+        if (!affected.includes(agent)) {
+          affected.push(agent)
+          modellessAdvisorAgents.set(run.profileName, affected)
+        }
       }
       entries.push({
         agent,
@@ -2031,6 +2254,23 @@ function buildPlan(
     })
   }
 
+  // D1 (RD-FR-063): one LOW advisory per distinct model-less profile behind
+  // advisor-destination include-entries, appended to the existing advisory
+  // block and sorted by profile name. The plan stays ready — the host-model
+  // inheritance fallback is sanctioned execution (#693) — so this is a
+  // signal, not a failure.
+  for (const profileName of [...modellessAdvisorAgents.keys()].sort()) {
+    const affectedAgents = modellessAdvisorAgents.get(profileName) ?? []
+    advisories.push({
+      severity: "LOW",
+      description:
+        `profile "${profileName}" has no model configured in the review matrix; ` +
+        `advisor-destination runs (${affectedAgents.join(", ")}) will inherit the ` +
+        `parent session's active model at execution (advisor host-model fallback, #693); ` +
+        `configure profiles.${profileName}.model in .uf/review-matrix.yaml or the gitignored override`,
+    })
+  }
+
   const orderedErrors = [...new Set(errors)].sort()
   const status = orderedErrors.length === 0 ? "ready" : "inconclusive"
   return {
@@ -2053,6 +2293,16 @@ function buildPlan(
 
 /**
  * Produces a deterministic dispatch plan from raw change inputs and injected policy dependencies.
+ *
+ * Tier resolvability: advisor-destination include-entries that resolve to a
+ * profile with no configured model keep `status: "ready"` — execution
+ * inherits the parent session's active model (#693) — and the plan appends
+ * one LOW advisory per distinct affected profile naming the agents, the
+ * fallback, and the remediation (RD-FR-063). Explicit `runs.<mode>.<agent>`
+ * profile runs against a model-less profile fail closed: a validation error
+ * names the profile, the entry is skipped, and the plan returns INCONCLUSIVE
+ * (RD-FR-064).
+ *
  * @param rawInput Untrusted tool input.
  * @param dependencies Policy I/O and YAML parser dependencies.
  * @returns A ready plan or a fail-closed INCONCLUSIVE plan.
@@ -2319,8 +2569,8 @@ function validateRunModel(run: DispatchRun, plan: ReviewDispatchPayload["plan"][
     if (run.requested_model !== null || run.provider !== null || run.model_id !== null || run.variant !== null) {
       errors.push(`host run ${run.run_id} must retain null requested model provenance`)
     }
-    if (run.status === "success" && (run.resolved_parent_model === null || run.resolved_parent_variant === null)) {
-      errors.push(`successful host run ${run.run_id} requires resolved parent model and variant`)
+    if (run.status === "success" && run.resolved_parent_model === null) {
+      errors.push(`successful host run ${run.run_id} requires resolved parent model`)
     }
     expectedModel = run.resolved_parent_model
   } else if (run.source === "advisor" && run.requested_model === null) {
@@ -2328,8 +2578,8 @@ function validateRunModel(run: DispatchRun, plan: ReviewDispatchPayload["plan"][
     if (run.provider !== null || run.model_id !== null || run.variant !== null) {
       errors.push(`host-resolved advisor run ${run.run_id} must retain null requested model provenance`)
     }
-    if (run.status === "success" && (run.resolved_parent_model === null || run.resolved_parent_variant === null)) {
-      errors.push(`successful host-resolved advisor run ${run.run_id} requires resolved parent model and variant`)
+    if (run.status === "success" && run.resolved_parent_model === null) {
+      errors.push(`successful host-resolved advisor run ${run.run_id} requires resolved parent model`)
     }
     expectedModel = run.resolved_parent_model
   } else {
@@ -2571,6 +2821,141 @@ function envelopeFor(
   }
 }
 
+/** Best-effort provenance context carried by a failure record's envelope. */
+interface FailureRecordProvenance {
+  readonly branch: string
+  readonly commit: string
+  readonly workflow_id: string
+}
+
+/**
+ * Projects one provenance field through its schema, copying it verbatim
+ * when it validates and degrading to "unknown" when it does not.
+ *
+ * @param schema The ArtifactProvenanceSchema field the value must satisfy.
+ * @param value Untrusted candidate value from the failed input.
+ * @returns The validated field, or "unknown" when unusable.
+ */
+function bestEffortProvenanceField(schema: z.ZodType<string>, value: unknown): string {
+  const parsed = schema.safeParse(value)
+  return parsed.success ? parsed.data : "unknown"
+}
+
+/**
+ * Best-effort provenance context for a failure record (RD-FR-066, design
+ * D3). Provenance resolves only from the failed finalization's own input —
+ * never from the local checkout or a mutable ref — so a record cannot
+ * misattribute a failure to a checkout that differs from the reviewed
+ * head. Each field is validated independently: a garbage input may still
+ * carry a usable branch, and a schema-valid input always projects whole.
+ *
+ * @param candidate Untrusted provenance candidate from the failed input.
+ * @returns Per-field provenance, "unknown" wherever unusable.
+ */
+function bestEffortFailureProvenance(candidate: unknown): FailureRecordProvenance {
+  const record = asRecord(candidate)
+  return {
+    branch: bestEffortProvenanceField(ArtifactProvenanceSchema.shape.branch, record.branch),
+    commit: bestEffortProvenanceField(ArtifactProvenanceSchema.shape.commit, record.commit),
+    workflow_id: bestEffortProvenanceField(ArtifactProvenanceSchema.shape.workflow_id, record.workflow_id),
+  }
+}
+
+/**
+ * Builds the Hero Interface Contract envelope for one failed finalization's
+ * record (RD-FR-066, design D3). Pure over its arguments (Constitution IV):
+ * the payload is validated against the strict failure-record schema — the
+ * sanity bounds fail closed and never truncate — the record correlation id
+ * must be a UUID, and the provenance context is projected best-effort from
+ * the failed input. Persistence (the design D3 atomic publish discipline)
+ * is the caller's concern.
+ *
+ * @param payload Failure facts: the dispatch correlation id (null when
+ *   unusable), command and mode when known, status, the operation verdict,
+ *   and the complete errors verbatim.
+ * @param provenance Untrusted provenance candidate from the failed input.
+ * @param recordCorrelationID The record's identity: the dispatch's
+ *   correlation id when UUID-usable, else a freshly minted one.
+ * @param timestamp Envelope timestamp (ISO 8601, from the injected clock).
+ * @returns The schema-valid review-dispatch-failure envelope.
+ * @throws When the payload exceeds its sanity bounds or the record
+ *   correlation id is not a UUID, so the caller degrades per design D4
+ *   (no record, failure_record null, one appended result error).
+ */
+export function buildFailureRecordEnvelope(
+  payload: ReviewDispatchFailurePayload,
+  provenance: unknown,
+  recordCorrelationID: string,
+  timestamp: string,
+): ReviewDispatchFailureEnvelope {
+  const parsedPayload = ReviewDispatchFailurePayloadSchema.safeParse(payload)
+  if (!parsedPayload.success) {
+    // Fail closed, never truncate (RD-FR-066): an over-bound composition
+    // throws so the caller writes no record (design D4 degradation) rather
+    // than a silently damaged one.
+    throw new Error(`validate failure record payload: ${formatValidationError(parsedPayload.error)}`)
+  }
+  const parsedCorrelationID = UUIDSchema.safeParse(recordCorrelationID)
+  if (!parsedCorrelationID.success) {
+    throw new Error("failure record correlation id is not a UUID")
+  }
+  const context = bestEffortFailureProvenance(provenance)
+  const validated = parsedPayload.data
+  return {
+    hero: "the-divisor",
+    version: PRODUCER_VERSION,
+    timestamp,
+    artifact_type: REVIEW_DISPATCH_FAILURE_ARTIFACT_TYPE,
+    schema_version: REVIEW_DISPATCH_FAILURE_SCHEMA_VERSION,
+    context: {
+      branch: context.branch,
+      commit: context.commit,
+      correlation_id: parsedCorrelationID.data,
+      workflow_id: context.workflow_id,
+    },
+    // Canonical key order — dispatch_correlation_id, command, mode, status,
+    // operation_verdict, errors — keeps the persisted record deterministic
+    // no matter how the caller assembled the payload; absent optional keys
+    // stay absent rather than serializing as explicit undefined.
+    payload: {
+      dispatch_correlation_id: validated.dispatch_correlation_id,
+      ...(validated.command === undefined ? {} : { command: validated.command }),
+      ...(validated.mode === undefined ? {} : { mode: validated.mode }),
+      status: validated.status,
+      operation_verdict: validated.operation_verdict,
+      errors: validated.errors,
+    },
+  }
+}
+
+/**
+ * Reorders a payload for persistence so a reader that only sees the head of
+ * the artifact still gets the decision, findings, advisories, and lesson
+ * proposals: plan and runs (which repeat every run's findings) come last.
+ * Values are unchanged; an absent proposals array stays absent (RD-FR-054).
+ */
+function artifactPayloadOrder(payload: ReviewDispatchPayload): ReviewDispatchPayload {
+  return {
+    command: payload.command,
+    mode: payload.mode,
+    full: payload.full,
+    input_context: payload.input_context,
+    change_profile: payload.change_profile,
+    plan_version: payload.plan_version,
+    correlation_id: payload.correlation_id,
+    verdict: payload.verdict,
+    verdict_reason: payload.verdict_reason,
+    run_counts: payload.run_counts,
+    coverage: payload.coverage,
+    workflow_result: payload.workflow_result,
+    findings: payload.findings,
+    advisories: payload.advisories,
+    ...(payload.proposals === undefined ? {} : { proposals: payload.proposals }),
+    plan: payload.plan,
+    runs: payload.runs,
+  }
+}
+
 async function persistEnvelope(
   input: z.output<typeof FinalizeInputSchema>,
   dependencies: FinalizationDependencies,
@@ -2580,7 +2965,7 @@ async function persistEnvelope(
   await dependencies.mkdir(directory, { recursive: true, mode: 0o750 })
   await dependencies.chmod(directory, 0o750)
   const correlationID = input.payload.correlation_id
-  const payload = { ...input.payload, correlation_id: correlationID }
+  const payload = artifactPayloadOrder({ ...input.payload, correlation_id: correlationID })
   const timestamp = dependencies.now().toISOString()
   const envelope = envelopeFor(payload, input.provenance, timestamp)
   const targetPath = join(directory, `${correlationID}.json`)
@@ -2627,12 +3012,224 @@ async function persistEnvelope(
   }
 }
 
-function structuralFailure(error: z.ZodError): FinalizeReviewDispatchResult {
+/**
+ * Persists one failed finalization's record (RD-FR-066, design D3) to
+ * `.uf/artifacts/dispatch/<record-correlation-id>.failure.json` with the
+ * same atomic discipline as a success artifact: 0o750 directory,
+ * exclusive-create temporary file, rename-by-link publication, cleanup on
+ * failure, and an `EEXIST` collision retry bounded by the shared
+ * correlation-attempt budget that mints a fresh record correlation id — a
+ * re-failed dispatch appends a new record rather than overwriting the old
+ * one, so both stay discoverable from their respective compact results.
+ * The returned locator carries the final record's id, which differs from
+ * the requested one exactly when a collision forced a re-mint. Fails
+ * closed (throws) when the record cannot be built or written — never
+ * truncates; wrapping that throw so it cannot mask the finalization
+ * failure it records is the caller's concern (design D4).
+ *
+ * @param payload Failure facts, validated against the strict
+ *   failure-record schema by the envelope builder.
+ * @param provenance Untrusted provenance candidate from the failed input.
+ * @param recordCorrelationID The record's identity: the dispatch's
+ *   correlation id when UUID-usable, else a freshly minted one.
+ * @param dependencies Injectable filesystem, clock, and UUID operations.
+ * @returns Locator of the published record for the result's failure_record.
+ */
+export async function persistFailureRecord(
+  payload: ReviewDispatchFailurePayload,
+  provenance: unknown,
+  recordCorrelationID: string,
+  dependencies: FinalizationDependencies,
+): Promise<FailureRecordReference> {
+  return writeFailureRecord(payload, provenance, recordCorrelationID, dependencies, 0)
+}
+
+// One atomic publication attempt. The collision attempt bounds the EEXIST
+// retry loop to the same MAX_CORRELATION_ATTEMPTS budget as success
+// artifacts (RD-FR-066: "the same bounded retry count"); it stays internal
+// so the exported contract cannot shrink the budget.
+async function writeFailureRecord(
+  payload: ReviewDispatchFailurePayload,
+  provenance: unknown,
+  recordCorrelationID: string,
+  dependencies: FinalizationDependencies,
+  collisionAttempt: number,
+): Promise<FailureRecordReference> {
+  // The envelope is validated fail-closed before the first filesystem
+  // effect, so an over-bound payload (design D3) leaves not even a freshly
+  // created artifact directory behind — unlike persistEnvelope, whose
+  // input is already schema-validated upstream of the mkdir.
+  const envelope = buildFailureRecordEnvelope(
+    payload,
+    provenance,
+    recordCorrelationID,
+    dependencies.now().toISOString(),
+  )
+  const directory = resolve(dependencies.projectRoot, DISPATCH_ARTIFACT_DIRECTORY)
+  await dependencies.mkdir(directory, { recursive: true, mode: 0o750 })
+  await dependencies.chmod(directory, 0o750)
+  const targetPath = join(directory, `${recordCorrelationID}.failure.json`)
+  let temporaryPath: string | null = null
+  let handle: ArtifactFileHandle | null = null
+  let published = false
+  try {
+    temporaryPath = join(directory, `.${recordCorrelationID}.${nextUUID(dependencies)}.tmp`)
+    handle = await dependencies.open(temporaryPath, "wx", 0o600)
+    await handle.writeFile(`${JSON.stringify(envelope, null, 2)}\n`, "utf8")
+    await handle.sync()
+    await handle.close()
+    handle = null
+    await dependencies.chmod(temporaryPath, 0o600)
+    await dependencies.link(temporaryPath, targetPath)
+    published = true
+    await dependencies.unlink(temporaryPath)
+    temporaryPath = null
+    return { correlation_id: recordCorrelationID, path: targetPath }
+  } catch (error: unknown) {
+    if (handle !== null) {
+      try {
+        await handle.close()
+      } catch {
+        // The original write failure remains the actionable persistence error.
+      }
+    }
+    try {
+      await cleanupTemporary(temporaryPath, dependencies)
+    } catch (cleanupError: unknown) {
+      throw new Error(`${errorMessage(error)}; temporary cleanup failed: ${errorMessage(cleanupError)}`)
+    }
+    if (published) {
+      return { correlation_id: recordCorrelationID, path: targetPath }
+    }
+    if (isErrno(error, "EEXIST") && collisionAttempt + 1 < MAX_CORRELATION_ATTEMPTS) {
+      // The collision mints a fresh record correlation id while the
+      // payload's dispatch identity is unchanged, so the appended record
+      // never overwrites the colliding one (design D3).
+      return writeFailureRecord(payload, provenance, nextUUID(dependencies), dependencies, collisionAttempt + 1)
+    }
+    throw error
+  }
+}
+
+/** A finalization result on one of the three failure paths (RD-FR-066). */
+type FailedFinalizationResult = FinalizeReviewDispatchResult & { readonly status: "failed" }
+
+/**
+ * Identity and provenance facts a failure record carries (RD-FR-066, design
+ * D3): the dispatch's correlation id when one was UUID-usable at failure
+ * time (null otherwise, so the record mints a fresh one), command and mode
+ * when the failed input knew them, and the untrusted provenance candidate
+ * the envelope builder projects best-effort per field.
+ */
+interface FailureRecordIdentity {
+  readonly dispatchCorrelationID: string | null
+  readonly command: ReviewDispatchPayload["command"] | undefined
+  readonly mode: ReviewDispatchPayload["mode"] | undefined
+  readonly provenance: unknown
+}
+
+/**
+ * Failure-record identity for a structurally rejected input (RD-FR-066,
+ * design D3): every fact is best-effort because the input never passed
+ * schema validation. A garbage input has no usable correlation id (null, so
+ * the record is keyed by a freshly minted one) and command and mode ride
+ * along only when the raw input carried schema-valid values — a bogus value
+ * is dropped rather than carried, because the record's payload bounds fail
+ * closed and one bad optional field must not cost the whole record.
+ *
+ * @param rawInput Untrusted finalization input the schema rejected.
+ * @returns Best-effort identity facts for the record.
+ */
+function structuralFailureIdentity(rawInput: unknown): FailureRecordIdentity {
+  const input = asRecord(rawInput)
+  const payload = asRecord(input.payload)
+  const correlationID = UUIDSchema.safeParse(payload.correlation_id)
+  const command = ReviewDispatchPayloadSchema.shape.command.safeParse(payload.command)
+  const mode = ReviewDispatchPayloadSchema.shape.mode.safeParse(payload.mode)
+  return {
+    dispatchCorrelationID: correlationID.success ? correlationID.data : null,
+    command: command.success ? command.data : undefined,
+    mode: mode.success ? mode.data : undefined,
+    provenance: input.provenance,
+  }
+}
+
+/**
+ * Failure-record identity for an input that passed schema validation — the
+ * semantic-rejection and persistence-failure paths (RD-FR-066, design D3):
+ * the dispatch correlation id is UUID-usable by construction, and command,
+ * mode, and provenance are all known from the validated input.
+ *
+ * @param input Schema-validated finalization input.
+ * @returns Complete identity facts for the record.
+ */
+function validatedFailureIdentity(input: z.output<typeof FinalizeInputSchema>): FailureRecordIdentity {
+  return {
+    dispatchCorrelationID: input.payload.correlation_id,
+    command: input.payload.command,
+    mode: input.payload.mode,
+    provenance: input.provenance,
+  }
+}
+
+/**
+ * Folds the best-effort failure-record write into one failed finalization
+ * result (RD-FR-066, designs D3 and D4). The record is keyed by the
+ * dispatch's correlation id when UUID-usable and a freshly minted id
+ * otherwise — minting inside the try keeps even a garbage injected uuid on
+ * the degradation path. A record-write failure MUST NOT mask the
+ * finalization failure it records (design D4): the result keeps
+ * `failure_record` null and gains exactly one appended
+ * `persist failure record: <message>` error, which the compact projection's
+ * byte budget treats like any other entry.
+ *
+ * @param failure The failed finalization result awaiting its record.
+ * @param identity Best-effort facts the record payload carries.
+ * @param dependencies Injectable filesystem, clock, and UUID operations.
+ * @returns The completed failure result with the record locator or the
+ *   record-write degradation folded in.
+ */
+async function completeFailedFinalization(
+  failure: FailedFinalizationResult,
+  identity: FailureRecordIdentity,
+  dependencies: FinalizationDependencies,
+): Promise<FinalizeReviewDispatchResult> {
+  try {
+    const recordCorrelationID = identity.dispatchCorrelationID ?? nextUUID(dependencies)
+    const reference = await persistFailureRecord(
+      {
+        dispatch_correlation_id: identity.dispatchCorrelationID,
+        ...(identity.command === undefined ? {} : { command: identity.command }),
+        ...(identity.mode === undefined ? {} : { mode: identity.mode }),
+        status: "failed",
+        operation_verdict: failure.operation_verdict,
+        errors: [...failure.errors],
+      },
+      identity.provenance,
+      recordCorrelationID,
+      dependencies,
+    )
+    return { ...failure, failure_record: reference }
+  } catch (error: unknown) {
+    return {
+      ...failure,
+      failure_record: null,
+      errors: [...failure.errors, `persist failure record: ${errorMessage(error)}`],
+    }
+  }
+}
+
+/**
+ * Builds the base result for an input rejected at schema validation; the
+ * best-effort failure record (RD-FR-066) is folded in by the caller.
+ */
+function structuralFailure(error: z.ZodError): FailedFinalizationResult {
   return {
     status: "failed",
     operation_verdict: "INCONCLUSIVE",
     correlation_id: null,
     artifact_path: null,
+    failure_record: null,
     review_dispatch: null,
     review_verdict: null,
     calculated_assessment: null,
@@ -2642,6 +3239,10 @@ function structuralFailure(error: z.ZodError): FinalizeReviewDispatchResult {
 
 /**
  * Closed-validates, semantically verifies, and atomically persists one finalized review dispatch.
+ * On every failure path — structural rejection, semantic rejection, or artifact
+ * persistence failure — it best-effort persists a failure record recoverable
+ * through the result's `failure_record` locator (RD-FR-066); a record-write
+ * failure degrades without masking the finalization failure (design D4).
  * @param rawInput Untrusted finalization input containing payload and envelope provenance.
  * @param dependencies Injectable filesystem, clock, UUID, and project-root operations.
  * @returns Structured dispatch and canonical decision output, or a fail-closed result.
@@ -2652,20 +3253,33 @@ export async function finalizeReviewDispatch(
 ): Promise<FinalizeReviewDispatchResult> {
   const parsed = FinalizeInputSchema.safeParse(rawInput)
   if (!parsed.success) {
-    return structuralFailure(parsed.error)
+    // A structural rejection of a garbage input has no schema-usable
+    // correlation id, so the record identity is extracted best-effort from
+    // the raw input and the record mints a fresh id when none is usable
+    // (design D3).
+    return completeFailedFinalization(
+      structuralFailure(parsed.error),
+      structuralFailureIdentity(rawInput),
+      dependencies,
+    )
   }
   const semanticErrors = validatePayloadSemantics(parsed.data.payload, parsed.data.provenance)
   if (semanticErrors.length > 0) {
-    return {
-      status: "failed",
-      operation_verdict: "INCONCLUSIVE",
-      correlation_id: parsed.data.payload.correlation_id,
-      artifact_path: null,
-      review_dispatch: null,
-      review_verdict: null,
-      calculated_assessment: null,
-      errors: semanticErrors,
-    }
+    return completeFailedFinalization(
+      {
+        status: "failed",
+        operation_verdict: "INCONCLUSIVE",
+        correlation_id: parsed.data.payload.correlation_id,
+        artifact_path: null,
+        failure_record: null,
+        review_dispatch: null,
+        review_verdict: null,
+        calculated_assessment: null,
+        errors: semanticErrors,
+      },
+      validatedFailureIdentity(parsed.data),
+      dependencies,
+    )
   }
 
   const reviewVerdict = projectReviewVerdict(parsed.data.payload)
@@ -2677,6 +3291,7 @@ export async function finalizeReviewDispatch(
       operation_verdict: persisted.envelope.payload.verdict,
       correlation_id: persisted.envelope.payload.correlation_id,
       artifact_path: persisted.path,
+      failure_record: null,
       review_dispatch: persisted.envelope,
       review_verdict: persistedVerdict,
       calculated_assessment: {
@@ -2687,20 +3302,28 @@ export async function finalizeReviewDispatch(
       errors: [],
     }
   } catch (error: unknown) {
-    return {
-      status: "failed",
-      operation_verdict: "INCONCLUSIVE",
-      correlation_id: parsed.data.payload.correlation_id,
-      artifact_path: null,
-      review_dispatch: null,
-      review_verdict: null,
-      calculated_assessment: {
-        authoritative: false,
-        payload: parsed.data.payload,
-        review_verdict: reviewVerdict,
+    return completeFailedFinalization(
+      {
+        status: "failed",
+        operation_verdict: "INCONCLUSIVE",
+        correlation_id: parsed.data.payload.correlation_id,
+        artifact_path: null,
+        failure_record: null,
+        review_dispatch: null,
+        review_verdict: null,
+        calculated_assessment: {
+          authoritative: false,
+          payload: parsed.data.payload,
+          review_verdict: reviewVerdict,
+        },
+        errors: [`persist review dispatch artifact: ${errorMessage(error)}`],
       },
-      errors: [`persist review dispatch artifact: ${errorMessage(error)}`],
-    }
+      // The same environmental cause may fail both writes (disk full,
+      // design D4); the record attempt then degrades without masking the
+      // persistence failure it was going to record.
+      validatedFailureIdentity(parsed.data),
+      dependencies,
+    )
   }
 }
 
@@ -2775,7 +3398,12 @@ export function createFinalizeReviewDispatchTool(
       provenance: ArtifactProvenanceSchema,
     },
     async execute(args): Promise<string> {
-      return `${JSON.stringify(await finalizeReviewDispatch(args, dependencies), null, 2)}\n`
+      // The compact finalization result identifies the persisted artifact and
+      // carries the outcome (RD-FR-051); it never echoes the artifact body.
+      const result = await finalizeReviewDispatch(args, dependencies)
+      return `${JSON.stringify(
+        buildCompactFinalization(result, args.payload.run_counts, [], []),
+      )}\n`
     },
   })
 }
@@ -2992,8 +3620,10 @@ export function shouldReclassifyToSuccess(
  *
  * model and tier are mutually exclusive and carry the dispatch_agent_run
  * semantics: model is a direct provider/model-id bypass, tier resolves
- * through the review matrix, and an advisor-source run whose tier profile
- * has no model inherits the host session model.
+ * through the review matrix, a host-source run resolves the parent session
+ * model without consulting the matrix (the tier ?? "standard" default is
+ * unreachable for host entries, RD-FR-037), and an advisor-source run whose
+ * tier profile has no model inherits the host session model.
  */
 export interface ExecuteDispatchRunOptions {
   /** Manifest-declared divisor-* review agent to execute. */
@@ -3025,9 +3655,29 @@ export interface ExecuteDispatchRunOptions {
   readonly manifestMode?: boolean
   /** Run source from the dispatch plan. Defaults to "explicit". */
   readonly source?: Source
-  /** Direct provider/model-id bypass. Mutually exclusive with tier. */
+  /**
+   * Direct provider/model-id bypass. Mutually exclusive with tier. Takes
+   * precedence over source-based resolution: a source "host" entry carrying
+   * a model executes the direct bypass unchanged (design D3). Absent for a
+   * host-source entry, host-model resolution runs instead and its failures
+   * classify per RD-FR-038 — structural causes surface non-retryable
+   * host_model_structural with the remediation preserved, transient
+   * failures keep retryable host_model_unavailable — and retryable on
+   * those pre-execution early exits means caller re-invocation only.
+   */
   readonly model?: string
-  /** Review matrix profile tier. Mutually exclusive with model. */
+  /**
+   * Review matrix profile tier. Mutually exclusive with model. Unreachable
+   * for host-source entries: the planner emits them with null tier ("use the
+   * active host model"), and the core resolves the parent session model
+   * instead of defaulting to the standard profile (RD-FR-037). An advisor
+   * run whose tier profile has no model inherits the host session model
+   * through the same classified resolution (RD-FR-038): structural causes
+   * surface non-retryable host_model_structural with the remediation
+   * preserved, transient failures keep retryable host_model_unavailable,
+   * and retryable on those pre-execution early exits means caller
+   * re-invocation only.
+   */
   readonly tier?: Tier
   /** Direct-model runtime variant. */
   readonly variant?: string
@@ -3147,19 +3797,30 @@ export interface ExecuteDispatchRunOutcome {
  * parent session.
  *
  * Responsibilities, in order: load review policies and validate the agent
- * against the reviewer manifest; resolve the model (direct bypass, review
- * matrix tier, or host-model inheritance for advisor runs); execute the
+ * against the reviewer manifest; resolve the model (direct bypass, host-model
+ * resolution for host-source entries — which never consult the matrix, so the
+ * tier default is unreachable for them — review matrix tier, or host-model
+ * inheritance for advisor runs); execute the
  * child session via the shared executeAgentSession executor; harvest
  * submitted findings and lesson proposals; apply the RD-FR-026
  * post-submission reclassification; and persist the run file to the
  * dispatch session directory atomically (best effort for
  * dispatch_agent_run — the outcome's `persisted` flag records whether
  * the write reached disk). Every step is behavior-identical
- * to the pre-extraction dispatchAgentRun body. Pre-execution failures
+ * to the pre-extraction dispatchAgentRun body except the host-resolution
+ * failure classification (RD-FR-038). Pre-execution failures
  * (policy_load_failed, unknown_agent, tier_model_unavailable,
- * host_model_unavailable, cancelled) return an outcome whose runData is
- * null and whose result carries the same error codes the tool has always
- * surfaced; no run file is written for them.
+ * host_model_structural, host_model_unavailable, cancelled) return an
+ * outcome whose runData is null; no run file is written for them.
+ * Host-resolution failures split by cause: structural failures — the
+ * parent message is not an assistant message, carries no model identity,
+ * or carries an invalid variant — surface host_model_structural with
+ * retryable false and the remediation preserved in the message; transient
+ * lookup failures keep retryable host_model_unavailable. On these
+ * pre-execution early exits retryable means caller re-invocation only —
+ * no run file exists for redispatch_failed_runs (DR-FR-002) to target,
+ * and a session whose included plan entry early-exited consolidates
+ * fail-closed ("included plan entry has no run").
  *
  * @param options Resolved run inputs: agent, prompt, model resolution, sequence, correlation id.
  * @param context Calling tool context used for the cancellation signal and host model resolution.
@@ -3210,7 +3871,7 @@ export async function executeDispatchRun(
     ))
   }
 
-  // Resolve model: tier-based via review matrix or direct bypass.
+  // Resolve model: direct bypass, host-source resolution, or tier-based via review matrix.
   let selectedModel: ModelIdentity
   let selectedVariant: string | undefined
   let requestedModelLabel: string | null
@@ -3221,6 +3882,30 @@ export async function executeDispatchRun(
     selectedModel = directModelIdentity(options.model)
     selectedVariant = options.variant
     requestedModelLabel = options.model
+  } else if (source === "host") {
+    // Host-source resolution (RD-FR-037, design D1 of host-fallback-provenance,
+    // issue #901): planner host-fallback entries carry null model and null tier
+    // — "use the active host model" — so matrix profiles MUST NOT be consulted
+    // and the tier ?? "standard" default below stays unreachable for host
+    // entries. Mirrors the advisor branch (#693): shared resolveHostModel
+    // lookup, host-run provenance via hostResolvedParent, and early exits
+    // classified per RD-FR-038 (structural / transient / cancelled) on
+    // failure.
+    try {
+      const hostResult = await resolveHostModel(
+        { client: deps.client, sessionID: context.sessionID, messageID: context.messageID, directory: deps.directory },
+        context.abort,
+      )
+      selectedModel = hostResult.identity
+      selectedVariant = hostResult.variant
+      requestedModelLabel = null
+      hostResolvedParent = {
+        model: `${hostResult.identity.providerID}/${hostResult.identity.modelID}`,
+        variant: hostResult.variant ?? null,
+      }
+    } catch (error: unknown) {
+      return earlyExit(hostResolutionFailureResult(error, context.abort.aborted, earlyProvenance()))
+    }
   } else {
     // Tier-based resolution via review matrix.
     const tier = options.tier ?? "standard"
@@ -3241,15 +3926,7 @@ export async function executeDispatchRun(
             variant: hostResult.variant ?? null,
           }
         } catch (error: unknown) {
-          if (context.abort.aborted) {
-            return earlyExit(failedResult(earlyProvenance(tier), "cancelled", "dispatch cancelled", false))
-          }
-          return earlyExit(failedResult(
-            earlyProvenance(tier),
-            "host_model_unavailable",
-            sanitizeInvocationError(errorText(error)),
-            true,
-          ))
+          return earlyExit(hostResolutionFailureResult(error, context.abort.aborted, earlyProvenance(tier)))
         }
       } else {
         return earlyExit(failedResult(
@@ -3360,6 +4037,14 @@ export async function executeDispatchRun(
     findings: harvestedFindings,
     proposals: harvestedProposals,
     text: result.text,
+    // Finish-reason provenance (RD-FR-060): the executor reports it on
+    // success results (null when unreported; failure results never carry
+    // it). Persisted so consolidate_dispatch can re-derive the
+    // incomplete-response rule (RD-FR-059) for length-terminated runs
+    // with truncated text. Run-file only — the consolidate_dispatch
+    // dispatchRuns mapping deliberately omits it (DispatchRunSchema is
+    // strict). Older run files that predate the field remain valid.
+    finish_reason: result.finish_reason ?? null,
     read_only: options.readOnly,
     // Full resolved prompt persisted verbatim at dispatch time (design D4,
     // task 5.1 of fix-review-dispatch-recovery): redispatch_failed_runs
@@ -3371,8 +4056,22 @@ export async function executeDispatchRun(
     // non-reclassified run — populated only at the RD-FR-026 hook above.
     post_submission_abort: postSubmissionAbort,
     // Timeout provenance (RD-FR-030, design D5 of derive-per-run-timeout):
-    // key absent when the calling tool did not resolve a timeout.
-    timeout: options.timeoutProvenance,
+    // key absent when the calling tool did not resolve a timeout. When the
+    // run reached the executor and produced timeout details, the executor
+    // outcome is recorded alongside the derived provenance: the derived
+    // effective_ms can overstate the applied limit after the delegation
+    // budget clamp, so executor_effective_ms / executor_budget_clamped are
+    // the authoritative applied values (run-file audit only — the
+    // consolidate_dispatch dispatchRuns mapping deliberately omits them;
+    // readers such as dispatch_status prefer them).
+    timeout:
+      options.timeoutProvenance !== undefined && result.timeout !== undefined
+        ? {
+            ...options.timeoutProvenance,
+            executor_effective_ms: result.timeout.effective_ms,
+            executor_budget_clamped: result.timeout.budget_clamped,
+          }
+        : options.timeoutProvenance,
     // Delivery-mode work signal (RD-FR-036): false for inline-mode runs
     // dispatched through the aggregate tools (the signal is a resolved
     // boolean from build_review_prompts), absent for direct
@@ -3410,6 +4109,44 @@ export async function executeDispatchRun(
     correlation_id: options.correlationId,
     run_id: runId,
   }
+}
+
+/**
+ * Classify a resolveHostModel() failure into the pre-execution early-exit
+ * result (RD-FR-038, design D1 of split-host-resolution-failure-classes).
+ * One shared mapping keeps the host-source branch (RD-FR-037) and the
+ * advisor fallback (#693) symmetric by construction: an abort signal keeps
+ * the cancelled code and takes precedence over classification;
+ * StructuralHostModelError causes — the parent message is not an assistant
+ * message, carries no model identity, or carries an invalid variant —
+ * surface the non-retryable host_model_structural class with the
+ * remediation preserved in the uf_delegate_command message shape; every
+ * other failure keeps the retryable host_model_unavailable class.
+ * failedResult() applies the single sanitizeInvocationError() pass, so
+ * raw message text is passed here.
+ *
+ * @param error The failure resolveHostModel() threw.
+ * @param aborted Whether the calling context's abort signal fired.
+ * @param provenance Branch-specific provenance (host: no tier; advisor: the tier label).
+ * @returns The classified failed result for the early exit.
+ */
+function hostResolutionFailureResult(
+  error: unknown,
+  aborted: boolean,
+  provenance: InvocationProvenance,
+): InvokeAgentResult {
+  if (aborted) {
+    return failedResult(provenance, "cancelled", "dispatch cancelled", false)
+  }
+  if (error instanceof StructuralHostModelError) {
+    return failedResult(
+      provenance,
+      "host_model_structural",
+      `${error.message}. Remediation: ${error.remediation}; retrying will not fix this.`,
+      false,
+    )
+  }
+  return failedResult(provenance, "host_model_unavailable", errorText(error), true)
 }
 
 /**
@@ -3606,7 +4343,7 @@ const SubmitLessonProposalInputSchema = z
     information: z.string().min(1).max(16_384).describe("The learning text to store."),
     tag: z.string().min(1).max(128).describe("Required topic tag (e.g. authentication, review-dispatch)."),
     category: z
-      .enum(["decision", "pattern", "gotcha", "context", "reference"])
+      .enum(LESSON_CATEGORY_VALUES)
       .optional()
       .describe("Optional category for the learning."),
   })
@@ -3677,13 +4414,40 @@ async function readRunFiles(dir: string): Promise<ReadonlyArray<RunFileReadResul
 
 const ConsolidateDispatchInputSchema = z
   .object({
-    provenance: ArtifactProvenanceSchema.optional(),
+    provenance: ArtifactProvenanceSchema.optional().describe(
+      "When provided, consolidate_dispatch calls finalize_review_dispatch internally " +
+        "and returns the compact finalization result. Requires branch (e.g. opsx/foo), " +
+        "commit (40-char SHA), and workflow_id (e.g. uf.review-council). " +
+        "Must not be combined with detail: \"summary\".",
+    ),
     // Optional explicit dispatch correlation_id (design D3, task 4.1): takes
     // precedence over the session map so consolidation can run standalone from
     // a fresh parent session (cross-session recovery, issue #751).
-    correlation_id: UUIDSchema.optional(),
+    correlation_id: UUIDSchema.optional().describe(
+      "Optional explicit dispatch correlation_id; takes precedence over the " +
+        "session's automatically resolved one. Use it to consolidate a dispatch " +
+        "started by a different (e.g. restarted) parent session.",
+    ),
+    // Retrieval shape (RD-FR-049): "summary" returns the bounded
+    // observability-first projection used by command retrieval; "full" (the
+    // default) preserves the complete payload for finalization.
+    detail: z.enum(["summary", "full"]).optional().describe(
+      "Retrieval shape without provenance: \"full\" (default) returns the complete " +
+        "finalization-ready payload; \"summary\" returns the bounded observability-first " +
+        "projection. \"summary\" is only valid without provenance.",
+    ),
   })
   .strict()
+  .superRefine((input, ctx) => {
+    // RD-FR-049: summary is retrieval-only; it must never reach finalization.
+    if (input.detail === "summary" && input.provenance !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["detail"],
+        message: "detail: summary is only valid without provenance",
+      })
+    }
+  })
 
 /**
  * Normalize a file path for deduplication: lowercase, forward-slash, trim whitespace.
@@ -3850,6 +4614,148 @@ function workflowVerdictValue(
 }
 
 /**
+ * Kind-native non-approving value an incomplete run's workflow_verdict is
+ * forced to (RD-FR-059): `REQUEST CHANGES` for council and test-review,
+ * `NEEDS-CLARIFICATION` for triage, `AUTHOR-DECIDES` for feedback. Every
+ * value is inside allowedRunVerdicts() for its kind, so a forced verdict
+ * passes finalizer validation by construction, and a forced vote can
+ * never produce an approving successfulPersonaVotes entry.
+ *
+ * @param kind Workflow kind derived from the dispatch command.
+ * @returns The kind-native non-approving verdict an incomplete run carries.
+ */
+function forcedNonApprovingVerdict(kind: ReturnType<typeof workflowKind>): NonNullable<DispatchRun["workflow_verdict"]> {
+  switch (kind) {
+    case "triage":
+      return "NEEDS-CLARIFICATION"
+    case "feedback":
+      return "AUTHOR-DECIDES"
+    default:
+      return "REQUEST CHANGES"
+  }
+}
+
+/**
+ * Outcome of re-deriving the incomplete-response rule (RD-FR-059, design
+ * D2) for one persisted run at dispatch finalization.
+ */
+export interface IncompleteResponseClassification {
+  /** Run with status/error adjusted per RD-FR-059; the original when unaffected. */
+  readonly run: PersistedRunData
+  /**
+   * True when the run's workflow_verdict must be forced to the
+   * kind-native non-approving value (incomplete + accepted submissions).
+   */
+  readonly verdictForced: boolean
+  /**
+   * True when a success run with zero accepted submissions was
+   * reclassified to a retryable child_empty_response failure.
+   */
+  readonly reclassifiedToFailed: boolean
+}
+
+/**
+ * Whether a persisted run's final response is incomplete per RD-FR-059:
+ * final text whose trimmed length is zero, or a final response terminated
+ * by finish reason `length` (RD-FR-060 provenance persisted by
+ * executeDispatchRun). Post-submission aborts reclassified per RD-FR-026
+ * carry non-empty text and no finish reason, so they are never incomplete
+ * and keep their findings-derived verdict.
+ *
+ * Pure predicate over its argument (Constitution IV — Testability).
+ *
+ * @param run Persisted run record to evaluate.
+ * @returns True exactly when the run's final response is incomplete.
+ */
+export function isIncompleteFinalResponse(run: PersistedRunData): boolean {
+  return run.text.trim().length === 0 || run.finish_reason === "length"
+}
+
+/**
+ * Synthesize the retryable child_empty_response error a reclassified
+ * incomplete run carries (RD-FR-059/RD-FR-060): names the incomplete
+ * condition(s) and the model when available, so operators can see why
+ * the reviewer was failed without re-parsing the run file.
+ *
+ * @param run Incomplete run being reclassified to failed.
+ * @returns A schema-valid run error (code, message, retryable).
+ */
+function incompleteResponseError(run: PersistedRunData): z.infer<typeof RunErrorSchema> {
+  const conditions: string[] = []
+  if (run.text.trim().length === 0) {
+    conditions.push("empty final text")
+  }
+  if (run.finish_reason === "length") {
+    conditions.push("finish reason length")
+  }
+  const model = run.reported_model ?? run.model_id
+  const modelDetail = model === null ? "" : `; model=${model}`
+  return {
+    code: "child_empty_response",
+    message: `reviewer final response incomplete (${conditions.join(", ")})${modelDetail}`,
+    retryable: true,
+  }
+}
+
+/**
+ * Re-derive the incomplete-response rule for one persisted run at
+ * dispatch finalization (RD-FR-059, design D2 — defense-in-depth for
+ * executor-bypassing callers and length-terminated runs the executor
+ * returned as success):
+ *
+ * 1. `success` + incomplete + zero accepted submissions → reclassify
+ *    `failed` with a retryable child_empty_response error and
+ *    workflow_verdict null; the run is excluded from
+ *    successfulPersonaVotes and counted in run_counts.failed.
+ * 2. incomplete + accepted submissions → RD-FR-026 precedence: the run
+ *    is classified `success` (kept, or restored when the executor failed
+ *    it as child_empty_response — the executor cannot see harvested
+ *    submissions), its submissions contribute, and its verdict is forced
+ *    to the kind-native non-approving value.
+ * 3. Every other run — including post-submission aborts already
+ *    reclassified by executeDispatchRun (RD-FR-026) — passes through
+ *    unchanged: non-empty text and no finish reason mean those aborts
+ *    are never incomplete here.
+ *
+ * Accepted submissions are the run file's harvested findings and
+ * proposals — the same measure shouldReclassifyToSuccess applies at the
+ * executor boundary; submission schema validation runs later, downstream
+ * of this classification.
+ *
+ * Pure function over its argument (Constitution IV — Testability).
+ *
+ * @param run Persisted run record to classify.
+ * @returns The classified run plus the flags the finalization path needs.
+ */
+export function classifyIncompleteResponse(run: PersistedRunData): IncompleteResponseClassification {
+  const incomplete = isIncompleteFinalResponse(run)
+  const hasSubmissions = run.findings.length > 0 || run.proposals.length > 0
+
+  if (run.status === "success" && incomplete && !hasSubmissions) {
+    return {
+      run: {
+        ...run,
+        status: "failed",
+        error: incompleteResponseError(run),
+        workflow_verdict: null,
+      },
+      verdictForced: false,
+      reclassifiedToFailed: true,
+    }
+  }
+
+  if (incomplete && hasSubmissions && (run.status === "success" || run.error?.code === "child_empty_response")) {
+    return {
+      run: { ...run, status: "success", error: null, workflow_verdict: null },
+      verdictForced: true,
+      reclassifiedToFailed: false,
+    }
+  }
+
+  return { run, verdictForced: false, reclassifiedToFailed: false }
+}
+
+/**
  * Create advisories from MEDIUM and LOW findings for APPROVE WITH ADVISORIES verdicts.
  */
 function buildAdvisories(
@@ -3862,6 +4768,535 @@ function buildAdvisories(
       description: f.description,
       run_ids: f.run_ids,
     }))
+}
+
+/**
+ * Bounded retrieval limits (RD-FR-049). Summary entries are slim projections;
+ * complete findings and advisories remain in the persisted artifact written by
+ * finalization. The byte budget is enforced by construction: the builder
+ * serializes compactly, measures the UTF-8 length, and drops trailing entries
+ * in a fixed order until the result is strictly under budget.
+ *
+ * Lesson proposals carry no per-field character cap (RD-FR-058): a proposal
+ * is either present with its complete submitted text or dropped whole and
+ * counted by proposals_truncated, so no retrieval mode can hand a parent a
+ * shortened lesson to persist (issue #969). Proposal fields are already
+ * bounded by PayloadLessonProposalSchema (information 16,384, tag 128).
+ *
+ * Error strings carry no per-string cap either (RD-FR-066, issue #1039):
+ * a compact finalization result carries each error exactly as the
+ * finalizer produced it or drops it whole; errors_truncated counts
+ * dropped entries, never shortened ones.
+ */
+export const SUMMARY_LIMITS = {
+  findings: 15,
+  advisories: 15,
+  proposals: 10,
+  warnings: 5,
+  errors: 5,
+  severityChars: 16,
+  categoryChars: 128,
+  descriptionChars: 512,
+  fileChars: 256,
+  verdictReasonChars: 512,
+  warningKindChars: 64,
+  warningDetailChars: 256,
+  maxBytes: 40 * 1024,
+} as const
+
+interface TruncatedText {
+  readonly text: string
+  readonly truncated: boolean
+}
+
+function truncateText(value: string, max: number): TruncatedText {
+  if (value.length <= max) return { text: value, truncated: false }
+  // Never split a surrogate pair: drop a trailing lone high surrogate.
+  const cut = value.slice(0, max)
+  const last = cut.charCodeAt(cut.length - 1)
+  return { text: last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut, truncated: true }
+}
+
+/**
+ * Compact-JSON byte size shared by every bounded result budget (RD-FR-049,
+ * RD-FR-058): UTF-8 length of the canonical JSON serialization. One idiom
+ * for the summary retrieval and the compact finalization result alike, so
+ * both budgets measure the same bytes.
+ */
+function byteSize(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).length
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function asCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0
+}
+
+/**
+ * Token count for a child_empty_response warning projection (RD-FR-061):
+ * unlike asCount, a missing or non-numeric field reads as unavailable
+ * (null) rather than zero — a reported zero is meaningful (#1052's
+ * `tokens.output: 0`), so it must not be conflated with an absent count.
+ */
+function asTokenCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function projectSummaryFinding(
+  finding: unknown,
+): Record<string, unknown> {
+  const record = asRecord(finding)
+  const severity = truncateText(String(record.severity ?? ""), SUMMARY_LIMITS.severityChars)
+  const category = truncateText(String(record.category ?? ""), SUMMARY_LIMITS.categoryChars)
+  const description = truncateText(
+    String(record.description ?? ""),
+    SUMMARY_LIMITS.descriptionChars,
+  )
+  const file = typeof record.file === "string"
+    ? truncateText(record.file, SUMMARY_LIMITS.fileChars)
+    : { text: null as string | null, truncated: false }
+  const line = typeof record.line === "number" ? record.line : null
+  const result: Record<string, unknown> = {
+    severity: severity.text,
+    category: category.text,
+    description: description.text,
+    file: file.text,
+    line,
+  }
+  if (
+    severity.truncated ||
+    category.truncated ||
+    description.truncated ||
+    file.truncated
+  ) {
+    result.truncated = true
+  }
+  return result
+}
+
+function projectSummaryAdvisory(
+  advisory: unknown,
+): Record<string, unknown> {
+  const record = asRecord(advisory)
+  const severity = truncateText(String(record.severity ?? ""), SUMMARY_LIMITS.severityChars)
+  const description = truncateText(
+    String(record.description ?? ""),
+    SUMMARY_LIMITS.descriptionChars,
+  )
+  const result: Record<string, unknown> = {
+    severity: severity.text,
+    description: description.text,
+  }
+  if (severity.truncated || description.truncated) result.truncated = true
+  return result
+}
+
+/**
+ * Project one lesson proposal for a bounded tool result (RD-FR-058). Every
+ * field is copied verbatim, never shortened: parents persist proposals with
+ * dewey_store_learning, and a cut body silently loses the lesson's
+ * conclusion (issue #969). An entry that does not fit a result's byte budget
+ * is dropped whole by the caller and flagged by proposals_truncated.
+ */
+function projectSummaryProposal(
+  proposal: unknown,
+): Record<string, unknown> {
+  const record = asRecord(proposal)
+  const result: Record<string, unknown> = {
+    agent: String(record.agent ?? ""),
+    information: String(record.information ?? ""),
+    tag: String(record.tag ?? ""),
+  }
+  if (
+    typeof record.category === "string" &&
+    (LESSON_CATEGORY_VALUES as readonly string[]).includes(record.category)
+  ) {
+    result.category = record.category
+  }
+  return result
+}
+
+function projectSummaryWarning(
+  warning: unknown,
+): Record<string, unknown> | null {
+  const record = asRecord(warning)
+  const type = record.type
+  if (typeof type !== "string") return null
+  const agent = typeof record.agent === "string" ? record.agent : ""
+  const run = typeof record.run_id === "string" ? record.run_id : ""
+  let detail: string
+  switch (type) {
+    case "orphaned_submissions_excluded":
+      detail = `agent=${agent} run=${run} findings=${asCount(record.discarded_findings)} proposals=${asCount(record.discarded_proposals)}`
+      break
+    case "invalid_submissions_excluded":
+      detail = `agent=${agent} run=${run} invalid=${asCount(record.invalid_findings) + asCount(record.invalid_proposals)}`
+      break
+    case "run_findings_overflow":
+      detail = `agent=${agent} kept=${asCount(record.kept_findings)} dropped=${asCount(record.overflow_findings)}`
+      break
+    case "consolidated_findings_overflow":
+      detail = `kept=${asCount(record.kept_findings)} dropped=${asCount(record.dropped_findings)}`
+      break
+    case "child_empty_response": {
+      // RD-FR-061: agent and run id always; finish reason and token counts
+      // only when available (a reported zero output count is meaningful —
+      // issue #1052's signature — so it is never conflated with absent).
+      const parts = [`agent=${agent}`, `run=${run}`]
+      const finish = typeof record.finish_reason === "string" && record.finish_reason.length > 0 ? record.finish_reason : null
+      if (finish !== null) {
+        parts.push(`finish=${finish}`)
+      }
+      const tokensInput = asTokenCount(record.tokens_input)
+      const tokensOutput = asTokenCount(record.tokens_output)
+      if (tokensInput !== null) {
+        parts.push(`tokens.input=${tokensInput}`)
+      }
+      if (tokensOutput !== null) {
+        parts.push(`tokens.output=${tokensOutput}`)
+      }
+      detail = parts.join(" ")
+      break
+    }
+    case "empty_coverage_attestation":
+      detail = `agent=${agent}`
+      break
+    case "proposals_overflow":
+      detail = `kept=${asCount(record.kept_proposals)} dropped=${asCount(record.dropped_proposals)}`
+      break
+    case "duplicate_proposal_merged":
+      detail = `agent=${agent} kept=${typeof record.kept_agent === "string" ? record.kept_agent : ""}`
+      break
+    case "spec_review_state_write_failed":
+      detail = `correlation=${typeof record.correlation_id === "string" ? record.correlation_id : ""} ${typeof record.detail === "string" ? record.detail : ""}`
+      break
+    default:
+      return null
+  }
+  const kind = truncateText(type, SUMMARY_LIMITS.warningKindChars)
+  const composed = truncateText(detail, SUMMARY_LIMITS.warningDetailChars)
+  const result: Record<string, unknown> = {
+    kind: kind.text,
+    detail: composed.text,
+  }
+  if (kind.truncated || composed.truncated) result.truncated = true
+  return result
+}
+
+interface SummaryRetrievalInput {
+  readonly correlation_id: string
+  readonly proposals: readonly unknown[]
+  readonly warnings: readonly unknown[]
+  readonly verdict: string
+  readonly verdict_reason: string
+  readonly run_counts: unknown
+  readonly coverage: unknown
+  readonly findings: readonly unknown[]
+  readonly advisories: readonly unknown[]
+}
+
+/**
+ * Build the bounded observability-first summary retrieval (RD-FR-049).
+ * Ordering and the post-assembly byte budget are part of the contract: the
+ * loop drops trailing entries findings -> advisories -> proposals -> warnings
+ * until the compact serialization is strictly under 40,960 bytes.
+ */
+export function buildSummaryRetrieval(
+  input: SummaryRetrievalInput,
+): Record<string, unknown> {
+  const findings = input.findings
+    .slice(0, SUMMARY_LIMITS.findings)
+    .map(projectSummaryFinding)
+  const advisories = input.advisories
+    .slice(0, SUMMARY_LIMITS.advisories)
+    .map(projectSummaryAdvisory)
+  const proposals = input.proposals
+    .slice(0, SUMMARY_LIMITS.proposals)
+    .map(projectSummaryProposal)
+  const warnings = input.warnings
+    .slice(0, SUMMARY_LIMITS.warnings)
+    .map(projectSummaryWarning)
+    .filter((warning): warning is Record<string, unknown> => warning !== null)
+
+  let findingsTruncated = input.findings.length > SUMMARY_LIMITS.findings
+  let advisoriesTruncated = input.advisories.length > SUMMARY_LIMITS.advisories
+  let proposalsTruncated = input.proposals.length > SUMMARY_LIMITS.proposals
+  let warningsTruncated = input.warnings.length > SUMMARY_LIMITS.warnings
+
+  const assemble = (): Record<string, unknown> => {
+    const result: Record<string, unknown> = {
+      correlation_id: input.correlation_id,
+    }
+    if (proposals.length > 0) result.proposals = proposals
+    if (warnings.length > 0) result.warnings = warnings
+    result.verdict = input.verdict
+    result.verdict_reason = truncateText(
+      input.verdict_reason,
+      SUMMARY_LIMITS.verdictReasonChars,
+    ).text
+    result.run_counts = input.run_counts
+    result.coverage = input.coverage
+    result.findings = findings
+    result.advisories = advisories
+    if (findingsTruncated) result.findings_truncated = true
+    if (advisoriesTruncated) result.advisories_truncated = true
+    if (proposalsTruncated) result.proposals_truncated = true
+    if (warningsTruncated) result.warnings_truncated = true
+    return result
+  }
+
+  let result = assemble()
+  while (byteSize(result) >= SUMMARY_LIMITS.maxBytes) {
+    if (findings.length > 0) {
+      findings.pop()
+      findingsTruncated = true
+    } else if (advisories.length > 0) {
+      advisories.pop()
+      advisoriesTruncated = true
+    } else if (proposals.length > 0) {
+      proposals.pop()
+      proposalsTruncated = true
+    } else if (warnings.length > 0) {
+      warnings.pop()
+      warningsTruncated = true
+    } else {
+      break
+    }
+    result = assemble()
+  }
+  return result
+}
+
+/**
+ * Build the full retrieval payload with observability-first ordering
+ * (RD-FR-050): cheap scalar and observability fields precede the large arrays,
+ * while runs stays ahead of plan, findings, and advisories.
+ */
+export function buildFullRetrieval(
+  payload: ReviewDispatchPayload,
+  proposals: readonly unknown[],
+  warnings: readonly unknown[],
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    command: payload.command,
+    mode: payload.mode,
+    full: payload.full,
+    input_context: payload.input_context,
+    change_profile: payload.change_profile,
+    plan_version: payload.plan_version,
+    correlation_id: payload.correlation_id,
+  }
+  if (proposals.length > 0) result.proposals = proposals
+  if (warnings.length > 0) result.warnings = warnings
+  result.verdict = payload.verdict
+  result.verdict_reason = payload.verdict_reason
+  result.run_counts = payload.run_counts
+  result.coverage = payload.coverage
+  result.runs = payload.runs
+  result.plan = payload.plan
+  result.findings = payload.findings
+  result.advisories = payload.advisories
+  result.workflow_result = payload.workflow_result
+  return result
+}
+
+/**
+ * Build the compact finalization response (RD-FR-051). The persisted artifact
+ * remains the only place the full projection (findings, advisories, plan,
+ * runs) is echoed; this result carries the outcome, the scalar review verdict,
+ * and the bounded observability arrays. Errors are whole or absent
+ * (RD-FR-066): each entry is copied verbatim from the finalizer's result,
+ * the count cap stays, and errors_truncated is true only when whole entries
+ * were dropped — shortening no longer exists. The post-assembly byte budget
+ * (RD-FR-049) keeps the result strictly under 40,960 bytes by dropping
+ * trailing proposals whole first, then trailing errors whole (D2), so an
+ * error-heavy failure result stays bounded while every kept entry remains
+ * complete. The failure-record locator (RD-FR-066 D3) rides immediately
+ * after artifact_path — early keys survive host tail-truncation — and is
+ * omitted when null; errors stay the final key (RD-FR-066 amends the
+ * RD-FR-051 order), with errors_truncated among the observability flags.
+ */
+export function buildCompactFinalization(
+  result: FinalizeReviewDispatchResult,
+  runCounts: unknown,
+  proposals: readonly unknown[],
+  warnings: readonly unknown[],
+): Record<string, unknown> {
+  const projectedProposals = proposals
+    .slice(0, SUMMARY_LIMITS.proposals)
+    .map(projectSummaryProposal)
+  const projectedWarnings = warnings
+    .slice(0, SUMMARY_LIMITS.warnings)
+    .map(projectSummaryWarning)
+    .filter((warning): warning is Record<string, unknown> => warning !== null)
+  // Whole or absent (RD-FR-066): no per-string cap, no shortening. The
+  // slice copies the finalizer's strings verbatim and caps the entry count;
+  // dropped entries are counted by errors_truncated below.
+  const projectedErrors = result.errors.slice(0, SUMMARY_LIMITS.errors)
+  // Null until a failed finalization persists a record (RD-FR-066 D3). The
+  // nullish default reads a missing key as null so a result shape assembled
+  // without the locator cannot leak an undefined-valued failure_record key.
+  const failureRecord = result.failure_record ?? null
+  const compact: Record<string, unknown> = {
+    status: result.status,
+    operation_verdict: result.operation_verdict,
+    correlation_id: result.correlation_id,
+    artifact_path: result.artifact_path,
+    // Inserted immediately after artifact_path and omitted when null
+    // (RD-FR-066): the locator is the recovery handle for exactly the
+    // failure paths where nothing else persists, so it must sit among the
+    // early keys a host tail-truncation cannot drop.
+    ...(failureRecord !== null ? { failure_record: failureRecord } : {}),
+    // A persistence failure leaves review_verdict null; the calculated
+    // (non-authoritative) projection still carries the decision (RD-FR-051).
+    review_verdict:
+      result.review_verdict?.council_decision ??
+      result.calculated_assessment?.review_verdict.council_decision ??
+      null,
+    run_counts: runCounts,
+  }
+  let proposalsTruncated = proposals.length > SUMMARY_LIMITS.proposals
+  const warningsTruncated = warnings.length > SUMMARY_LIMITS.warnings
+  // Mutated by the byte-budget loop below when it drops whole error entries.
+  let errorsTruncated = result.errors.length > SUMMARY_LIMITS.errors
+  const assemble = (): Record<string, unknown> => {
+    const assembled: Record<string, unknown> = { ...compact }
+    if (projectedProposals.length > 0) assembled.proposals = projectedProposals
+    if (projectedWarnings.length > 0) assembled.warnings = projectedWarnings
+    if (proposalsTruncated) assembled.proposals_truncated = true
+    if (warningsTruncated) assembled.warnings_truncated = true
+    // errors_truncated rides with the other observability flags ahead of
+    // calculated_assessment so errors stays the final key of the result —
+    // RD-FR-066 amends RD-FR-051's order (the flag previously followed
+    // errors).
+    if (errorsTruncated) assembled.errors_truncated = true
+    assembled.calculated_assessment = result.calculated_assessment === null
+      ? null
+      : { authoritative: result.calculated_assessment.authoritative }
+    assembled.errors = projectedErrors
+    return assembled
+  }
+  // Full-length proposals (RD-FR-058) drop trailing and whole — never
+  // shortened — until the compact JSON is strictly under the RD-FR-049 byte
+  // budget, flagging every drop. Error strings carry no per-string cap
+  // either (RD-FR-066): each is copied verbatim, and errors_truncated is
+  // set only by whole-entry drops. Once the proposals are exhausted the
+  // loop drops trailing errors whole (RD-FR-066 D2): proposals are
+  // recoverable from the success artifact, while errors are the diagnostic
+  // payload of exactly the failure paths where nothing else is persisted,
+  // so errors drop last. Warnings never drop here — their per-entry caps
+  // bound them by construction.
+  let assembled = assemble()
+  while (byteSize(assembled) >= SUMMARY_LIMITS.maxBytes) {
+    if (projectedProposals.length > 0) {
+      projectedProposals.pop()
+      proposalsTruncated = true
+    } else if (projectedErrors.length > 0) {
+      projectedErrors.pop()
+      errorsTruncated = true
+    } else {
+      // Both droppable arrays are exhausted; everything left is scalar or
+      // per-entry capped, so the budget holds by construction. Nothing in
+      // the real pipeline reaches this (run_counts is schema-bounded), but
+      // the loop must terminate rather than spin on a pathological input.
+      break
+    }
+    assembled = assemble()
+  }
+  return assembled
+}
+
+/**
+ * Machine-readable consolidate_dispatch warning: a reviewer run whose final
+ * response was incomplete — empty final text or a finish reason `length`
+ * (RD-FR-059) — was reclassified to a retryable child_empty_response failure
+ * or kept/restored successful with its verdict forced to the kind-native
+ * non-approving value. One entry per affected run, never duplicated
+ * (RD-FR-061); the finish reason and token counts ride along when available
+ * so operators see which reviewer was incomplete and why. For a run whose
+ * final text is empty this warning replaces empty_coverage_attestation (the
+ * more specific kind wins, regardless of delivery mode); the attestation
+ * advisory still fires independently for non-empty manifest-mode text. This
+ * shape is consolidate-result observability only; it MUST NOT flow into the
+ * finalization payload, whose strict schema rejects unknown top-level keys.
+ */
+interface ChildEmptyResponseWarning {
+  readonly type: "child_empty_response"
+  readonly agent: string
+  readonly run_id: string
+  /** Reported finish reason, null when unreported. */
+  readonly finish_reason: string | null
+  /** Input token count from the run's usage, null when usage is absent. */
+  readonly tokens_input: number | null
+  /** Output token count from the run's usage, null when usage is absent. */
+  readonly tokens_output: number | null
+}
+
+/**
+ * Fixed pattern the executor embeds into child_empty_response error messages
+ * (agent-executor.ts: "child returned no final text (finish reason: length);
+ * model=..."). Failure results carry no structured finish_reason field —
+ * RD-FR-060 scopes that to success results — so this recovers the reason the
+ * executor already diagnosed. Bounded to short provider finish-reason
+ * tokens; any other message shape reads as unreported.
+ */
+const ERROR_FINISH_REASON_PATTERN = /\(finish reason: ([^)]{1,64})\)/
+
+/**
+ * Finish reason for a child_empty_response warning (RD-FR-061): the run's
+ * structured finish_reason field wins when reported; otherwise, for a run
+ * the executor failed as child_empty_response, the reason is recovered from
+ * the executor's fixed error-message format. Null when neither source
+ * reports one. Takes the pre-classification run record:
+ * classifyIncompleteResponse nulls the error of a restored run, which would
+ * erase the message the executor left the reason in.
+ *
+ * Pure function over its argument (Constitution IV — Testability).
+ *
+ * @param run Run record the warning is built from (pre-classification).
+ * @returns The reported finish reason, or null when unreported.
+ */
+function warningFinishReason(run: PersistedRunData): string | null {
+  if (typeof run.finish_reason === "string" && run.finish_reason.length > 0) {
+    return run.finish_reason
+  }
+  if (run.error?.code === "child_empty_response") {
+    const match = ERROR_FINISH_REASON_PATTERN.exec(run.error.message)
+    if (match !== null) {
+      const recovered = match[1].trim()
+      if (recovered.length > 0) {
+        return recovered
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Build the child_empty_response warning for one incomplete run (RD-FR-061):
+ * names the agent and run id and carries the finish reason and token counts
+ * when available. Built from the pre-classification record so a restored run
+ * keeps the executor error message its finish reason is recovered from.
+ *
+ * Pure function over its argument (Constitution IV — Testability).
+ *
+ * @param run Run record the warning is built from (pre-classification).
+ * @returns The machine-readable warning entry.
+ */
+function childEmptyResponseWarning(run: PersistedRunData): ChildEmptyResponseWarning {
+  return {
+    type: "child_empty_response",
+    agent: run.agent,
+    run_id: run.run_id,
+    finish_reason: warningFinishReason(run),
+    tokens_input: run.usage?.tokens?.input ?? null,
+    tokens_output: run.usage?.tokens?.output ?? null,
+  }
 }
 
 /**
@@ -3920,6 +5355,135 @@ interface InvalidSubmissionsExcludedWarning {
   readonly invalid_findings: number
   readonly invalid_proposals: number
   readonly errors: readonly string[]
+}
+
+/**
+ * Machine-readable consolidate_dispatch warning: a lesson proposal was dropped
+ * as a near-identical duplicate of another proposal in the same dispatch
+ * (RD-FR-055). `agent` names the dropped entry's agent and `kept_agent` the
+ * surviving entry's, so no merge is silent. This shape is consolidate-result
+ * observability only; it MUST NOT flow into the finalization payload, whose
+ * strict schema rejects unknown top-level keys.
+ */
+interface DuplicateProposalMergedWarning {
+  readonly type: "duplicate_proposal_merged"
+  readonly agent: string
+  readonly kept_agent: string
+}
+
+/**
+ * Machine-readable consolidate_dispatch warning: the spec-review gate record
+ * could not be persisted to the uf.unleash progress state after the dispatch
+ * artifact was finalized (HARDEN-001, harden-spec-review-gate). The verdict
+ * is durable in the artifact store; every gate reader reconciles the two
+ * stores (get_progress heals unrecorded artifacts), so the gate cannot be
+ * bypassed through this failure — but the window is reported rather than
+ * silent. This shape is consolidate-result observability only; it MUST NOT
+ * flow into the finalization payload, whose strict schema rejects unknown
+ * top-level keys.
+ */
+interface SpecReviewStateWriteFailedWarning {
+  readonly type: "spec_review_state_write_failed"
+  readonly correlation_id: string
+  readonly detail: string
+}
+
+/**
+ * Machine-readable consolidate_dispatch warning: the deduplicated proposals
+ * exceeded the persisted cardinality bound (MAX_PAYLOAD_PROPOSALS). The first
+ * entries are kept and the dropped remainder is counted, mirroring
+ * consolidated_findings_overflow. Result observability only; it MUST NOT flow
+ * into the finalization payload.
+ */
+interface ProposalsOverflowWarning {
+  readonly type: "proposals_overflow"
+  readonly kept_proposals: number
+  readonly dropped_proposals: number
+}
+
+/**
+ * English function words ignored when comparing proposals (RD-FR-055). Fixed
+ * so deduplication is deterministic; negations are deliberately kept, and
+ * PROPOSAL_NEGATION_WORDS separates a lesson from its opposite.
+ */
+const PROPOSAL_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is",
+  "it", "its", "of", "on", "or", "that", "the", "this", "to", "with",
+])
+
+/**
+ * Negation words: two proposals whose texts disagree on carrying one are never
+ * merged, so "retry is safe" and "retry is not safe" both survive. `t` is the
+ * token the splitter leaves from "n't" contractions.
+ */
+const PROPOSAL_NEGATION_WORDS = new Set(["cannot", "never", "no", "nor", "not", "t", "without"])
+
+/** Minimum token-set size for similarity matching; smaller sets must match exactly. */
+const PROPOSAL_MIN_SIMILARITY_TOKENS = 6
+
+/**
+ * Jaccard similarity at or above which two proposals are near-identical. The
+ * symmetric measure keeps a short lesson whose words mostly recur in a long
+ * one. Calibrated on issue #941's session: its duplicate pair scored 0.39 and
+ * every distinct pair at most 0.10.
+ */
+const PROPOSAL_DUPLICATE_JACCARD = 0.3
+
+/** Normalized content tokens of one proposal's information text. */
+function proposalTokens(information: string): string[] {
+  return information
+    .normalize("NFKC")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((token) => token.length > 0 && !PROPOSAL_STOP_WORDS.has(token))
+}
+
+/** Whether two token lists describe the same lesson (RD-FR-055 rule 2). */
+function nearIdenticalTokens(a: readonly string[], b: readonly string[]): boolean {
+  if (a.some((token) => PROPOSAL_NEGATION_WORDS.has(token)) !== b.some((token) => PROPOSAL_NEGATION_WORDS.has(token))) {
+    return false
+  }
+  const setA = new Set(a)
+  const setB = new Set(b)
+  if (Math.min(setA.size, setB.size) < PROPOSAL_MIN_SIMILARITY_TOKENS) {
+    return a.length === b.length && a.every((token, index) => token === b[index])
+  }
+  let shared = 0
+  for (const token of setA) {
+    if (setB.has(token)) shared += 1
+  }
+  return shared / (setA.size + setB.size - shared) >= PROPOSAL_DUPLICATE_JACCARD
+}
+
+/**
+ * Drop near-identical lesson proposals across personas (RD-FR-055). Visits
+ * proposals in collection order; on the first near-identical kept entry the
+ * longer information text (the kept one on a tie) holds the kept slot. Agent,
+ * tag, and category never affect matching. Each drop yields one warning.
+ * @param proposals Collected proposals in run order.
+ * @returns The kept proposals and one duplicate_proposal_merged warning per drop.
+ */
+export function deduplicateProposals<T extends { readonly agent: string; readonly information: string }>(
+  proposals: readonly T[],
+): { readonly proposals: T[]; readonly warnings: DuplicateProposalMergedWarning[] } {
+  const kept: { proposal: T; tokens: string[] }[] = []
+  const warnings: DuplicateProposalMergedWarning[] = []
+  for (const proposal of proposals) {
+    const tokens = proposalTokens(proposal.information)
+    const match = kept.find((entry) => nearIdenticalTokens(entry.tokens, tokens))
+    if (match === undefined) {
+      kept.push({ proposal, tokens })
+      continue
+    }
+    if (proposal.information.length > match.proposal.information.length) {
+      warnings.push({ type: "duplicate_proposal_merged", agent: match.proposal.agent, kept_agent: proposal.agent })
+      match.proposal = proposal
+      match.tokens = tokens
+    } else {
+      warnings.push({ type: "duplicate_proposal_merged", agent: proposal.agent, kept_agent: match.proposal.agent })
+    }
+  }
+  return { proposals: kept.map((entry) => entry.proposal), warnings }
 }
 
 /**
@@ -4085,9 +5649,36 @@ export function createConsolidateDispatchTool(
       "collect lesson proposals, and optionally finalize the dispatch artifact in one step. " +
       "Reads session metadata (command, mode, plan, coverage, etc.) from the file persisted by the first " +
       "dispatch_agent_run call. When provenance is provided, calls finalize_review_dispatch internally " +
-      "(no LLM round-trip) and returns the finalization result directly. When omitted, returns the payload JSON. " +
-      "Lesson proposals submitted by child agents are collected and returned in a top-level proposals array; " +
-      "call dewey_store_learning for each. " +
+      "(no LLM round-trip) and returns a compact finalization result in this key order: status, " +
+      "operation_verdict, correlation_id, artifact_path, failure_record (immediately after artifact_path " +
+      "when a failed finalization persisted its failure record: { correlation_id, path }), review_verdict " +
+      "(scalar canonical decision or null), run_counts, optional proposals / warnings / " +
+      "proposals_truncated / warnings_truncated / errors_truncated, calculated_assessment (null on " +
+      "validation rejection, otherwise { authoritative } — false when persistence failed), errors. Error " +
+      "entries are complete or dropped whole: each error string is carried verbatim, the array is capped " +
+      "at 5 entries, and the byte budget drops trailing entries whole after proposals, with " +
+      "errors_truncated flagging every drop. Everything the preview drops is recoverable from the " +
+      "failure record via read_dispatch_artifact section errors. " +
+      "The full findings, advisories, plan, and runs live only in the persisted " +
+      "artifact at artifact_path. When provenance is omitted, detail selects the retrieval shape: " +
+      "\"full\" (default) returns the finalization-ready payload with correlation_id, proposals, and warnings " +
+      "ahead of verdict, runs, plan, findings, and advisories; \"summary\" returns only correlation_id, " +
+      "proposals, warnings, verdict, verdict_reason (at most 512 characters), run_counts, coverage, findings, " +
+      "advisories, and the findings_truncated / advisories_truncated / proposals_truncated / " +
+      "warnings_truncated flags, capped at 15 findings ({severity, category, description, file, line}), " +
+      "15 advisories ({severity, description}), 10 proposals ({agent, information, tag, category?}), and " +
+      "5 warnings ({kind, detail}); descriptions are cut to 512 characters, files to 256, categories to " +
+      "128, warning kinds to 64 and details to 256, any shortened entry carries truncated: true, and " +
+      "trailing entries are dropped until the compact JSON is under 40,960 bytes. Proposal fields are " +
+      "never shortened: each proposal is complete or dropped whole and counted by proposals_truncated, in " +
+      "the summary and the compact finalization result alike. detail: \"summary\" combined with provenance " +
+      "is rejected. " +
+      "Lesson proposals submitted by child agents are collected, near-identical proposals across personas are " +
+      "merged (each merge reported as a duplicate_proposal_merged warning naming agent and kept_agent), and " +
+      "the full-length proposals are persisted in the artifact's payload.proposals (after advisories, before " +
+      "plan and runs) on finalization. The proposals arrays in tool results are a count-capped preview of " +
+      "complete entries: store lessons with dewey_store_learning from the artifact's payload.proposals, " +
+      "never from the preview. " +
       "Findings and proposals harvested from non-success runs are excluded from the payload and reported in a " +
       "top-level warnings array as orphaned_submissions_excluded entries (agent, run_id, discarded counts); " +
       "harvested findings or proposals that fail their schemas are likewise excluded and reported as " +
@@ -4095,24 +5686,18 @@ export function createConsolidateDispatchTool(
       "bounded to the first 20 lines with the total issue count); valid findings exceeding the finalizer's " +
       "cardinality bounds are kept to the bounds (512 per run, 512 consolidated after deduplication) and " +
       "reported as run_findings_overflow / consolidated_findings_overflow warnings (kept and dropped counts); " +
-      "successful manifest-mode runs whose persisted final text carries a missing or empty `**Files Reviewed**:` " +
+      "successful manifest-mode runs whose persisted final text carries a missing or empty `**Files Reviewed**`: " +
       "coverage attestation are reported as empty_coverage_attestation warnings (advisory quality signal only, " +
-      "no finding and no verdict change); when " +
-      "finalizing externally, submit the payload without the top-level proposals and warnings observability fields. " +
+      "no finding and no verdict change); a reviewer run whose final response is incomplete (empty final text or " +
+      "finish reason length) never casts an approving vote — with no accepted submissions it is failed as retryable " +
+      "child_empty_response, with accepted submissions it stays successful with a forced kind-native non-approving " +
+      "verdict — and exactly one child_empty_response warning per run names its agent, run id, finish reason, and " +
+      "token counts when available, while empty_coverage_attestation is suppressed for a run whose final text is " +
+      "empty; when " +
+      "finalizing externally, submit the payload without the top-level warnings observability field. " +
       "Automatically resolves the dispatch session from prior dispatch_agent_run calls; pass correlation_id " +
       "explicitly to consolidate a dispatch started by a different session (e.g. after a restart).",
-    args: {
-      provenance: ArtifactProvenanceSchema.optional().describe(
-        "When provided, consolidate_dispatch calls finalize_review_dispatch internally " +
-          "and returns the finalization result. Requires branch (e.g. opsx/foo), " +
-          "commit (40-char SHA), and workflow_id (e.g. uf.review-council).",
-      ),
-      correlation_id: UUIDSchema.optional().describe(
-        "Optional explicit dispatch correlation_id; takes precedence over the " +
-          "session's automatically resolved one. Use it to consolidate a dispatch " +
-          "started by a different (e.g. restarted) parent session.",
-      ),
-    },
+    args: ConsolidateDispatchInputSchema.shape,
     async execute(args, context): Promise<{ readonly output: string }> {
       const parsed = ConsolidateDispatchInputSchema.safeParse(args)
       if (!parsed.success) {
@@ -4182,6 +5767,59 @@ export function createConsolidateDispatchTool(
         runs.push(result.run)
       }
 
+      // Re-derive the incomplete-response rule (RD-FR-059, design D2)
+      // before anything else consumes run status: the executor fails
+      // empty final text at its boundary, but executor-bypassing callers
+      // and length-terminated runs with truncated text still reach this
+      // point recorded as success. Classifying here makes every
+      // downstream consumer — success scoping, attestation checks,
+      // submission validation, orphaned-submission warnings, run counts,
+      // verdicts — agree by construction:
+      //   - incomplete + zero accepted submissions → failed
+      //     child_empty_response (retryable), no vote, run_counts.failed;
+      //   - incomplete + accepted submissions → success (restored when
+      //     the executor failed it) with a forced kind-native
+      //     non-approving verdict (RD-FR-026 precedence).
+      // Post-submission aborts reclassified by executeDispatchRun
+      // (RD-FR-026) carry non-empty text and no finish reason, so they
+      // are not incomplete and keep their findings-derived verdict —
+      // RD-FR-026's rule is unchanged.
+      const forcedVerdictRunIds = new Set<string>()
+      const childEmptyResponseWarnings: ChildEmptyResponseWarning[] = []
+      const emptyResponseRunIds = new Set<string>()
+      const emptyResponseEmptyTextRunIds = new Set<string>()
+      const classifiedRuns: PersistedRunData[] = []
+      for (const run of runs) {
+        const classification = classifyIncompleteResponse(run)
+        classifiedRuns.push(classification.run)
+        if (classification.verdictForced) {
+          forcedVerdictRunIds.add(run.run_id)
+        }
+        // RD-FR-061 warning emission: every run the incomplete-response rule
+        // touched — reclassified here, verdict-forced, or already failed as
+        // child_empty_response at the executor boundary (task 1.1's guard,
+        // the same RD-FR-059 rule one layer down; those runs stay failed
+        // with no submissions to restore them) — is named by exactly one
+        // warning. The run-id set also deduplicates foreign-written run
+        // files that repeat a run id. The warning is built from the
+        // pre-classification record so a restored run keeps the executor
+        // error message its finish reason is recovered from; runs whose
+        // final text is empty are tracked separately so the attestation
+        // advisory can be suppressed for them below.
+        const failedAsEmptyResponse =
+          classification.run.status === "failed" && classification.run.error?.code === "child_empty_response"
+        if (
+          (classification.reclassifiedToFailed || classification.verdictForced || failedAsEmptyResponse) &&
+          !emptyResponseRunIds.has(run.run_id)
+        ) {
+          emptyResponseRunIds.add(run.run_id)
+          childEmptyResponseWarnings.push(childEmptyResponseWarning(run))
+          if (classification.run.text.trim().length === 0) {
+            emptyResponseEmptyTextRunIds.add(run.run_id)
+          }
+        }
+      }
+
       // Success-scoped consolidation (RD-FR-025, design D1): a child run
       // can abort AFTER its structured submissions were accepted and
       // harvested into its run file (issue #751). Submissions orphaned by
@@ -4190,7 +5828,7 @@ export function createConsolidateDispatchTool(
       // recovery path. The filter lives here, the single choke point
       // before the finalizer; the harvest keeps writing every submission
       // to the run files for the audit trail.
-      const successRuns = runs.filter((run) => run.status === "success")
+      const successRuns = classifiedRuns.filter((run) => run.status === "success")
 
       // RD-FR-035: advisory quality signal for manifest-mode coverage
       // attestations. Successful manifest-mode runs were instructed (via the
@@ -4204,6 +5842,12 @@ export function createConsolidateDispatchTool(
       // prompts carried the full diff inline), and non-success runs are out
       // of scope (their output was not trusted into the payload either).
       const attestationWarnings: EmptyCoverageAttestationWarning[] = successRuns
+        // RD-FR-061: a run whose final text is empty already carries the more
+        // specific child_empty_response warning, so the attestation advisory
+        // is suppressed for it regardless of delivery mode. Non-empty
+        // (truncated) manifest-mode text keeps the independent attestation
+        // check below.
+        .filter((run) => !emptyResponseEmptyTextRunIds.has(run.run_id))
         .filter((run) => run.manifest_mode === true)
         .filter((run) => {
           const attestation = parseCoverageAttestation(run.text)
@@ -4232,7 +5876,7 @@ export function createConsolidateDispatchTool(
       const invalidSubmissionWarnings: InvalidSubmissionsExcludedWarning[] = []
       const findingsOverflowWarnings: RunFindingsOverflowWarning[] = []
       const validatedRuns: PersistedRunData[] = []
-      for (const run of runs) {
+      for (const run of classifiedRuns) {
         if (run.status !== "success") {
           validatedRuns.push(run)
           continue
@@ -4270,13 +5914,22 @@ export function createConsolidateDispatchTool(
       // warnings array is result observability only and MUST NOT flow into
       // the finalization payload (strict schema).
       const warnings: (
+        | ChildEmptyResponseWarning
         | OrphanedSubmissionsExcludedWarning
         | EmptyCoverageAttestationWarning
         | InvalidSubmissionsExcludedWarning
         | RunFindingsOverflowWarning
         | ConsolidatedFindingsOverflowWarning
+        | DuplicateProposalMergedWarning
+        | ProposalsOverflowWarning
+        | SpecReviewStateWriteFailedWarning
       )[] = [
-        ...runs
+        // RD-FR-061 first: an incomplete reviewer is the strongest
+        // operational signal in the array, and the bounded summary
+        // projections drop trailing warnings first when the byte budget
+        // binds.
+        ...childEmptyResponseWarnings,
+        ...classifiedRuns
           .filter((run) => run.status !== "success" && (run.findings.length > 0 || run.proposals.length > 0))
           .map(
             (run): OrphanedSubmissionsExcludedWarning => ({
@@ -4292,10 +5945,28 @@ export function createConsolidateDispatchTool(
         ...findingsOverflowWarnings,
       ]
 
-      // Collect lesson proposals from successful runs only, tagged with agent name.
-      const collectedProposals = validatedSuccessRuns.flatMap((run) =>
-        run.proposals.map((p) => ({ agent: run.agent, information: p.information, tag: p.tag, category: p.category })),
+      // Collect lesson proposals from successful runs only, tagged with agent
+      // name, then merge near-identical lessons across personas once so the
+      // artifact and every tool result carry the same set (RD-FR-055).
+      const deduplicated = deduplicateProposals(
+        validatedSuccessRuns.flatMap((run) =>
+          run.proposals.map((p) => ({
+            agent: run.agent,
+            information: p.information,
+            tag: p.tag,
+            category: p.category,
+          })),
+        ),
       )
+      warnings.push(...deduplicated.warnings)
+      const collectedProposals = deduplicated.proposals.slice(0, MAX_PAYLOAD_PROPOSALS)
+      if (deduplicated.proposals.length > MAX_PAYLOAD_PROPOSALS) {
+        warnings.push({
+          type: "proposals_overflow",
+          kept_proposals: collectedProposals.length,
+          dropped_proposals: deduplicated.proposals.length - MAX_PAYLOAD_PROPOSALS,
+        })
+      }
 
       // Deduplicate findings across successful runs only, then enforce the
       // finalizer's top-level cardinality bound (ReviewDispatchPayloadSchema
@@ -4356,22 +6027,37 @@ export function createConsolidateDispatchTool(
         error: run.status === "success" ? null : run.error,
         reported_model: run.reported_model,
         model_mismatch: run.model_mismatch,
-        workflow_verdict: run.status === "success" ? workflowVerdictValue(kind, runVerdict(run.findings)) : null,
+        // RD-FR-059: an incomplete run with accepted submissions keeps its
+        // success status (RD-FR-026 precedence) but its vote is forced to
+        // the kind-native non-approving value, so it can never contribute
+        // an approving vote to successfulPersonaVotes or the council
+        // verdict. Every other success run derives its verdict from its
+        // findings as before; non-success runs never vote.
+        workflow_verdict:
+          run.status !== "success"
+            ? null
+            : forcedVerdictRunIds.has(run.run_id)
+              ? forcedNonApprovingVerdict(kind)
+              : workflowVerdictValue(kind, runVerdict(run.findings)),
         // RD-FR-025: every plan run keeps its payload slot (run counts and
         // plan validation need the full run list), but non-success runs
         // emit empty findings — orphaned submissions are excluded.
         findings: run.status === "success" ? run.findings : [],
       }))
 
-      // Compute run counts.
+      // Compute run counts. Derived from the classified runs so an
+      // incomplete response with zero accepted submissions lands in
+      // `failed` (RD-FR-059) and a restored executor failure lands in
+      // `success` — the counts, the payload runs, and the finalizer's
+      // validateRunCounts recomputation agree by construction.
       const runCounts = {
-        total: runs.length,
-        success: runs.filter((r) => r.status === "success").length,
-        failed: runs.filter((r) => r.status === "failed").length,
-        skipped: runs.filter((r) => r.status === "skipped").length,
+        total: classifiedRuns.length,
+        success: classifiedRuns.filter((r) => r.status === "success").length,
+        failed: classifiedRuns.filter((r) => r.status === "failed").length,
+        skipped: classifiedRuns.filter((r) => r.status === "skipped").length,
         budget_skipped: 0,
         limit_skipped: 0,
-        cancelled: runs.filter((r) => r.status === "cancelled").length,
+        cancelled: classifiedRuns.filter((r) => r.status === "cancelled").length,
       }
 
       // Build workflow result. Derive the value from the successful runs'
@@ -4410,6 +6096,9 @@ export function createConsolidateDispatchTool(
         coverage: sessionMetadata.coverage,
         findings: consolidatedFindings,
         advisories,
+        // Full-length proposals persist in the artifact (RD-FR-054); the
+        // tool-result arrays below are a capped preview.
+        ...(collectedProposals.length > 0 ? { proposals: collectedProposals } : {}),
         verdict: projectedVerdict,
         verdict_reason: verdictReason,
         run_counts: runCounts,
@@ -4423,27 +6112,76 @@ export function createConsolidateDispatchTool(
           { payload, provenance: input.provenance },
           finalizationDependencies,
         )
+        // HARDEN-001 (harden-spec-review-gate, task 2.1): persist the
+        // spec-review verdict to the uf.unleash progress state in the same
+        // finalization step that persisted the artifact, so the gate record
+        // exists before control returns to the model. Specs mode only —
+        // code/triage/feedback reviews do not gate /uf.unleash. A write
+        // failure cannot lose the verdict (the artifact is durable and every
+        // gate reader reconciles the two stores); it is reported so the
+        // window is never silent.
+        if (sessionMetadata.mode === "specs" && result.status === "success") {
+          try {
+            appendSpecReviewIterationToState(
+              finalizationDependencies.projectRoot,
+              input.provenance.branch,
+              {
+                verdict: result.operation_verdict,
+                correlation_id: result.correlation_id ?? correlationId,
+                finding_count: consolidatedFindings.length,
+                finding_ids: specReviewFindingIds(consolidatedFindings.length),
+              },
+            )
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error)
+            warnings.push({
+              type: "spec_review_state_write_failed",
+              correlation_id: result.correlation_id ?? correlationId,
+              detail: message,
+            })
+          }
+        }
         return {
           output: JSON.stringify(
-            // warnings ride along on the finalization wrapper only — the
-            // payload handed to finalizeReviewDispatch stays schema-exact.
-            // The key is omitted when empty, mirroring proposals (PR #776).
-            { ...result, proposals: collectedProposals.length > 0 ? collectedProposals : undefined, warnings: warnings.length > 0 ? warnings : undefined },
-            null,
-            2,
+            // warnings ride along on the compact finalization wrapper only —
+            // the payload handed to finalizeReviewDispatch stays schema-exact
+            // (RD-FR-051). The proposals here are a capped preview of the
+            // persisted payload.proposals (RD-FR-054).
+            buildCompactFinalization(
+              result,
+              runCounts,
+              collectedProposals,
+              warnings,
+            ),
           ),
         }
       }
 
+      const detail = input.detail ?? "full"
       return {
-        output: JSON.stringify(
-          // The payload stays schema-exact; warnings (and proposals) are
-          // result-level observability the caller strips before external
-          // finalization. Both keys are omitted when empty (PR #776).
-          { ...payload, proposals: collectedProposals.length > 0 ? collectedProposals : undefined, warnings: warnings.length > 0 ? warnings : undefined },
-          null,
-          2,
-        ),
+        output:
+          detail === "summary"
+            ? JSON.stringify(
+                // Bounded observability-first projection (RD-FR-049): the
+                // persisted artifact carries the complete findings.
+                buildSummaryRetrieval({
+                  correlation_id: correlationId,
+                  proposals: collectedProposals,
+                  warnings,
+                  verdict: projectedVerdict,
+                  verdict_reason: verdictReason,
+                  run_counts: runCounts,
+                  coverage: sessionMetadata.coverage,
+                  findings: consolidatedFindings,
+                  advisories,
+                }),
+              )
+            : JSON.stringify(
+                // Full retrieval with observability-first ordering (RD-FR-050).
+                buildFullRetrieval(payload, collectedProposals, warnings),
+                null,
+                2,
+              ),
       }
     },
   })
@@ -4774,46 +6512,67 @@ function wrapUntrusted(content: string, sectionName: string): string {
   ].join("\n")
 }
 
-/** Validate that a path resolves within allowed directories (follows symlinks). */
-async function validateDiffPath(diffPath: string, projectRoot: string): Promise<string | null> {
+type DiffPathError = "path_validation_failed" | "diff_not_found"
+
+/** Canonicalize a path, falling back to its lexical resolution (macOS: /var -> /private/var). */
+async function canonicalOrResolved(path: string): Promise<string> {
   try {
-    const resolved = await realpath(resolve(diffPath))
-    // Canonicalize comparison targets too (macOS: /var -> /private/var)
-    let canonicalRoot: string
-    try {
-      canonicalRoot = await realpath(projectRoot)
-    } catch {
-      canonicalRoot = resolve(projectRoot)
-    }
-    let canonicalTmp: string
-    try {
-      canonicalTmp = await realpath(tmpdir())
-    } catch {
-      canonicalTmp = tmpdir()
-    }
-    // Also allow the system /tmp directory (macOS: /tmp -> /private/tmp).
-    // Agents commonly write to /tmp rather than the user-specific $TMPDIR.
-    let canonicalSystemTmp: string
-    try {
-      canonicalSystemTmp = await realpath("/tmp")
-    } catch {
-      canonicalSystemTmp = "/tmp"
-    }
-    if (
-      !resolved.startsWith(canonicalRoot + "/") &&
-      !resolved.startsWith(canonicalTmp + "/") &&
-      !resolved.startsWith(canonicalSystemTmp + "/") &&
-      resolved !== canonicalRoot &&
-      resolved !== canonicalTmp &&
-      resolved !== canonicalSystemTmp
-    ) {
+    return await realpath(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
+/**
+ * Validate that a path resolves within allowed directories (follows symlinks).
+ * A missing file whose location lies inside an allowed directory reports
+ * `diff_not_found` rather than `path_validation_failed` (issue #932): models
+ * mistype long temp paths, and the outside-allowed message hid that. Nothing
+ * is read on either failure, and a missing path outside the allowed
+ * directories still fails `path_validation_failed`.
+ */
+async function validateDiffPath(diffPath: string, projectRoot: string): Promise<DiffPathError | null> {
+  // Also allow the system /tmp directory (macOS: /tmp -> /private/tmp).
+  // Agents commonly write to /tmp rather than the user-specific $TMPDIR.
+  const allowedRoots = await Promise.all([projectRoot, tmpdir(), "/tmp"].map(canonicalOrResolved))
+  const isAllowed = (candidate: string): boolean =>
+    allowedRoots.some((root) => candidate === root || candidate.startsWith(root + "/"))
+  const lexical = resolve(diffPath)
+  try {
+    return isAllowed(await realpath(lexical)) ? null : "path_validation_failed"
+  } catch (error: unknown) {
+    if (!isErrno(error, "ENOENT")) {
       return "path_validation_failed"
     }
-    return null
-  } catch {
-    // File does not exist or is not accessible — path validation cannot confirm safety
+    // Canonicalize the nearest existing ancestor so a mistyped directory
+    // segment still compares against the canonical allowed roots.
+    // `missing` stays ordered outermost-first (unshift) so joining it onto
+    // the canonical ancestor rebuilds the original path.
+    let ancestor = dirname(lexical)
+    const missing = [basename(lexical)]
+    while (ancestor !== dirname(ancestor)) {
+      try {
+        const location = join(await realpath(ancestor), ...missing)
+        return isAllowed(location) ? "diff_not_found" : "path_validation_failed"
+      } catch {
+        missing.unshift(basename(ancestor))
+        ancestor = dirname(ancestor)
+      }
+    }
     return "path_validation_failed"
   }
+}
+
+/** Fail-closed output for a diff path rejected by validateDiffPath. */
+function diffPathFailure(code: DiffPathError, diffPath: string): { error: string; code: DiffPathError } {
+  return code === "diff_not_found"
+    ? {
+        error:
+          `diff_path ${JSON.stringify(diffPath)} does not exist. ` +
+          "Copy the path exactly from the prompt or manifest; do not retype it.",
+        code,
+      }
+    : { error: "diff_path resolves outside allowed directories", code }
 }
 
 interface BuildReviewPromptsResult {
@@ -4938,11 +6697,7 @@ async function buildReviewPrompts(
     // FR-011: Path validation (follows symlinks via realpath)
     const pathError = await validateDiffPath(args.diff_path, projectRoot)
     if (pathError) {
-      return {
-        ok: false,
-        error: "diff_path resolves outside allowed directories",
-        code: "path_validation_failed",
-      }
+      return { ok: false, ...diffPathFailure(pathError, args.diff_path) }
     }
 
     // Read diff file
@@ -5360,7 +7115,8 @@ async function readDiffChunk(
   //    dirs, symlink-followed). No diff content is read on failure.
   const pathError = await validateDiffPath(args.diff_path, projectRoot)
   if (pathError !== null) {
-    return fail("diff_path resolves outside allowed directories", "path_validation_failed")
+    const { error, code } = diffPathFailure(pathError, args.diff_path)
+    return fail(error, code)
   }
 
   // 2. Load the sibling manifest (design D5: persisted beside the diff,
@@ -5522,6 +7278,260 @@ function createReadDiffChunkTool(projectRoot: string): ReturnType<typeof tool> {
   })
 }
 
+// ── read_dispatch_artifact ───────────────────────────────────
+
+/**
+ * Byte budget of one read_dispatch_artifact page (RD-FR-057): the same
+ * 40 KiB bound the summary retrieval uses, under the host's ~50 KiB
+ * tool-output window. A page always carries at least one entry so paging
+ * always advances.
+ */
+const ARTIFACT_PAGE_MAX_BYTES = 40 * 1024
+
+/** Largest artifact file read_dispatch_artifact will parse. */
+const ARTIFACT_MAX_FILE_BYTES = 64 * 1024 * 1024
+
+const ReadDispatchArtifactInputSchema = z
+  .object({
+    correlation_id: UUIDSchema.describe("correlation_id of a finalized dispatch (the compact result's correlation_id)."),
+    section: z
+      .enum(["summary", "findings", "advisories", "proposals", "runs", "errors"])
+      .describe("summary for scalars and counts, one array to page through, or errors — the complete failure-record array, unpaged."),
+    offset: z.number().int().nonnegative().optional().describe("Entry offset to start from; pass the previous next_offset."),
+  })
+  .strict()
+
+/** Fail-closed read_dispatch_artifact result. */
+function artifactReadError(code: "invalid_input" | "not_found" | "invalid_artifact", message: string): Record<string, unknown> {
+  return { status: "error", code, message }
+}
+
+/**
+ * One validated artifact load: the schema-valid payload, or a fail-closed
+ * RD-FR-057 error result. Generic over the payload schema so the success
+ * artifact and the failure record (RD-FR-066, design D5) share one chain.
+ */
+type ValidatedArtifact<S extends z.ZodType> =
+  | { readonly ok: true; readonly data: z.output<S> }
+  | { readonly ok: false; readonly error: Record<string, unknown> }
+
+/**
+ * Loads and validates one artifact file from the project's dispatch store
+ * (RD-FR-057, shared by the success-artifact sections and the failure
+ * record's errors section per RD-FR-066 design D5). The path is derived by
+ * the caller from a correlation ID, never caller-supplied; the file is opened
+ * with O_NOFOLLOW and O_NONBLOCK, inspected and read through the same handle,
+ * and bounded at ARTIFACT_MAX_FILE_BYTES against the live stream, so a
+ * symlink, FIFO, or same-path swap cannot redirect, stall, or oversize the
+ * read. The envelope must parse, carry the expected `artifact_type`, and pass
+ * the caller's strict payload schema.
+ * @param options.path Derived artifact path under `.uf/artifacts/dispatch/`.
+ * @param options.notFoundMessage ENOENT message; an absent file is not_found.
+ * @param options.artifactType The Hero Interface Contract artifact_type the
+ *   envelope must carry.
+ * @param options.payloadSchema Strict schema the envelope payload must pass.
+ * @returns The validated payload, or a fail-closed error result.
+ */
+async function loadValidatedArtifact<S extends z.ZodType>(options: {
+  readonly path: string
+  readonly notFoundMessage: string
+  readonly artifactType: string
+  readonly payloadSchema: S
+}): Promise<ValidatedArtifact<S>> {
+  let text: string
+  let handle: FileHandle | undefined
+  try {
+    // Inspect and read through the same handle so a same-path swap
+    // cannot redirect content between stat and read (TOCTOU).
+    // O_NOFOLLOW rejects a symlinked final component (ELOOP) and
+    // O_NONBLOCK keeps the open from blocking on a FIFO or device;
+    // both flags are feature-detected because not every platform
+    // defines them. The stat must then prove a regular file.
+    const openFlags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)
+    handle = await open(options.path, openFlags)
+    const info = await handle.stat()
+    if (!info.isFile()) {
+      return { ok: false, error: artifactReadError("invalid_artifact", "artifact is not a regular file") }
+    }
+    if (info.size > ARTIFACT_MAX_FILE_BYTES) {
+      return { ok: false, error: artifactReadError("invalid_artifact", `artifact exceeds ${ARTIFACT_MAX_FILE_BYTES} bytes`) }
+    }
+    // Read bounded against the live stream so growth after the stat
+    // still cannot exceed the byte budget.
+    const chunks: Buffer[] = []
+    const chunk = Buffer.alloc(64 * 1024)
+    let total = 0
+    for (;;) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null)
+      if (bytesRead === 0) {
+        break
+      }
+      total += bytesRead
+      if (total > ARTIFACT_MAX_FILE_BYTES) {
+        return { ok: false, error: artifactReadError("invalid_artifact", `artifact exceeds ${ARTIFACT_MAX_FILE_BYTES} bytes`) }
+      }
+      chunks.push(Buffer.from(chunk.subarray(0, bytesRead)))
+    }
+    text = Buffer.concat(chunks).toString("utf8")
+  } catch (error: unknown) {
+    return isErrno(error, "ENOENT")
+      ? { ok: false, error: artifactReadError("not_found", options.notFoundMessage) }
+      : { ok: false, error: artifactReadError("invalid_artifact", `read artifact: ${errorMessage(error)}`) }
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => undefined)
+    }
+  }
+  let envelope: Record<string, unknown>
+  try {
+    envelope = asRecord(JSON.parse(text))
+  } catch (error: unknown) {
+    return { ok: false, error: artifactReadError("invalid_artifact", `parse artifact: ${errorMessage(error)}`) }
+  }
+  if (envelope.artifact_type !== options.artifactType) {
+    return { ok: false, error: artifactReadError("invalid_artifact", `artifact_type is not ${options.artifactType}`) }
+  }
+  const payload = options.payloadSchema.safeParse(envelope.payload)
+  if (!payload.success) {
+    return { ok: false, error: artifactReadError("invalid_artifact", `payload validation failed: ${formatValidationError(payload.error)}`) }
+  }
+  return { ok: true, data: payload.data }
+}
+
+/**
+ * Read one bounded section of a persisted review-dispatch artifact
+ * (RD-FR-057). The path is derived from the correlation ID inside the
+ * project's dispatch store, so no caller-supplied path is read; the file is
+ * opened with O_NOFOLLOW and O_NONBLOCK, inspected and read through the same
+ * handle, and bounded at ARTIFACT_MAX_FILE_BYTES against the live stream, so
+ * a symlink, FIFO, or same-path swap cannot redirect, stall, or oversize the
+ * read. The envelope must parse as review-dispatch and pass the strict
+ * payload schema. Array sections page by entry under
+ * ARTIFACT_PAGE_MAX_BYTES of compact JSON; runs omit their findings (each
+ * finding lives once in the findings section with its run_ids) and carry a
+ * finding_count instead.
+ *
+ * Section `errors` (RD-FR-066, design D5) instead reads the failed
+ * finalization's record — a distinct `review-dispatch-failure` artifact
+ * keyed by the record's own correlation id — validates it against the strict
+ * failure-record schema, and returns the complete, untruncated errors array
+ * without paging: the record exists precisely so nothing the preview's caps
+ * dropped is lost. A dispatch that finalized successfully has no record, so
+ * the section fails closed with not_found; success artifacts carry no errors
+ * by schema, making that answer authoritative rather than a probe ordering.
+ * @param rawInput Untrusted tool arguments.
+ * @param projectRoot Project worktree holding `.uf/artifacts/dispatch/`.
+ * @returns A structured page, summary, errors array, or fail-closed error.
+ */
+export async function readDispatchArtifact(rawInput: unknown, projectRoot: string): Promise<Record<string, unknown>> {
+  const parsed = ReadDispatchArtifactInputSchema.safeParse(rawInput)
+  if (!parsed.success) {
+    return artifactReadError("invalid_input", `input validation failed: ${formatValidationError(parsed.error)}`)
+  }
+  const { correlation_id: correlationId, section } = parsed.data
+  const offset = parsed.data.offset ?? 0
+  if (section === "errors") {
+    // RD-FR-066 (design D5): the errors section reads the failure record,
+    // never the success artifact. The caller's correlation id — the record's
+    // own, surfaced by the compact result's failure_record — derives the
+    // path, and the complete array returns unpaged.
+    const loaded = await loadValidatedArtifact({
+      path: join(resolve(projectRoot, DISPATCH_ARTIFACT_DIRECTORY), `${correlationId}.failure.json`),
+      notFoundMessage: `no failure record for correlation_id ${correlationId}`,
+      artifactType: REVIEW_DISPATCH_FAILURE_ARTIFACT_TYPE,
+      payloadSchema: ReviewDispatchFailurePayloadSchema,
+    })
+    if (!loaded.ok) {
+      return loaded.error
+    }
+    const errors = loaded.data.errors
+    return { status: "ok", correlation_id: correlationId, section, total: errors.length, errors }
+  }
+  const loaded = await loadValidatedArtifact({
+    path: join(resolve(projectRoot, DISPATCH_ARTIFACT_DIRECTORY), `${correlationId}.json`),
+    notFoundMessage: `no finalized artifact for correlation_id ${correlationId}`,
+    artifactType: REVIEW_DISPATCH_ARTIFACT_TYPE,
+    payloadSchema: ReviewDispatchPayloadSchema,
+  })
+  if (!loaded.ok) {
+    return loaded.error
+  }
+  const data = loaded.data
+  const proposals = data.proposals ?? []
+  if (section === "summary") {
+    return {
+      status: "ok",
+      correlation_id: data.correlation_id,
+      section,
+      command: data.command,
+      mode: data.mode,
+      verdict: data.verdict,
+      verdict_reason: data.verdict_reason,
+      run_counts: data.run_counts,
+      coverage: data.coverage,
+      workflow_result: data.workflow_result,
+      counts: {
+        findings: data.findings.length,
+        advisories: data.advisories.length,
+        proposals: proposals.length,
+        runs: data.runs.length,
+      },
+    }
+  }
+  const entries: readonly unknown[] =
+    section === "findings"
+      ? data.findings
+      : section === "advisories"
+        ? data.advisories
+        : section === "proposals"
+          ? proposals
+          : data.runs.map(({ findings, ...run }) => ({ ...run, finding_count: findings.length }))
+  const page: unknown[] = []
+  const result: Record<string, unknown> = {
+    status: "ok",
+    correlation_id: data.correlation_id,
+    section,
+    total: entries.length,
+    offset,
+    entries: page,
+    next_offset: null,
+  }
+  let index = offset
+  while (index < entries.length) {
+    page.push(entries[index])
+    if (page.length > 1 && Buffer.byteLength(JSON.stringify(result), "utf8") >= ARTIFACT_PAGE_MAX_BYTES) {
+      page.pop()
+      break
+    }
+    index += 1
+  }
+  result.next_offset = index < entries.length ? index : null
+  return result
+}
+
+/** Creates the read_dispatch_artifact tool (RD-FR-057). */
+function createReadDispatchArtifactTool(projectRoot: string): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Read one bounded section of a finalized review-dispatch artifact by correlation_id, instead of reading " +
+      "the artifact file (its pretty-printed lines can exceed the file-read tool's line limit). section " +
+      "\"summary\" returns command, mode, verdict, verdict_reason, run_counts, coverage, workflow_result, and " +
+      "the entry counts of findings, advisories, proposals, and runs. section \"findings\", \"advisories\", " +
+      "\"proposals\", or \"runs\" returns { total, offset, entries, next_offset } with full, untruncated entries " +
+      "under 40,960 bytes of compact JSON per page (at least one entry); call again with offset: next_offset " +
+      "until next_offset is null. runs entries omit findings and carry finding_count. section \"errors\" " +
+      "instead reads the failure record a failed finalization persisted (derived from the correlation id " +
+      "as <correlation_id>.failure.json) and returns { status: \"ok\", correlation_id, section, total, " +
+      "errors } with the complete, untruncated errors array — no paging; a dispatch that finalized " +
+      "successfully has no failure record, so the section fails closed with not_found. Errors return " +
+      "{ status: \"error\", code: invalid_input | not_found | invalid_artifact, message }; fail closed on any error.",
+    args: ReadDispatchArtifactInputSchema.shape,
+    async execute(args): Promise<{ readonly output: string }> {
+      return { output: JSON.stringify(await readDispatchArtifact(args, projectRoot)) }
+    },
+  })
+}
+
 // ── dispatch_review_runs implementation ──────────────────────
 
 /**
@@ -5560,6 +7570,73 @@ async function resolveTimeoutLimits(deps: {
  * @param projectRoot Absolute project worktree path.
  * @returns Aggregate output with run counts, findings, proposals, and warnings.
  */
+/**
+ * HARDEN-003 (harden-spec-review-gate, task 4.1): guard a specs-mode
+ * dispatch against re-rolling a recorded spec-review iteration. The gate
+ * record for the dispatch's head branch is read reconciled (crash-window
+ * artifacts heal here, exactly as every gate consumer does), and the
+ * dispatch is refused while the latest recorded iteration still stands
+ * undischarged — an undecided REQUEST CHANGES the human has not
+ * adjudicated, or one held by a pause decision — naming the recorded
+ * iteration and its verdict. The iteration cap is enforced here too: the
+ * initial review plus SPEC_REVIEW_ITERATION_CAP fix iterations may
+ * dispatch; a would-be iteration beyond that is refused so a persistent
+ * REQUEST CHANGES exits through the spec-review paused path instead of
+ * re-rolling. A decided or approving latest iteration — or no record at
+ * all — proceeds: the next iteration number is fresh, so its verdict
+ * cannot collide with a sealed one. Non-specs modes never consult the
+ * record; a specs dispatch whose input context carries no head branch
+ * (issue-kind) cannot be keyed and proceeds — the checkpoint gate
+ * (HARDEN-002) still holds the pipeline.
+ *
+ * @param projectRoot Absolute project worktree path.
+ * @param mode Dispatch mode; only "specs" consults the gate record.
+ * @param headRef Head branch the dispatch reviews (state key, sanitized by the reader).
+ * @returns The refusal message, or null when the dispatch may proceed.
+ */
+export function specReviewDispatchGuard(
+  projectRoot: string,
+  mode: string,
+  headRef: string | undefined,
+): { message: string } | null {
+  if (mode !== "specs") return null
+  if (headRef === undefined || headRef.length === 0) return null
+  const record = readSpecReviewGateRecord(projectRoot, headRef)
+  if (record === null) return null
+  const status = evaluateSpecReviewGate(record)
+  if (status.kind === "missing_decisions") {
+    return {
+      message:
+        `iteration_already_recorded: spec-review iteration ${status.iteration} ` +
+        `(${status.verdict}) is recorded with undecided findings ` +
+        `[${status.undecided.join(", ")}]; record per-finding decisions via ` +
+        "the checkpoint spec_review_decisions argument before dispatching " +
+        "the next iteration",
+    }
+  }
+  if (status.kind === "paused") {
+    return {
+      message:
+        `iteration_already_recorded: spec-review iteration ${status.iteration} ` +
+        `(${status.verdict}) is held by a pause decision on findings ` +
+        `[${status.paused.join(", ")}]; exit through the spec-review paused ` +
+        "path before dispatching again",
+    }
+  }
+  const nextIteration = nextSpecReviewIteration(record)
+  if (nextIteration > SPEC_REVIEW_ITERATION_CAP + 1) {
+    return {
+      message:
+        `spec_review_iteration_cap_exceeded: the dispatch would start ` +
+        `iteration ${nextIteration}, beyond the maximum of ` +
+        `${SPEC_REVIEW_ITERATION_CAP + 1} (initial review plus ` +
+        `${SPEC_REVIEW_ITERATION_CAP} fix iterations); a persistent REQUEST ` +
+        "CHANGES must exit through the spec-review paused path",
+    }
+  }
+  return null
+}
+
 async function dispatchReviewRuns(
   rawInput: unknown,
   context: ToolContext,
@@ -5584,6 +7661,32 @@ async function dispatchReviewRuns(
 
   const input = parsed.data
   const warnings: string[] = []
+
+  // HARDEN-003 (harden-spec-review-gate, task 4.1): a specs-mode dispatch
+  // is refused while the latest recorded spec-review iteration stands
+  // undischarged (undecided or paused) or the iteration cap would be
+  // exceeded — checked before correlation minting so a refused dispatch
+  // leaves no dispatch session behind and the previous session's map entry
+  // stays intact.
+  const inputContext = input.session_metadata.input_context
+  const headRef =
+    inputContext.kind === "local" || inputContext.kind === "pr"
+      ? inputContext.head_ref
+      : undefined
+  const specReviewRefusal = specReviewDispatchGuard(projectRoot, input.mode, headRef)
+  if (specReviewRefusal !== null) {
+    return {
+      status: "error",
+      runs_completed: 0,
+      runs_failed: 0,
+      runs_skipped: 0,
+      findings: [],
+      proposals: [],
+      warnings: [],
+      message: specReviewRefusal.message,
+      retryable: false,
+    }
+  }
 
   // Design D1 (fix-review-dispatch-correlation-release, issue #794): every
   // aggregate dispatch invocation owns a freshly minted correlation ID, so a
@@ -5728,6 +7831,11 @@ async function dispatchReviewRuns(
   let cumulativeCostUsd = 0
   let budgetExceeded = false
   let isFirstRun = true
+  // RD-FR-065 (design D4): the first run-failure cause in batch order — a
+  // fulfilled failure's `<code>: <message>` or a rejection reason — set
+  // once so later failures cannot displace it, then folded into the
+  // all-failed aggregate message below.
+  let firstRunFailureCause: string | null = null
 
   // Split included entries into batches of max_parallel_runs (FR-005).
   const batches: (typeof includedEntries)[] = []
@@ -5800,13 +7908,29 @@ async function dispatchReviewRuns(
 
     const results = await Promise.allSettled(batchPromises)
 
-    for (const result of results) {
+    // RD-FR-065 (design D3): capture every failed run's cause into
+    // warnings. allSettled preserves input order, so each settled result
+    // zips with the batch entry that produced it — the warning's agent
+    // and sequence come from the entry, not the result. The
+    // fulfilled-but-failed branch covers pre-execution early exits
+    // (tier_model_unavailable, host_model_structural,
+    // host_model_unavailable, unknown_agent) whose errors previously
+    // never reached warnings; rejected batch promises keep the existing
+    // `run rejected:` warning.
+    for (const [resultIndex, result] of results.entries()) {
+      const entry = batch[resultIndex]
       if (result.status === "fulfilled") {
         const runResult = result.value
         if (runResult.error === null) {
           runsCompleted++
         } else {
           runsFailed++
+          warnings.push(
+            `run failed: ${entry.agent}/${entry.sequence}: ${runResult.error.code}: ${runResult.error.message}`,
+          )
+          if (firstRunFailureCause === null) {
+            firstRunFailureCause = `${runResult.error.code}: ${runResult.error.message}`
+          }
         }
         // Track cost for budget checking.
         if (runResult.usage?.cost_usd != null) {
@@ -5814,7 +7938,11 @@ async function dispatchReviewRuns(
         }
       } else {
         runsFailed++
-        warnings.push(`run rejected: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`)
+        const rejectionReason = result.reason instanceof Error ? result.reason.message : String(result.reason)
+        warnings.push(`run rejected: ${rejectionReason}`)
+        if (firstRunFailureCause === null) {
+          firstRunFailureCause = rejectionReason
+        }
       }
     }
 
@@ -5847,7 +7975,19 @@ async function dispatchReviewRuns(
     allProposals.push(...result.run.proposals)
   }
 
-  await settleOperationRecord(correlationId, operation, runsFailed > 0 && runsCompleted === 0 ? "error" : "ok", {
+  // RD-FR-065 (design D4): an all-failed dispatch — every dispatched run
+  // failed, none completed — folds its first run-failure cause into the
+  // aggregate `message`, first-cause precedence over warnings[0] so an
+  // earlier-phase warning (sibling evidence, limits degradation) cannot
+  // displace a run cause; dispatchSummaryLine renders it under the #946
+  // contract unchanged. Partial failure sets no message — causes stay
+  // visible through runs_failed and warnings. No aggregate `retryable`:
+  // a mixed failure set has no honest single value, and the sanctioned
+  // recovery paths (caller re-invocation after remediation, DR-FR-002
+  // redispatch where run files exist) do not need it.
+  const allRunsFailed = runsFailed > 0 && runsCompleted === 0
+
+  await settleOperationRecord(correlationId, operation, allRunsFailed ? "error" : "ok", {
     total: input.plan_entries.length,
     success: runsCompleted,
     failed: runsFailed,
@@ -5857,7 +7997,7 @@ async function dispatchReviewRuns(
     cancelled: 0,
   })
   return {
-    status: runsFailed > 0 && runsCompleted === 0 ? "error" : "ok",
+    status: allRunsFailed ? "error" : "ok",
     // D3: report the invocation's minted correlation — the same local the
     // findings collection above read, so the reported identity always
     // matches the session that was actually collected.
@@ -5868,6 +8008,7 @@ async function dispatchReviewRuns(
     findings: allFindings,
     proposals: allProposals,
     warnings,
+    ...(allRunsFailed ? { message: firstRunFailureCause ?? warnings[0] } : {}),
   }
 }
 
@@ -5878,7 +8019,7 @@ async function dispatchReviewRuns(
  * @param projectRoot Absolute project worktree path.
  * @returns An OpenCode tool definition.
  */
-function createDispatchReviewRunsTool(
+export function createDispatchReviewRunsTool(
   deps: DispatchAgentRunDependencies,
   siblingDeps: SiblingAcquisitionDependencies,
   projectRoot: string,
@@ -5890,7 +8031,11 @@ function createDispatchReviewRunsTool(
       "When per_run_timeout_ms is omitted, each run's timeout is derived from the work being dispatched " +
       "(review-matrix base window, prompt size, plan tier, and parallelism), bounded by 1,800,000 ms. " +
       "Capture the correlation_id this tool reports (in the one-line summary and machine-readable metadata) " +
-      "and pass it as correlation_id on every subsequent consolidate_dispatch call in the same workflow.",
+      "and pass it as correlation_id on every subsequent consolidate_dispatch call in the same workflow. " +
+      "An error summary also ends with \" — error: <message> (retryable: <bool>)\", the failure message " +
+      "collapsed to one line and cut to at most 512 characters including the ellipsis; all-failed dispatches " +
+      "report the first run-failure cause as their message. Its proposals count is " +
+      "taken before consolidate_dispatch merges near-identical proposals, so the artifact may hold fewer.",
     args: DispatchReviewRunsInputSchema.shape,
     async execute(
       args,
@@ -5900,10 +8045,34 @@ function createDispatchReviewRunsTool(
       // D3: the summary carries the correlation ID (rendered as "none" for
       // the pre-parse validation-failure result, which mints nothing) so the
       // dispatch session is addressable from the prose output alone.
-      const summary = `dispatch_review_runs: ${result.status} (correlation_id ${result.correlation_id ?? "none"}) — ${result.runs_completed} completed, ${result.runs_failed} failed, ${result.runs_skipped} skipped, ${result.findings.length} findings, ${result.proposals.length} proposals`
-      return { output: summary, metadata: result }
+      return { output: dispatchSummaryLine(result), metadata: result }
     },
   })
+}
+
+/** Maximum characters of a failure message carried on the summary line (issue #946). */
+const DISPATCH_SUMMARY_MESSAGE_CHARS = 512
+
+/**
+ * Render the one-line dispatch_review_runs summary. The documented prefix
+ * (status, correlation_id, counts) is stable; a non-ok result appends its
+ * failure message, collapsed to one line and bounded, plus `retryable` when
+ * known, because the metadata channel never reaches the calling model
+ * (issue #946).
+ * @param result Aggregate dispatch result.
+ * @returns The caller-visible summary line.
+ */
+export function dispatchSummaryLine(result: z.infer<typeof DispatchReviewRunsOutputSchema>): string {
+  const summary = `dispatch_review_runs: ${result.status} (correlation_id ${result.correlation_id ?? "none"}) — ${result.runs_completed} completed, ${result.runs_failed} failed, ${result.runs_skipped} skipped, ${result.findings.length} findings, ${result.proposals.length} proposals`
+  if (result.status === "ok") return summary
+  const flat = (result.message ?? "no failure message reported").replace(/\s+/g, " ").trim()
+  // A cut message keeps DISPATCH_SUMMARY_MESSAGE_CHARS in total, ellipsis included.
+  const message =
+    flat.length > DISPATCH_SUMMARY_MESSAGE_CHARS
+      ? `${truncateText(flat, DISPATCH_SUMMARY_MESSAGE_CHARS - 1).text}…`
+      : flat
+  const retryable = result.retryable === undefined ? "" : ` (retryable: ${result.retryable})`
+  return `${summary} — error: ${message}${retryable}`
 }
 
 // ── Operation window records (RD-FR-031) ─────────────────────
@@ -6096,10 +8265,17 @@ function createDispatchStatusTool(): ReturnType<typeof tool> {
           // Effective per-run timeout (RD-FR-030, design D5 of
           // derive-per-run-timeout): surfaced when the run file carries
           // timeout provenance; null for older run files and unreadable
-          // entries. Strictly observational — never feeds status or
-          // verdict computation.
+          // entries. executor_effective_ms (the post-clamp applied value
+          // copied from the executor result) is preferred over the derived
+          // effective_ms, which can overstate the applied limit after the
+          // delegation budget clamp. Strictly observational — never feeds
+          // status or verdict computation.
           timeout_effective_ms:
-            typeof result.run.timeout?.effective_ms === "number" ? result.run.timeout.effective_ms : null,
+            typeof result.run.timeout?.executor_effective_ms === "number"
+              ? result.run.timeout.executor_effective_ms
+              : typeof result.run.timeout?.effective_ms === "number"
+                ? result.run.timeout.effective_ms
+                : null,
         })
       }
 
@@ -7572,31 +9748,36 @@ interface FetchPrReviewContextOutput {
 }
 
 /**
- * Build the Error for a failed `gh` invocation, annotated with a structured
- * `ghCode` property for classifyError.
+ * Build the Error for a failed `gh` invocation, annotated with the
+ * structured `ghCode` and `retryable` properties for classifyError.
  *
- * Detects gh-reported timeouts and GitHub API rate limits from stderr (plus
- * gh's rate-limit exit code 4); every other failure annotates `api_error`.
- * Shared by runGhCommand's non-zero-exit throw and fetch_pr_checks'
- * exit-code-tolerant classification of stdout that carries no check-status
- * data, so both paths produce identically classified errors.
+ * Classification delegates to the shared `classifyGhFailure` table
+ * (`../../lib/gh-error.ts`) so this plugin and the uf-workflow
+ * feedback tools report identical codes for identical failures
+ * (FRR-FR-001, issue #1023 MEDIUM 3). Semantics: stderr text keys
+ * (timeout, rate limit, authentication) first; gh's documented
+ * exit code 4 ("a command requires authentication") as the fallback
+ * authentication signal. Shared by runGhCommand's non-zero-exit
+ * throw and fetch_pr_checks' exit-code-tolerant classification of
+ * stdout that carries no check-status data, so both paths produce
+ * identically classified errors.
  *
  * @param stderr The gh process's stderr text.
  * @param exitCode The gh process's exit code.
- * @returns An Error whose `ghCode` property classifies the failure.
+ * @returns An Error whose `ghCode` and `retryable` properties classify the failure.
  */
-function ghFailureError(stderr: string, exitCode: number): Error & { ghCode: string } {
-  const lower = stderr.toLowerCase()
-  // Detect gh-reported timeout messages (AbortSignal timeouts reject the
-  // stream read before exit-code handling).
-  if (lower.includes("timed out") || lower.includes("timeout")) {
-    return Object.assign(new Error(`gh CLI timed out: ${stderr.trim()}`), { ghCode: "timeout" })
-  }
-  // Detect rate limiting from GitHub API.
-  if (lower.includes("rate limit") || lower.includes("api rate limit exceeded") || exitCode === 4) {
-    return Object.assign(new Error(`GitHub API rate limited: ${stderr.trim()}`), { ghCode: "rate_limited" })
-  }
-  return Object.assign(new Error(`gh CLI failed (exit ${exitCode}): ${stderr.trim()}`), { ghCode: "api_error" })
+function ghFailureError(stderr: string, exitCode: number): Error & { ghCode: string; retryable: boolean } {
+  const { code, retryable } = classifyGhFailure({ stderr, exitCode })
+  const detail = stderr.trim()
+  const message =
+    code === "timeout"
+      ? `gh CLI timed out: ${detail}`
+      : code === "rate_limited"
+        ? `GitHub API rate limited: ${detail}`
+        : code === "gh_auth_failed"
+          ? `gh CLI is not authenticated (exit ${exitCode}): ${detail}`
+          : `gh CLI failed (exit ${exitCode}): ${detail}`
+  return Object.assign(new Error(message), { ghCode: code, retryable })
 }
 
 /**
@@ -7643,11 +9824,20 @@ function classifyError(error: unknown, fallbackCode: string, fallbackMessage: st
     return { error: true, code: "timeout", message: "gh CLI call timed out", retryable: true }
   }
   if (error instanceof Error) {
-    const ghCode = (error as Error & { ghCode?: string }).ghCode
-    if (ghCode === "timeout") return { error: true, code: "timeout", message: error.message, retryable: true }
-    if (ghCode === "rate_limited")
-      return { error: true, code: "rate_limited", message: error.message, retryable: true }
-    return { error: true, code: ghCode ?? fallbackCode, message: error.message, retryable: false }
+    const annotated = error as Error & { ghCode?: string; retryable?: boolean }
+    if (annotated.ghCode !== undefined) {
+      // Retryability travels with the shared classification
+      // (ghFailureError annotates both from classifyGhFailure), so
+      // a code added to the shared table keeps its retryability
+      // here without further edits.
+      return {
+        error: true,
+        code: annotated.ghCode,
+        message: error.message,
+        retryable: annotated.retryable ?? false,
+      }
+    }
+    return { error: true, code: fallbackCode, message: error.message, retryable: false }
   }
   return { error: true, code: fallbackCode, message: fallbackMessage, retryable: false }
 }
@@ -7791,19 +9981,43 @@ async function fetchPrReviewContext(
   const warnings: string[] = []
 
   // ── 1.2c: Fetch CI checks ───────────────────────────────
+  // Advisory sub-call (FPR-FR-017): uses the exit-code-tolerant runner so
+  // pending (exit 8) and failing (exit 1) PRs keep their JSON array instead
+  // of degrading. `status` carries gh's uppercase `state`; `conclusion`
+  // carries the authoritative `bucket` (design D6).
   let ciChecks: Array<{ name: string; status: string; conclusion: string | null }> = []
   try {
-    const raw = await runGhCommand(["pr", "checks", prNumberStr, "--json", "name,state,conclusion"])
-    const parsed = JSON.parse(raw) as Array<{
-      name: string
-      state: string
-      conclusion: string | null
-    }>
-    ciChecks = parsed.map((check) => ({
-      name: check.name,
-      status: check.state,
-      conclusion: check.conclusion ?? null,
-    }))
+    const result = await runGhCommandTolerant([
+      "pr",
+      "checks",
+      prNumberStr,
+      "--json",
+      "name,state,bucket",
+    ])
+    const stdout = result.stdout.trim()
+    const parsedChecks = tryParseJsonArray(stdout)
+    if (parsedChecks !== null) {
+      ciChecks = parsedChecks.map((entry: unknown) => {
+        const check = (entry ?? {}) as Partial<{
+          name: string
+          state: string
+          bucket: string
+        }>
+        return {
+          name: check.name ?? "",
+          status: check.state ?? "",
+          conclusion: check.bucket ?? null,
+        }
+      })
+    } else if (stdout === "" && NO_CHECKS_REPORTED_PATTERN.test(result.stderr)) {
+      // A checkless PR is data, not degradation: empty ci_checks.
+      ciChecks = []
+    } else {
+      const detail =
+        result.stderr.trim() ||
+        `gh pr checks stdout was not a JSON array (exit ${result.exitCode})`
+      warnings.push(`ci_checks degraded: ${detail}`)
+    }
   } catch (error: unknown) {
     // Non-fatal: CI checks may be unavailable (e.g. no checks configured).
     const msg = error instanceof Error ? error.message : String(error)
@@ -7939,7 +10153,10 @@ async function fetchPrReviewContext(
     .join("\n")
 
   const exceedsThreshold = diffLines > DIFF_THRESHOLD
-  const ciPending = ciChecks.some((check) => check.status !== "completed")
+  // FPR-FR-017 / MODIFIED FR-006: derive from the bucket vocabulary
+  // (`conclusion` carries the bucket), never by comparing the uppercase
+  // `status` to the lowercase "completed" value gh does not emit.
+  const ciPending = ciChecks.some((check) => check.conclusion === "pending")
 
   // ── 1.2g: Populate warnings ─────────────────────────────
   if (ciPending) {
@@ -8099,6 +10316,12 @@ interface GhCommandResult {
  * data. AbortSignal timeouts still reject and classify as `timeout`.
  * Uses Bun.spawn argument arrays exactly like runGhCommand — no shell
  * layer, so untrusted check names and links cannot inject.
+ *
+ * Twin: uf-finale's module-local `runGhCommandTolerant`
+ * (`.opencode/plugins/uf-finale/index.ts`) is the second consumer of this
+ * pattern (fix-uf-finale-ci-poll-gh-schema design D2/R4). A third
+ * consumer MUST trigger extraction into `.opencode/lib/`, not a third
+ * local copy.
  *
  * @param args CLI arguments (e.g. ["pr", "checks", "123", "--json", "..."]).
  * @returns stdout, stderr, and the exit code.
@@ -8311,12 +10534,13 @@ async function fetchPrChecks(prNumber: number): Promise<FetchPrChecksOutput | Fe
  * Creates the fetch_pr_checks OpenCode tool.
  *
  * Repair-lane counterpart to fetch_pr_review_context's internal advisory
- * ci_checks sub-call: that sub-call wraps runGhCommand, throws on
- * non-zero exit, and degrades ci_checks to empty with a warning —
- * correct for review dispatch, where checks are advisory, but
- * fatal-loss for PR repair. This tool treats gh pr checks stdout JSON
- * as check-status data on ANY exit code and derives the eligibility
- * classification from the observed buckets (design D4).
+ * ci_checks sub-call: that sub-call shares the exit-code-tolerant runner
+ * but treats checks as advisory — an unknown bucket leaves ci_pending
+ * false and a genuine failure degrades ci_checks to empty with a warning.
+ * That is correct for review dispatch but fatal-loss for PR repair, where
+ * the checks payload is the primary signal. This tool treats gh pr checks
+ * stdout JSON as check-status data on ANY exit code and derives the
+ * eligibility classification from the observed buckets (design D4).
  *
  * @returns An OpenCode tool definition taking a required validated PR
  *   number and returning check status plus derived eligibility.
@@ -8348,6 +10572,548 @@ function createFetchPrChecksTool(): ReturnType<typeof tool> {
         return { output: JSON.stringify(result, null, 2) }
       }
       const result = await fetchPrChecks(parsed.data.pr_number)
+      return { output: JSON.stringify(result, null, 2) }
+    },
+  })
+}
+
+// ── resolve_review_mode ──────────────────────────────────────
+
+/**
+ * Re-review evaluator limits (feedback-loop-scope, RPR-FR-002). A light
+ * check replaces the council only for a push this small and contained.
+ */
+export const LIGHT_CHECK_MAX_CHANGED_LINES = 200
+
+/**
+ * The compare API lists at most 300 files. A response at that size may
+ * be truncated, so it can never qualify for a light check.
+ */
+export const COMPARE_FILE_LIMIT = 300
+
+/**
+ * Paths whose changes always get the full council: workflows and
+ * repository settings, the agent instructions, the constitution, the
+ * convention packs, and anything naming auth, tokens, secrets, or
+ * credentials.
+ */
+export const SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
+  /^\.github\//,
+  /(^|\/)AGENTS\.md$/,
+  /(^|\/)constitution\.md$/,
+  /^\.opencode\/uf\/packs\//,
+  /auth|token|secret|credential/i,
+]
+
+/** File statuses in a compare response that rule out a light check. */
+const STRUCTURAL_FILE_STATUSES = new Set(["added", "removed", "renamed", "copied"])
+
+/** Severity marker at the start of a finding (`**HIGH — ...`). */
+const FINDING_SEVERITY_PATTERN = /^\s*\*\*(CRITICAL|HIGH|MEDIUM|LOW)\b/
+
+/** Any bold CRITICAL marker in a review body or comment. */
+const CRITICAL_MARKER_PATTERN = /\*\*CRITICAL\b/
+
+/** A review as `GET /pulls/{n}/reviews` returns it (fields used here). */
+export interface ReviewModeReview {
+  readonly id: number
+  readonly user: string
+  readonly state: string
+  readonly commit_id: string
+  readonly submitted_at: string
+  readonly body: string
+  /** Present on the review object; absent when the fetch omits it. */
+  readonly html_url?: string
+}
+
+/** An inline comment as `GET /pulls/{n}/comments` returns it (fields used here). */
+export interface ReviewModeComment {
+  readonly id: number
+  readonly review_id: number | null
+  readonly path: string
+  readonly line: number | null
+  readonly body: string
+}
+
+/** The fields of `GET /compare/{base}...{head}` the evaluator reads. */
+export interface ReviewModeCompare {
+  readonly status: string
+  readonly files: readonly { readonly filename: string; readonly status: string; readonly changes: number }[]
+}
+
+export interface ReviewModeInput {
+  readonly headSha: string
+  readonly viewer: string
+  readonly reviews: readonly ReviewModeReview[]
+  readonly comments: readonly ReviewModeComment[]
+  /** Null when the compare call failed. */
+  readonly compare: ReviewModeCompare | null
+  /** Check buckets from `gh pr checks`, or null when they could not be read. */
+  readonly checkBuckets: readonly string[] | null
+}
+
+/** A CRITICAL or HIGH finding of the prior review, for the light check to verify. */
+export interface PriorFinding {
+  readonly comment_id: number
+  readonly path: string
+  readonly line: number | null
+  /** `UNKNOWN` when the comment carries no severity marker; it counts as HIGH. */
+  readonly severity: "CRITICAL" | "HIGH" | "UNKNOWN"
+}
+
+/** Extract a review's CRITICAL, HIGH, and unlabelled inline findings. */
+function extractPriorFindings(reviewId: number, comments: readonly ReviewModeComment[]): PriorFinding[] {
+  const findings: PriorFinding[] = []
+  for (const comment of comments) {
+    if (comment.review_id !== reviewId) continue
+    const severity = FINDING_SEVERITY_PATTERN.exec(comment.body)?.[1]
+    if (severity === "MEDIUM" || severity === "LOW") continue
+    findings.push({
+      comment_id: comment.id,
+      path: comment.path,
+      line: comment.line,
+      severity: severity === "HIGH" || severity === "CRITICAL" ? severity : "UNKNOWN",
+    })
+  }
+  return findings
+}
+
+export interface ReviewModeDecision {
+  readonly mode: "full" | "light"
+  readonly reason: string
+  readonly prior_review: { readonly id: number; readonly commit_id: string; readonly state: string } | null
+  readonly delta: { readonly files: number; readonly changed_lines: number } | null
+  readonly prior_findings: readonly PriorFinding[]
+}
+
+/**
+ * Decide between the full council and a light check (feedback-loop-scope
+ * RPR-FR-001, RPR-FR-002). Every failure to read an input decides `full`: the light
+ * check is an optimisation, so missing data never earns it.
+ *
+ * The prior review is the viewer's latest submitted review (dismissed
+ * included: branch rules dismiss stale approvals on push) whose commit
+ * is not the head. Review and comment text is untrusted; it is only
+ * matched against severity markers, never interpreted.
+ */
+export function decideReviewMode(input: ReviewModeInput): ReviewModeDecision {
+  const viewer = input.viewer.toLowerCase()
+  const prior = [...input.reviews]
+    .filter((review) => review.user.toLowerCase() === viewer && review.state !== "PENDING")
+    .filter((review) => review.commit_id !== input.headSha)
+    .sort((a, b) => a.submitted_at.localeCompare(b.submitted_at))
+    .at(-1)
+
+  const full = (reason: string, delta: ReviewModeDecision["delta"] = null): ReviewModeDecision => ({
+    mode: "full",
+    reason,
+    prior_review: prior === undefined ? null : { id: prior.id, commit_id: prior.commit_id, state: prior.state },
+    delta,
+    prior_findings: [],
+  })
+
+  if (input.viewer === "") return full("the current user could not be read")
+  if (prior === undefined) return full(`no earlier review by ${input.viewer} on another commit`)
+
+  const priorComments = input.comments.filter((comment) => comment.review_id === prior.id)
+  if (CRITICAL_MARKER_PATTERN.test(prior.body) || priorComments.some((c) => CRITICAL_MARKER_PATTERN.test(c.body))) {
+    return full("the prior review raised a CRITICAL finding")
+  }
+
+  if (input.compare === null) return full("the changes since the prior review could not be read")
+  if (input.compare.status !== "ahead") {
+    return full(`the reviewed commit is no longer an ancestor of the head (compare status ${input.compare.status})`)
+  }
+  const files = input.compare.files
+  const changedLines = files.reduce((sum, file) => sum + file.changes, 0)
+  const delta = { files: files.length, changed_lines: changedLines }
+  if (files.length >= COMPARE_FILE_LIMIT) return full("the compare response may be truncated", delta)
+  if (changedLines > LIGHT_CHECK_MAX_CHANGED_LINES) {
+    return full(`${changedLines} changed lines exceed ${LIGHT_CHECK_MAX_CHANGED_LINES}`, delta)
+  }
+  const structural = files.find((file) => STRUCTURAL_FILE_STATUSES.has(file.status))
+  if (structural !== undefined) return full(`${structural.filename} was ${structural.status}`, delta)
+  const sensitive = files.find((file) => SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(file.filename)))
+  if (sensitive !== undefined) return full(`${sensitive.filename} is a sensitive path`, delta)
+
+  if (input.checkBuckets === null) return full("the PR checks could not be read", delta)
+  if (input.checkBuckets.includes("fail")) return full("a check is failing", delta)
+
+  const priorFindings = extractPriorFindings(prior.id, input.comments)
+
+  return {
+    mode: "light",
+    reason: `${files.length} files, ${changedLines} lines since ${prior.commit_id.slice(0, 7)}`,
+    prior_review: { id: prior.id, commit_id: prior.commit_id, state: prior.state },
+    delta,
+    prior_findings: priorFindings,
+  }
+}
+
+const ResolveReviewModeInputSchema = z
+  .object({
+    pr_number: z.number().int().min(1).max(999_999),
+  })
+  .strict()
+
+/** Flatten `gh api --paginate --slurp` output (an array of pages). */
+function flattenPages(text: string): unknown[] | null {
+  const pages = tryParseJsonArray(text.trim())
+  if (pages === null) return null
+  return pages.flatMap((page) => (Array.isArray(page) ? page : [page]))
+}
+
+/**
+ * Gather the evaluator's inputs with gh and decide. Each gh call that
+ * fails leaves its input empty, which decides `full`; only a missing
+ * PR or gh itself is an error.
+ */
+async function resolveReviewMode(
+  prNumber: number,
+): Promise<(ReviewModeDecision & { readonly pr_number: number; readonly head_sha: string; readonly viewer: string }) | FetchContextError> {
+  try {
+    await runGhCommand(["auth", "status"])
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "gh auth status failed"
+    return { error: true, code: "gh_auth_failed", message, retryable: false }
+  }
+
+  let headSha: string
+  let repository: string
+  try {
+    const meta = JSON.parse(await runGhCommand(["pr", "view", String(prNumber), "--json", "headRefOid,url"])) as {
+      headRefOid?: string
+      url?: string
+    }
+    headSha = meta.headRefOid ?? ""
+    repository = deriveBaseRepository(meta.url ?? "") ?? ""
+  } catch (error: unknown) {
+    return classifyError(error, "pr_not_found", `Failed to read PR #${prNumber}`)
+  }
+  if (!/^[0-9a-f]{40}$/.test(headSha) || repository === "") {
+    return { error: true, code: "api_error", message: `PR #${prNumber} returned no head SHA or repository`, retryable: false }
+  }
+
+  const read = async (args: readonly string[]): Promise<string | null> => {
+    try {
+      return await runGhCommand(args)
+    } catch {
+      return null
+    }
+  }
+
+  const viewer = ((await read(["api", "user", "--jq", ".login"])) ?? "").trim()
+  const reviewPages = flattenPages((await read(["api", `repos/${repository}/pulls/${prNumber}/reviews`, "--paginate", "--slurp"])) ?? "")
+  const commentPages = flattenPages((await read(["api", `repos/${repository}/pulls/${prNumber}/comments`, "--paginate", "--slurp"])) ?? "")
+
+  const reviews: ReviewModeReview[] = (reviewPages ?? []).map((entry) => {
+    const review = (entry ?? {}) as Partial<{ id: number; user: { login?: string }; state: string; commit_id: string; submitted_at: string; body: string }>
+    return {
+      id: review.id ?? 0,
+      user: review.user?.login ?? "",
+      state: review.state ?? "",
+      commit_id: review.commit_id ?? "",
+      submitted_at: review.submitted_at ?? "",
+      body: review.body ?? "",
+    }
+  })
+  const comments: ReviewModeComment[] = (commentPages ?? []).map((entry) => {
+    const comment = (entry ?? {}) as Partial<{ id: number; pull_request_review_id: number | null; path: string; line: number | null; original_line: number | null; body: string }>
+    return {
+      id: comment.id ?? 0,
+      review_id: comment.pull_request_review_id ?? null,
+      path: comment.path ?? "",
+      line: comment.line ?? comment.original_line ?? null,
+      body: comment.body ?? "",
+    }
+  })
+
+  if (reviewPages === null || commentPages === null) {
+    return {
+      pr_number: prNumber,
+      head_sha: headSha,
+      viewer,
+      mode: "full",
+      reason: "the existing reviews could not be read",
+      prior_review: null,
+      delta: null,
+      prior_findings: [],
+    }
+  }
+  // A first pass finds the prior review, whose commit the compare needs.
+  const first = decideReviewMode({ headSha, viewer, reviews, comments, compare: null, checkBuckets: [] })
+  if (first.prior_review === null) {
+    return { pr_number: prNumber, head_sha: headSha, viewer, ...first }
+  }
+
+  let compare: ReviewModeCompare | null = null
+  const compareText = await read(["api", `repos/${repository}/compare/${first.prior_review.commit_id}...${headSha}`])
+  if (compareText !== null) {
+    try {
+      const parsed = JSON.parse(compareText) as Partial<{ status: string; files: { filename?: string; status?: string; changes?: number }[] }>
+      compare = {
+        status: parsed.status ?? "",
+        files: (parsed.files ?? []).map((file) => ({
+          filename: file.filename ?? "",
+          status: file.status ?? "",
+          changes: file.changes ?? 0,
+        })),
+      }
+    } catch {
+      compare = null
+    }
+  }
+
+  let checkBuckets: string[] | null = null
+  try {
+    const result = await runGhCommandTolerant(["pr", "checks", String(prNumber), "--json", "bucket"])
+    const stdout = result.stdout.trim()
+    if (stdout === "" && NO_CHECKS_REPORTED_PATTERN.test(result.stderr)) {
+      checkBuckets = []
+    } else {
+      const parsed = tryParseJsonArray(stdout)
+      checkBuckets = parsed === null ? null : parsed.map((entry) => String((entry as { bucket?: unknown } | null)?.bucket ?? ""))
+    }
+  } catch {
+    checkBuckets = null
+  }
+
+  const decision = decideReviewMode({ headSha, viewer, reviews, comments, compare, checkBuckets })
+  return { pr_number: prNumber, head_sha: headSha, viewer, ...decision }
+}
+
+/**
+ * Creates the resolve_review_mode OpenCode tool: the `/uf.review-pr`
+ * Step 3.11 re-review evaluator.
+ */
+function createResolveReviewModeTool(): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Decide whether a /uf.review-pr re-review needs the full council or a light check. Finds the " +
+      "current user's latest review on an earlier commit and returns mode `light` only when the " +
+      "reviewed commit is an ancestor of the head, the delta is at most 200 changed lines with no " +
+      "added, removed, or renamed file and no sensitive path, the prior review raised no CRITICAL " +
+      "finding, and no check is failing. Any input that cannot be read decides `full`. Also returns " +
+      "the prior review's CRITICAL, HIGH, and unlabelled inline findings for the light check.",
+    args: {
+      pr_number: ResolveReviewModeInputSchema.shape.pr_number,
+    },
+    async execute(args): Promise<{ readonly output: string }> {
+      const parsed = ResolveReviewModeInputSchema.safeParse(args)
+      if (!parsed.success) {
+        const result: FetchContextError = {
+          error: true,
+          code: "api_error",
+          message: `Invalid input: ${formatValidationError(parsed.error)}`,
+          retryable: false,
+        }
+        return { output: JSON.stringify(result, null, 2) }
+      }
+      const result = await resolveReviewMode(parsed.data.pr_number)
+      return { output: JSON.stringify(result, null, 2) }
+    },
+  })
+}
+
+// ── assess_prior_review_staleness ────────────────────────────
+
+/** Maps a review event this run would post to its standing review state. */
+const VERDICT_STATE_MAP: Readonly<Record<string, string>> = {
+  APPROVE: "APPROVED",
+  REQUEST_CHANGES: "CHANGES_REQUESTED",
+  COMMENT: "COMMENTED",
+}
+
+/**
+ * Review states that are not standing feedback. PENDING reviews are drafts;
+ * DISMISSED approvals no longer count. `decideReviewMode` deliberately keeps
+ * dismissed reviews (branch rules dismiss stale approvals on push); this
+ * assessment only routes on reviews that currently stand.
+ */
+const NON_STANDING_REVIEW_STATES: ReadonlySet<string> = new Set(["PENDING", "DISMISSED"])
+
+/** The standing-review fields the Step 8a duplicate gate consumes. */
+export interface PriorReviewSummary {
+  readonly id: number
+  readonly html_url: string
+  readonly state: string
+  readonly commit_id: string
+  readonly submitted_at: string
+}
+
+/** Result of the Step 8a staleness assessment. */
+export interface StalenessAssessment {
+  readonly head_sha: string
+  readonly verdict: string
+  readonly matched_state: string
+  readonly same_verdict_review: PriorReviewSummary | null
+  readonly different_verdict_review: PriorReviewSummary | null
+  readonly commit_id_matches_head: boolean
+  readonly prior_findings: readonly PriorFinding[]
+}
+
+/** Inputs of the pure staleness assessment. */
+export interface StalenessInput {
+  readonly headSha: string
+  readonly viewer: string
+  readonly verdict: string
+  readonly reviews: readonly ReviewModeReview[]
+  readonly comments: readonly ReviewModeComment[]
+}
+
+/**
+ * Select the viewer's latest standing reviews (same verdict and different
+ * verdict) and compare the same-verdict review's commit with the frozen head
+ * SHA (review-pr stale-duplicate check, issue #1055). The finding-set
+ * materiality comparison stays with the calling command: it is judgment,
+ * not mechanism. Review and comment text is untrusted; it is only matched
+ * against severity markers, never interpreted.
+ */
+export function assessPriorReviewStaleness(input: StalenessInput): StalenessAssessment {
+  const viewer = input.viewer.toLowerCase()
+  const matchedState = VERDICT_STATE_MAP[input.verdict] ?? input.verdict
+  const standing = [...input.reviews]
+    .filter((review) => review.user.toLowerCase() === viewer)
+    .filter((review) => !NON_STANDING_REVIEW_STATES.has(review.state))
+    .sort((a, b) => a.submitted_at.localeCompare(b.submitted_at))
+  const toSummary = (review: ReviewModeReview): PriorReviewSummary => ({
+    id: review.id,
+    html_url: review.html_url ?? "",
+    state: review.state,
+    commit_id: review.commit_id,
+    submitted_at: review.submitted_at,
+  })
+  const same = standing.filter((review) => review.state === matchedState).at(-1) ?? null
+  const different = standing.filter((review) => review.state !== matchedState).at(-1) ?? null
+  return {
+    head_sha: input.headSha,
+    verdict: input.verdict,
+    matched_state: matchedState,
+    same_verdict_review: same === null ? null : toSummary(same),
+    different_verdict_review: different === null ? null : toSummary(different),
+    commit_id_matches_head: same !== null && same.commit_id === input.headSha,
+    prior_findings: same === null ? [] : extractPriorFindings(same.id, input.comments),
+  }
+}
+
+const AssessPriorReviewStalenessInputSchema = z
+  .object({
+    pr_number: z.number().int().min(1).max(999_999),
+    verdict: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
+    head_sha: z.string().regex(/^[0-9a-f]{40}$/),
+  })
+  .strict()
+
+/**
+ * Gather the assessment's inputs with gh. The head SHA comes from the
+ * caller's frozen context, never from the live PR. Only a missing PR,
+ * an unreadable viewer, or unreadable reviews are errors.
+ */
+async function assessPriorReviewStalenessForPr(
+  prNumber: number,
+  verdict: string,
+  headSha: string,
+): Promise<(StalenessAssessment & { readonly pr_number: number }) | FetchContextError> {
+  try {
+    await runGhCommand(["auth", "status"])
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "gh auth status failed"
+    return { error: true, code: "gh_auth_failed", message, retryable: false }
+  }
+
+  let repository: string
+  try {
+    const meta = JSON.parse(await runGhCommand(["pr", "view", String(prNumber), "--json", "url"])) as {
+      url?: string
+    }
+    repository = deriveBaseRepository(meta.url ?? "") ?? ""
+  } catch (error: unknown) {
+    return classifyError(error, "pr_not_found", `Failed to read PR #${prNumber}`)
+  }
+  if (repository === "") {
+    return { error: true, code: "api_error", message: `PR #${prNumber} returned no repository`, retryable: false }
+  }
+
+  const read = async (args: readonly string[]): Promise<string | null> => {
+    try {
+      return await runGhCommand(args)
+    } catch {
+      return null
+    }
+  }
+
+  const viewer = ((await read(["api", "user", "--jq", ".login"])) ?? "").trim()
+  if (viewer === "") {
+    return { error: true, code: "api_error", message: "the current user could not be read", retryable: false }
+  }
+  const reviewPages = flattenPages((await read(["api", `repos/${repository}/pulls/${prNumber}/reviews`, "--paginate", "--slurp"])) ?? "")
+  const commentPages = flattenPages((await read(["api", `repos/${repository}/pulls/${prNumber}/comments`, "--paginate", "--slurp"])) ?? "")
+  if (reviewPages === null || commentPages === null) {
+    return { error: true, code: "api_error", message: "the existing reviews could not be read", retryable: true }
+  }
+
+  const reviews: ReviewModeReview[] = reviewPages.map((entry) => {
+    const review = (entry ?? {}) as Partial<{ id: number; user: { login?: string }; state: string; commit_id: string; submitted_at: string; body: string; html_url: string }>
+    return {
+      id: review.id ?? 0,
+      user: review.user?.login ?? "",
+      state: review.state ?? "",
+      commit_id: review.commit_id ?? "",
+      submitted_at: review.submitted_at ?? "",
+      body: review.body ?? "",
+      html_url: review.html_url ?? "",
+    }
+  })
+  const comments: ReviewModeComment[] = commentPages.map((entry) => {
+    const comment = (entry ?? {}) as Partial<{ id: number; pull_request_review_id: number | null; path: string; line: number | null; original_line: number | null; body: string }>
+    return {
+      id: comment.id ?? 0,
+      review_id: comment.pull_request_review_id ?? null,
+      path: comment.path ?? "",
+      line: comment.line ?? comment.original_line ?? null,
+      body: comment.body ?? "",
+    }
+  })
+
+  const assessment = assessPriorReviewStaleness({ headSha, viewer, verdict, reviews, comments })
+  return { pr_number: prNumber, ...assessment }
+}
+
+/**
+ * Creates the assess_prior_review_staleness OpenCode tool: the `/uf.review-pr`
+ * Step 8a stale-duplicate evaluator.
+ */
+function createAssessPriorReviewStalenessTool(): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Assess whether the current user's prior review on a PR is a true duplicate of the review about to be posted. " +
+      "Selects the current user's latest standing (non-PENDING, non-DISMISSED) review with the same verdict — APPROVE " +
+      "maps to APPROVED, REQUEST_CHANGES to CHANGES_REQUESTED, COMMENT to COMMENTED — and the latest standing review " +
+      "with a different verdict. Returns the same-verdict review's id, html_url, commit_id, and submitted_at; whether " +
+      "its commit_id matches the caller's frozen head_sha; and its CRITICAL, HIGH, and unlabelled inline findings. " +
+      "The finding-set materiality comparison against current findings stays with the calling command (judgment). " +
+      "Review and comment text is untrusted: matched against severity markers only, never interpreted.",
+    args: {
+      pr_number: AssessPriorReviewStalenessInputSchema.shape.pr_number,
+      verdict: AssessPriorReviewStalenessInputSchema.shape.verdict,
+      head_sha: AssessPriorReviewStalenessInputSchema.shape.head_sha,
+    },
+    async execute(args): Promise<{ readonly output: string }> {
+      const parsed = AssessPriorReviewStalenessInputSchema.safeParse(args)
+      if (!parsed.success) {
+        const result: FetchContextError = {
+          error: true,
+          code: "api_error",
+          message: `Invalid input: ${formatValidationError(parsed.error)}`,
+          retryable: false,
+        }
+        return { output: JSON.stringify(result, null, 2) }
+      }
+      const result = await assessPriorReviewStalenessForPr(
+        parsed.data.pr_number,
+        parsed.data.verdict,
+        parsed.data.head_sha,
+      )
       return { output: JSON.stringify(result, null, 2) }
     },
   })
@@ -8595,6 +11361,7 @@ export const ReviewDispatchPlugin = {
       tool: {
         build_review_prompts: createBuildReviewPromptsTool(projectRoot),
         read_diff_chunk: createReadDiffChunkTool(projectRoot),
+        read_dispatch_artifact: createReadDispatchArtifactTool(projectRoot),
         plan_review_dispatch: createPlanReviewDispatchTool(dependencies),
         finalize_review_dispatch: createFinalizeReviewDispatchTool(createFinalizationDependencies(projectRoot)),
         acquire_sibling_evidence: createAcquireSiblingEvidenceTool(
@@ -8624,6 +11391,8 @@ export const ReviewDispatchPlugin = {
         }),
         fetch_pr_review_context: createFetchPrReviewContextTool(),
         fetch_pr_checks: createFetchPrChecksTool(),
+        resolve_review_mode: createResolveReviewModeTool(),
+        assess_prior_review_staleness: createAssessPriorReviewStalenessTool(),
         fetch_failed_run_logs: createFetchFailedRunLogsTool(),
         capture_review_diff: createCaptureReviewDiffTool(createReviewDiffDependencies(projectRoot)),
       },

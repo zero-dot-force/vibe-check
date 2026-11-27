@@ -18,12 +18,20 @@ permissions:
   contents: read
 
 jobs:
+  # Dewey learnings PRs and gh-hud toolkit rollouts skip the gate (jflowers/ship's
+  # pr-scope.yml): they change no Go code.
+  scope:
+    uses: jflowers/ship/.github/workflows/pr-scope.yml@3b0ce8bf47183be402df9eaec16644c213eee5f7 # main, after v0.11.0
+    permissions:
+      contents: read
+
   structural-gate:
+    needs: scope
     # Skip forked PRs: `vibe-check analyze` drives the Go toolchain to compile
     # the target module, which would execute untrusted build-time code (cgo,
     # generated files, custom build steps) from the fork. See the divisor-entropy
     # security constraint and design.md D7.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

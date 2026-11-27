@@ -2,6 +2,8 @@
 # Runs on pushes to main and pull requests targeting main.
 # The structural-gate-dogfood job (PRs only) smoke-tests the reusable
 # structural gate consumer path; the authoritative gate is vibe-check-structural-gate.yaml.
+# Dewey learnings PRs and gh-hud toolkit rollouts skip all three (jflowers/ship's
+# pr-scope.yml); CI OK is the required check.
 name: CI — Build, Test, and Lint
 
 on:
@@ -18,7 +20,18 @@ permissions:
   contents: read
 
 jobs:
+  # Decides whether the jobs below must run: Dewey learnings PRs and gh-hud
+  # toolkit rollouts skip them; pushes and everything else run them.
+  scope:
+    uses: jflowers/ship/.github/workflows/pr-scope.yml@3b0ce8bf47183be402df9eaec16644c213eee5f7 # main, after v0.11.0
+    permissions:
+      contents: read
+
+  # Keep test and lint plain jobs under these names: release.yml's preflight
+  # reads their checks on main, where they always run.
   test:
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -40,6 +53,8 @@ jobs:
         run: go run ./cmd/coverage-ratchet --profile coverage.out --floors coverage-floors.json
 
   lint:
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -65,7 +80,9 @@ jobs:
     # on a push event github.event.pull_request.base.sha is empty — the
     # callee's base checkout would check out nothing and the gate would pass
     # vacuously. The reusable workflow's base checkout expects PR context.
-    if: github.event_name == 'pull_request'
+    # Chore PRs (scope code 'false') skip it like the jobs above.
+    needs: scope
+    if: github.event_name == 'pull_request' && needs.scope.outputs.code == 'true'
     # Grant exactly the callee's declared scope (CI-021). ci.yml's top-level
     # `permissions: contents: read` already satisfies it; the explicit
     # job-level grant keeps the job self-contained and mirrors the README
@@ -78,3 +95,34 @@ jobs:
     # in the README. No `with:` block — all seven inputs take their declared
     # defaults, and inputs the callee does not declare fail only at dispatch.
     uses: ./.github/workflows/reusable_structural_gate.yml
+
+  # Required check. Passes only when scope succeeded and test and lint ran
+  # and passed (code PRs, pushes) or were skipped (chore PRs). A failed
+  # scope job would otherwise skip them, and a skipped job counts as
+  # passing. structural-gate-dogfood stays advisory, as before: it is not
+  # needed here.
+  ci-ok:
+    name: CI OK
+    needs: [scope, test, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check needed jobs
+        env:
+          SCOPE: ${{ needs.scope.result }}
+          CODE: ${{ needs.scope.outputs.code }}
+          TEST: ${{ needs.test.result }}
+          LINT: ${{ needs.lint.result }}
+        run: |
+          echo "scope=$SCOPE code=$CODE test=$TEST lint=$LINT"
+          [ "$SCOPE" = success ] || { echo "::error::scope: $SCOPE"; exit 1; }
+          case "$CODE" in
+            true) want=success ;;
+            false) want=skipped ;;
+            *) echo "::error::scope code '$CODE'"; exit 1 ;;
+          esac
+          [ "$TEST" = "$want" ] || { echo "::error::test: $TEST, want $want"; exit 1; }
+          [ "$LINT" = "$want" ] || { echo "::error::lint: $LINT, want $want"; exit 1; }
+          echo "CI passed."

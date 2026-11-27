@@ -83,7 +83,10 @@ func validatedRipwire(ctx context.Context) (string, ripwireVersionInfo, error) {
 		return "", ripwireVersionInfo{}, absentBinaryError(err)
 	}
 
-	runner := &ripwireRunner{binary: bin, maxOutputBytes: maxVersionOutputBytes}
+	// Built through the defaulted constructor so the version check inherits
+	// the bounded pipe wait; only the capture bound is version-specific.
+	runner := newRipwireRunner(bin)
+	runner.maxOutputBytes = maxVersionOutputBytes
 	stdout, err := runner.run(ctx, "", "--version")
 	if err != nil {
 		return "", ripwireVersionInfo{}, fmt.Errorf("ripwire version check: %w", err)

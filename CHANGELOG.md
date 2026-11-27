@@ -145,6 +145,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The ripwire runner no longer hangs when a process ripwire starts keeps
+  its output pipes open. It read both pipes to EOF before waiting, so the
+  oversize and cancellation paths, which kill only ripwire itself, could
+  block forever, and `TestRunner_OversizedOutput` hung intermittently.
+  Capture now goes through bounded writers with `cmd.WaitDelay` (2s), so
+  every run returns in bounded time; a ripwire that exits 0 but leaves its
+  pipes held open now fails closed. Every construction path gets the
+  bounded wait — the version pin-check builds its runner through the
+  defaulted constructor, and a zero wait delay falls back to the default.
+  Spec: `openspec/changes/runner-pipe-hang/specs/ripwire-adapter/spec.md`
 - The `totalLines` description in `metrics/modulegraph.schema.json` now
   matches its GoDoc: zero is a measured count (a config-only module reports
   0), not a sentinel for an unknown count. Description only; the schema's

@@ -326,7 +326,7 @@ internal/goadapter/ # Go language adapter (Layer 2)
 internal/ripwireadapter/  # ripwire-backed Python/TypeScript adapter (Layer 2)
   adapter.go       # Adapter struct (one type, language-parameterized) + capabilities
   version.go       # Fail-closed ripwire release pin (single source: two constants) + sentinels
-  runner.go        # Sanitized subprocess runner (bounded output, cancellation)
+  runner.go        # Sanitized subprocess runner (bounded output, cancellation, bounded pipe wait)
   crawl.go         # Crawl-root resolution (D9: Python src-layout, TS manifests)
   denylist.go      # Denylist warning: pre-check (build/dist/..., minus dirs ripwire indexed) ∪ ripwire <pruned_packages>
   guard.go         # Zero-coupling guard (edges == 0 with sources present)
